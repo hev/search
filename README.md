@@ -121,6 +121,7 @@ Use `gs://...` rather than reaching for the GCS S3-interop endpoint — the inte
 *   **Multi-tenant by Design:** Each namespace maps to an isolated object-storage prefix under the configured `FIRNFLOW_STORAGE_URI` (e.g. `s3://bucket/namespace/` or `gs://bucket/namespace/`) with near-zero idle cost.
 *   **Instant Invalidation:** A "Generation Counter" strategy ensures that after a write, all stale search results for that namespace are invalidated in $O(1)$ time.
 *   **CAS Consistency:** Verified concurrency safety using the backend's conditional-write primitive — `If-None-Match: *` for S3-family backends, the generation precondition for native GCS — to prevent data loss when multiple writers fight for the same bucket.
+*   **Late-Interaction Search:** Each namespace is either single-vector (one dense vector per row) or multivector (a bag of small vectors per row, scored via MaxSim). The multivector shape is what ColBERT, ColPali, and ColQwen2 produce, and is what compositional queries like *"a man with a logo on his shirt"* need to match each element independently. See [Multivector namespaces](#multivector-namespaces) below.
 *   **Zero-Copy Ready:** Optimized serialization via `bincode` (with architectural triggers to move to `rkyv` if needed).
 *   **Operational Excellence:** Native Prometheus metrics tracking cache hit rates and backend request count (the primary signal for cost savings).
 
@@ -208,6 +209,45 @@ curl -X POST http://localhost:3000/ns/demo/upsert \
 | `/ns/{ns}/compact` | `POST` | admin | Compact and prune data files (async, returns 202) |
 
 Auth column: `open` = no header required; `read/write` = `FIRNFLOW_API_KEY` (or `FIRNFLOW_ADMIN_API_KEY`); `admin` = `FIRNFLOW_ADMIN_API_KEY` if configured, otherwise `FIRNFLOW_API_KEY` via the single-key fallback. `/metrics` is `metrics` when `FIRNFLOW_METRICS_TOKEN` is set, otherwise `open`.
+
+## Multivector namespaces
+
+Each namespace is one of two **vector kinds**, fixed by the shape of the first upsert and immutable thereafter:
+
+- **Single-vector** (the default). One dense vector per row. Used for CLIP, OpenAI `text-embedding-3-*`, sentence-transformers — anything that pools a piece of content into a single embedding.
+- **Multivector**. A variable-length bag of small vectors per row, scored with MaxSim (for each query sub-vector, find its best match anywhere in the document, then add the matches up). This is the shape ColBERT, ColPali, and ColQwen2 produce. It is what compositional queries like *"a man with a logo on his shirt"* need to retrieve well — each element of the query gets to find its own best match independently of the others, instead of the whole query collapsing into one summary vector that smears the constituent concepts together.
+
+The wire shape determines the kind. A single-vector upsert uses `vector: [f32, ...]`; a multivector upsert uses `vectors: [[f32, ...], [f32, ...], ...]`. Queries follow the same convention:
+
+```bash
+# single-vector upsert + query
+curl -X POST http://localhost:3000/ns/photos/upsert \
+     -H 'Content-Type: application/json' \
+     -d '{"rows": [{"id": 1, "vector": [0.1, 0.2, 0.3, 0.4]}]}'
+curl -X POST http://localhost:3000/ns/photos/query \
+     -H 'Content-Type: application/json' \
+     -d '{"vector": [0.1, 0.2, 0.3, 0.4], "k": 5}'
+
+# multivector upsert + query
+curl -X POST http://localhost:3000/ns/photos-mv/upsert \
+     -H 'Content-Type: application/json' \
+     -d '{"rows": [{"id": 1, "vectors": [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]}]}'
+curl -X POST http://localhost:3000/ns/photos-mv/query \
+     -H 'Content-Type: application/json' \
+     -d '{"vectors": [[0.1, 0.2, 0.3, 0.4]], "k": 5}'
+```
+
+The handler returns 400 if the payload shape does not match the namespace's kind — for example a `vector:` payload sent to a multivector namespace, or vice versa. The error response names the expected shape.
+
+**Constraints to know before adopting multivector:**
+
+- **Cosine only.** Lance's late-interaction index supports cosine distance exclusively. Firn does not expose a per-request metric option on the API surface; `create_index` constructs the IVF_PQ builder with cosine internally for multivector namespaces and with L2 for single-vector namespaces.
+- **Storage is materially larger.** A single-vector CLIP entry is ~2 KB per row. A multivector ColPali entry is closer to ~500 KB per row (around 1030 sub-vectors × 128 floats). Budget S3 footprint and index-build wall-clock time accordingly.
+- **Build an index for tractable latency.** Lance answers multivector queries on an un-indexed namespace via brute-force scan — fine for tiny development corpora, painfully slow on anything real. Build the IVF_PQ index (`POST /ns/{ns}/index`) after the first batch of upserts. Same trade-off as single-vector queries.
+- **The result cache does not accelerate novel multivector queries.** Every tokenised query is unique, so cache hit rate is near zero on this path. The cache continues to accelerate exact-repeat queries — useful for benchmarks and synthetic load, not for production retrieval workloads.
+- **New-namespace only.** A namespace that started as single-vector cannot be converted to multivector in place. Create a new namespace with a multivector first upsert.
+
+**Encoders that produce vectors in the right shape:** ColBERTv2 (text passages), ColPali (documents, slides, PDFs), ColQwen2 / ColIDEFICS (multimodal — natural images and documents). Firn stays model-agnostic: the caller computes the bag of small vectors and POSTs it.
 
 ## Development and Benchmarking
 

@@ -137,6 +137,7 @@ async fn cached_handle_survives_across_operations() {
         .query(
             &ns,
             vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            None,
             2,
             None,
             None,
@@ -234,6 +235,7 @@ async fn handle_evicted_after_compaction() {
         .query(
             &ns,
             vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            None,
             2,
             None,
             None,

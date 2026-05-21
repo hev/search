@@ -127,6 +127,7 @@ impl NamespaceService {
                     .query(
                         &ns_owned,
                         req_owned.vector,
+                        req_owned.vectors,
                         req_owned.k,
                         req_owned.nprobes,
                         req_owned.text,
@@ -141,11 +142,20 @@ impl NamespaceService {
             bincode::serde::decode_from_slice(&payload, config::standard())
                 .map_err(|e| FirnflowError::Backend(format!("decode result: {e}")))?;
 
-        let query_type = match (req.vector.is_empty(), req.text.is_some()) {
-            (false, true) => "hybrid",
-            (false, false) => "vector",
-            (true, true) => "fts",
-            (true, false) => "vector", // shouldn't happen — manager validates
+        // query_type label: hybrid wins when a vector field combines
+        // with text; otherwise multivector / vector / fts surface
+        // the underlying mode. The single-vector and multivector
+        // pure-vector cases are reported separately so dashboards
+        // can isolate the late-interaction cost from regular cosine.
+        let has_single = !req.vector.is_empty();
+        let has_multi = req.vectors.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+        let has_text = req.text.is_some();
+        let query_type = match (has_single, has_multi, has_text) {
+            (true, _, true) | (_, true, true) => "hybrid",
+            (true, _, false) => "vector",
+            (_, true, false) => "multivector",
+            (false, false, true) => "fts",
+            (false, false, false) => "vector", // shouldn't happen — manager validates
         };
         self.metrics
             .record_query(ns, query_type, start.elapsed().as_secs_f64());

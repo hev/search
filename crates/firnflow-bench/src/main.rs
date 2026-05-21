@@ -296,6 +296,7 @@ async fn main() -> anyhow::Result<()> {
     let queries: Vec<QueryRequest> = (0..cfg.queries)
         .map(|i| QueryRequest {
             vector: make_query_vector(i, cfg.dim),
+            vectors: None,
             k: 10,
             nprobes: None,
             text: None,
@@ -305,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
     let queries_indexed: Vec<QueryRequest> = (0..cfg.queries)
         .map(|i| QueryRequest {
             vector: make_query_vector(i, cfg.dim),
+            vectors: None,
             k: 10,
             nprobes: Some(cfg.nprobes),
             text: None,

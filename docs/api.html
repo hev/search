@@ -111,7 +111,14 @@
         <span class="endpoint-desc">Insert or update vectors and text</span>
       </div>
       <div class="endpoint-body">
-        <p>Appends rows to the namespace's Lance table. The vector dimension is inferred from the first upsert and enforced on subsequent calls. After a successful write, all cached query results for this namespace are invalidated.</p>
+        <p>Appends rows to the namespace's Lance table. The vector dimension and the vector kind (single-vector or multivector) are inferred from the first upsert and enforced on subsequent calls. After a successful write, all cached query results for this namespace are invalidated.</p>
+
+        <p>Each row carries one of two vector payload shapes, depending on the namespace's kind:</p>
+        <ul>
+          <li><strong>Single-vector namespaces</strong>: <code>vector: float32[]</code> — one dense vector of length <code>dim</code>.</li>
+          <li><strong>Multivector namespaces</strong>: <code>vectors: float32[][]</code> — a non-empty list of equal-length inner vectors. Used for ColBERT / ColPali / ColQwen2 late-interaction retrieval.</li>
+        </ul>
+        <p>At most one of the two fields may be set on a row. The first row of the first upsert into a fresh namespace fixes the kind for its lifetime; payloads in the wrong shape return 400.</p>
 
         <h4>Request body</h4>
         <table>
@@ -119,7 +126,8 @@
           <tbody>
             <tr><td><code>rows</code></td><td>array</td><td>Yes</td><td>List of rows to insert</td></tr>
             <tr><td><code>rows[].id</code></td><td>u64</td><td>Yes</td><td>Unique identifier for the row</td></tr>
-            <tr><td><code>rows[].vector</code></td><td>float32[]</td><td>Yes</td><td>Dense vector (dimension must match the namespace)</td></tr>
+            <tr><td><code>rows[].vector</code></td><td>float32[]</td><td>One of</td><td>Single dense vector (single-vector namespaces). Length must match the namespace dimension.</td></tr>
+            <tr><td><code>rows[].vectors</code></td><td>float32[][]</td><td>One of</td><td>Bag of equal-length sub-vectors (multivector namespaces). Each inner vector must match the namespace's inner sub-vector dimension; outer list length is the per-row sub-vector count.</td></tr>
             <tr><td><code>rows[].text</code></td><td>string</td><td>No</td><td>Text payload for full-text search</td></tr>
           </tbody>
         </table>
@@ -132,7 +140,8 @@
           </tbody>
         </table>
 
-        <h4>Example</h4>
+        <h4>Examples</h4>
+        <p>Single-vector upsert:</p>
         <pre><code>curl -X POST http://localhost:3000/ns/demo/upsert \
   -H 'Content-Type: application/json' \
   -d '{
@@ -143,10 +152,20 @@
   }'</code></pre>
         <pre><code>{"upserted": 2}</code></pre>
 
+        <p>Multivector upsert:</p>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo-mv/upsert \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "rows": [
+      {"id": 1, "vectors": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]},
+      {"id": 2, "vectors": [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0], [0.5, 0.5, 0.0, 0.0]]}
+    ]
+  }'</code></pre>
+
         <h4>Errors</h4>
         <ul>
-          <li><code>400</code> - invalid namespace name or vector dimension mismatch</li>
-          <li><code>500</code> - object-storage write failure (client gets generic error; full details logged server-side)</li>
+          <li><code>400</code> — invalid namespace name; vector dimension mismatch; payload shape mismatch (e.g. <code>vector</code> on a multivector namespace or vice versa); both <code>vector</code> and <code>vectors</code> set on the same row; empty inner sub-vector; mixed inner sub-vector dim within one row</li>
+          <li><code>500</code> — object-storage write failure (client gets generic error; full details logged server-side)</li>
         </ul>
       </div>
     </div>
@@ -162,13 +181,14 @@
         <p>Queries the namespace through the cache-aside path. On a cache hit, the result is returned from RAM or NVMe with zero object-storage access. On a miss, the query runs against the configured backend via LanceDB and the result is cached.</p>
 
         <h4>Query modes</h4>
-        <p>The query mode is determined by which fields are present:</p>
+        <p>The query mode is determined by which fields are present. The vector field uses <code>vector: float32[]</code> for single-vector namespaces and <code>vectors: float32[][]</code> for multivector namespaces:</p>
         <table>
-          <thead><tr><th>Mode</th><th><code>vector</code></th><th><code>text</code></th><th>Description</th></tr></thead>
+          <thead><tr><th>Mode</th><th>Vector field</th><th><code>text</code></th><th>Description</th></tr></thead>
           <tbody>
-            <tr><td>Vector</td><td>set</td><td>absent</td><td>Nearest-neighbour search (L2 distance)</td></tr>
-            <tr><td>FTS</td><td>absent</td><td>set</td><td>BM25 full-text search (requires FTS index)</td></tr>
-            <tr><td>Hybrid</td><td>set</td><td>set</td><td>Both, fused via Reciprocal Rank Fusion (RRF)</td></tr>
+            <tr><td>Single-vector</td><td><code>vector</code> set</td><td>absent</td><td>Nearest-neighbour search (L2 distance by default)</td></tr>
+            <tr><td>Multivector</td><td><code>vectors</code> set</td><td>absent</td><td>Late-interaction MaxSim search against a multivector namespace (cosine distance; an IVF_PQ index is what makes this tractable on real corpora — un-indexed queries fall back to a brute-force scan)</td></tr>
+            <tr><td>FTS</td><td>none</td><td>set</td><td>BM25 full-text search (requires FTS index)</td></tr>
+            <tr><td>Hybrid</td><td><code>vector</code> or <code>vectors</code> set</td><td>set</td><td>Both, fused via Reciprocal Rank Fusion (RRF)</td></tr>
           </tbody>
         </table>
 
@@ -176,13 +196,14 @@
         <table>
           <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
           <tbody>
-            <tr><td><code>vector</code></td><td>float32[]</td><td>No*</td><td>Query vector for nearest-neighbour search</td></tr>
+            <tr><td><code>vector</code></td><td>float32[]</td><td>One of</td><td>Single-vector query payload. Length must match the namespace dimension.</td></tr>
+            <tr><td><code>vectors</code></td><td>float32[][]</td><td>One of</td><td>Multivector query payload — a bag of equal-length sub-vectors. Each inner vector must match the namespace's inner sub-vector dimension.</td></tr>
             <tr><td><code>k</code></td><td>integer</td><td>Yes</td><td>Number of results to return</td></tr>
             <tr><td><code>nprobes</code></td><td>integer</td><td>No</td><td>IVF partitions to probe (default 20). Higher values trade latency for recall.</td></tr>
             <tr><td><code>text</code></td><td>string</td><td>No*</td><td>Text query for full-text or hybrid search</td></tr>
           </tbody>
         </table>
-        <p><small>* At least one of <code>vector</code> or <code>text</code> must be present.</small></p>
+        <p><small>* At least one of <code>vector</code>, <code>vectors</code>, or <code>text</code> must be present. Setting both <code>vector</code> and <code>vectors</code> on the same request returns 400.</small></p>
 
         <h4>Response (200)</h4>
         <table>
@@ -191,24 +212,29 @@
             <tr><td><code>query_id</code></td><td>string</td><td>Deterministic hash of the query parameters (the cache key)</td></tr>
             <tr><td><code>results</code></td><td>array</td><td>Ordered list of matching rows</td></tr>
             <tr><td><code>results[].id</code></td><td>u64</td><td>Row identifier</td></tr>
-            <tr><td><code>results[].score</code></td><td>float32</td><td>Distance (vector), BM25 score (FTS), or relevance score (hybrid)</td></tr>
-            <tr><td><code>results[].vector</code></td><td>float32[]</td><td>The stored vector</td></tr>
+            <tr><td><code>results[].score</code></td><td>float32</td><td>Distance (vector / multivector), BM25 score (FTS), or relevance score (hybrid)</td></tr>
+            <tr><td><code>results[].vector</code></td><td>float32[]</td><td>The stored vector for single-vector hits; empty (<code>[]</code>) for multivector hits — the bag is intentionally not echoed.</td></tr>
             <tr><td><code>results[].text</code></td><td>string?</td><td>The stored text (null if none)</td></tr>
           </tbody>
         </table>
 
         <h4>Examples</h4>
-        <p>Vector search:</p>
+        <p>Single-vector search:</p>
         <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
   -H 'Content-Type: application/json' \
   -d '{"vector": [1.0, 0.0, 0.0, 0.0], "k": 5}'</code></pre>
+
+        <p>Multivector search:</p>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo-mv/query \
+  -H 'Content-Type: application/json' \
+  -d '{"vectors": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], "k": 5}'</code></pre>
 
         <p>Full-text search:</p>
         <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
   -H 'Content-Type: application/json' \
   -d '{"text": "search query terms", "k": 10}'</code></pre>
 
-        <p>Hybrid search:</p>
+        <p>Hybrid search (single-vector + FTS):</p>
         <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
   -H 'Content-Type: application/json' \
   -d '{

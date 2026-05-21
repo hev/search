@@ -15,6 +15,7 @@ pub mod query;
 pub mod result;
 pub mod service;
 pub mod storage_root;
+pub mod vector;
 
 pub use error::FirnflowError;
 pub use manager::{
@@ -27,3 +28,4 @@ pub use query::{IndexRequest, QueryRequest};
 pub use result::{ListOrder, ListPage, ListRow, QueryResult, QueryResultSet};
 pub use service::NamespaceService;
 pub use storage_root::{Scheme, StorageRoot};
+pub use vector::VectorKind;

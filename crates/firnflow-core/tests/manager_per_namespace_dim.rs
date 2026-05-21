@@ -114,7 +114,7 @@ async fn three_namespaces_with_different_dims() {
 
     // ---- query each namespace independently ----
     let r4 = manager
-        .query(&ns4, unit_vector(4, 0), 2, None, None)
+        .query(&ns4, unit_vector(4, 0), None, 2, None, None)
         .await
         .expect("query dim=4");
     assert_eq!(r4.results.len(), 2, "ns4 should have 2 rows");
@@ -126,7 +126,7 @@ async fn three_namespaces_with_different_dims() {
     assert_eq!(r4.results[0].id, 1, "nearest neighbour in ns4 is id=1");
 
     let r8 = manager
-        .query(&ns8, unit_vector(8, 0), 3, None, None)
+        .query(&ns8, unit_vector(8, 0), None, 3, None, None)
         .await
         .expect("query dim=8");
     assert_eq!(r8.results.len(), 3, "ns8 should have 3 rows");
@@ -137,7 +137,7 @@ async fn three_namespaces_with_different_dims() {
     );
 
     let r16 = manager
-        .query(&ns16, unit_vector(16, 0), 2, None, None)
+        .query(&ns16, unit_vector(16, 0), None, 2, None, None)
         .await
         .expect("query dim=16");
     assert_eq!(r16.results.len(), 2, "ns16 should have 2 rows");
@@ -154,13 +154,13 @@ async fn three_namespaces_with_different_dims() {
         .expect_err("upsert dim=8 vector into dim=4 namespace must fail");
     let msg = format!("{err}");
     assert!(
-        msg.contains("vector length 8, expected 4"),
+        msg.contains("single dimension 8, expected 4"),
         "unexpected error: {msg}"
     );
 
     // ---- wrong-width query against an established namespace ----
     let err = manager
-        .query(&ns8, unit_vector(4, 0), 1, None, None)
+        .query(&ns8, unit_vector(4, 0), None, 1, None, None)
         .await
         .expect_err("query dim=4 vector against dim=8 namespace must fail");
     let msg = format!("{err}");
@@ -196,7 +196,7 @@ async fn first_upsert_infers_dim_and_validates_remaining_rows() {
         .expect_err("mixed-width upsert must fail");
     let msg = format!("{err}");
     assert!(
-        msg.contains("vector length 6, expected 4"),
+        msg.contains("single dimension 6, expected 4") || msg.contains("vector length 6, expected 4"),
         "error should cite the mismatch: {msg}"
     );
 }
