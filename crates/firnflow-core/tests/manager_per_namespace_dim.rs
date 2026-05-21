@@ -196,7 +196,8 @@ async fn first_upsert_infers_dim_and_validates_remaining_rows() {
         .expect_err("mixed-width upsert must fail");
     let msg = format!("{err}");
     assert!(
-        msg.contains("single dimension 6, expected 4") || msg.contains("vector length 6, expected 4"),
+        msg.contains("single dimension 6, expected 4")
+            || msg.contains("vector length 6, expected 4"),
         "error should cite the mismatch: {msg}"
     );
 }
