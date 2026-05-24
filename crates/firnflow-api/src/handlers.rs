@@ -58,10 +58,32 @@ pub struct WarmupResponse {
 }
 
 /// One row in an upsert request.
+///
+/// The payload field used depends on the namespace's vector kind:
+/// - **Single-vector namespaces**: set [`vector`](Self::vector) to
+///   a list of floats of length `dim`.
+/// - **Multivector namespaces**: set [`vectors`](Self::vectors) to
+///   a non-empty list of equal-length inner vectors.
+///
+/// At most one of the two fields may be populated; setting both
+/// returns 400 with a per-row diagnostic. The first row of the
+/// first upsert into a fresh namespace fixes the namespace's kind
+/// for its lifetime — subsequent payloads in the wrong shape are
+/// rejected at the API boundary.
 #[derive(Debug, Deserialize)]
 pub struct UpsertRow {
+    /// Stable row identifier.
     pub id: u64,
+    /// Single-vector payload. Length must match the namespace's
+    /// dimension. Default empty for multivector rows.
+    #[serde(default)]
     pub vector: Vec<f32>,
+    /// Multivector payload. Each inner vector must have the
+    /// namespace's inner sub-vector dimension; the outer list
+    /// length is the per-row sub-vector count and may vary between
+    /// rows. `None` for single-vector rows.
+    #[serde(default)]
+    pub vectors: Option<Vec<Vec<f32>>>,
     /// Optional text payload for full-text search.
     #[serde(default)]
     pub text: Option<String>,
@@ -100,6 +122,7 @@ pub async fn upsert(
         .map(|r| CoreUpsertRow {
             id: r.id,
             vector: r.vector,
+            vectors: r.vectors,
             text: r.text,
         })
         .collect();

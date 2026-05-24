@@ -104,6 +104,7 @@ async fn service_cache_aside_invalidates_on_upsert() {
     let ns = NamespaceId::new(unique_namespace("cache-aside")).unwrap();
     let req = QueryRequest {
         vector: unit_vector(0),
+        vectors: None,
         k: 10,
         nprobes: None,
         text: None,

@@ -82,7 +82,7 @@ async fn upsert_then_query_returns_nearest_neighbor() {
     // Query with the exact stored vector for id=1. It must come back
     // as the top hit with ~zero distance.
     let results = manager
-        .query(&ns, unit_vector(0), 3, None, None)
+        .query(&ns, unit_vector(0), None, 3, None, None)
         .await
         .expect("query");
 
@@ -128,5 +128,8 @@ async fn upsert_validates_vector_dimension() {
         .await
         .expect_err("upsert with wrong vector width must fail");
     let msg = format!("{err}");
-    assert!(msg.contains("vector length"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("single dimension") || msg.contains("vector length"),
+        "unexpected error: {msg}"
+    );
 }

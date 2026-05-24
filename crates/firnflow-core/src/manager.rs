@@ -36,9 +36,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow_array::builder::{FixedSizeListBuilder, Float32Builder, StringBuilder};
+use arrow_array::builder::{FixedSizeListBuilder, Float32Builder, ListBuilder, StringBuilder};
 use arrow_array::{
-    Array, ArrayRef, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator,
+    Array, ArrayRef, FixedSizeListArray, Float32Array, ListArray, RecordBatch, RecordBatchIterator,
     RecordBatchReader, StringArray, TimestampMicrosecondArray, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -60,6 +60,7 @@ use crate::metrics::CoreMetrics;
 use crate::query::DEFAULT_NPROBES;
 use crate::result::{ListOrder, ListPage, ListRow};
 use crate::storage_root::Scheme;
+use crate::vector::VectorKind;
 use crate::{FirnflowError, NamespaceId, QueryResult, QueryResultSet, StorageRoot};
 
 const TABLE_NAME: &str = "data";
@@ -81,22 +82,45 @@ pub const LIST_MAX_LIMIT: usize = 500;
 const SCALAR_INDEX_COLUMNS: &[&str] = &[INGESTED_AT_COLUMN];
 
 /// Per-namespace schema facts cached after the first table open.
-/// Both the resolved vector dimension and whether the table
-/// carries the `_ingested_at` system column come from the same
-/// schema read and are stored together.
+/// The resolved vector dimension, the kind of vector representation
+/// (single vs multivector), and whether the table carries the
+/// `_ingested_at` system column all come from the same schema read
+/// and are stored together.
 #[derive(Debug, Clone, Copy)]
 struct NamespaceSchemaInfo {
+    /// For [`VectorKind::Single`] this is the vector dimension. For
+    /// [`VectorKind::Multivector`] this is the inner sub-vector
+    /// dimension (each sub-vector is fixed at this width).
     dim: usize,
+    kind: VectorKind,
     has_ingested_at: bool,
 }
 
 /// A single row for upsert into a namespace.
+///
+/// The payload shape determines which kind of namespace the row is
+/// intended for:
+/// - **Single-vector**: set [`vector`](Self::vector) to a slice of
+///   length `dim`, leave [`vectors`](Self::vectors) as `None`.
+/// - **Multivector**: set [`vectors`](Self::vectors) to a non-empty
+///   list of equal-length inner vectors, leave
+///   [`vector`](Self::vector) empty.
+///
+/// At most one of the two fields may be populated; setting both
+/// returns 400 at the API boundary.
 #[derive(Debug, Clone)]
 pub struct UpsertRow {
     /// Stable row identifier.
     pub id: u64,
-    /// The vector — length must match the namespace's dimension.
+    /// The single-vector payload. Length must match the namespace's
+    /// dimension. Empty means "no single vector" — used when this
+    /// row carries a multivector payload instead.
     pub vector: Vec<f32>,
+    /// The multivector payload. Each inner vector must have the
+    /// namespace's inner sub-vector dimension; the outer list length
+    /// is the per-row sub-vector count and may vary between rows.
+    /// `None` means "no multivector".
+    pub vectors: Option<Vec<Vec<f32>>>,
     /// Optional text payload for BM25 full-text search.
     pub text: Option<String>,
 }
@@ -106,6 +130,7 @@ impl From<(u64, Vec<f32>)> for UpsertRow {
         Self {
             id,
             vector,
+            vectors: None,
             text: None,
         }
     }
@@ -192,11 +217,19 @@ impl NamespaceManager {
         &self.storage_root
     }
 
-    /// Resolved vector dimension for a namespace, if known. Returns
-    /// `None` for namespaces the manager has not yet interacted
-    /// with.
+    /// Resolved vector dimension for a namespace, if known. For
+    /// multivector namespaces this is the inner sub-vector
+    /// dimension. Returns `None` for namespaces the manager has not
+    /// yet interacted with.
     pub fn dim_for(&self, ns: &NamespaceId) -> Option<usize> {
         self.schema_info.get(ns).map(|r| r.dim)
+    }
+
+    /// Vector representation kind for a namespace, if known.
+    /// Returns `None` for namespaces the manager has not yet
+    /// interacted with.
+    pub fn kind_for(&self, ns: &NamespaceId) -> Option<VectorKind> {
+        self.schema_info.get(ns).map(|r| r.kind)
     }
 
     /// Whether the namespace's Lance table carries the
@@ -230,21 +263,31 @@ impl NamespaceManager {
 
     /// Build the Arrow schema for a namespace's Lance table.
     ///
+    /// The `vector` column type depends on `kind`:
+    /// - [`VectorKind::Single`]: `FixedSizeList<Float32, dim>` — one
+    ///   dense vector per row.
+    /// - [`VectorKind::Multivector`]:
+    ///   `List<FixedSizeList<Float32, dim>>` — a variable-length bag
+    ///   of fixed-dimension sub-vectors per row. Lance dispatches the
+    ///   late-interaction (MaxSim) scoring path automatically when it
+    ///   sees this column shape.
+    ///
     /// `with_ingested_at` controls whether the trailing
     /// `_ingested_at` system column is included. Fresh namespaces
     /// always use `true`; appends into pre-existing tables pass
     /// whatever the live table schema reports so the batch matches.
-    fn schema_for_dim(dim: usize, with_ingested_at: bool) -> Arc<Schema> {
+    fn schema_for_kind(kind: VectorKind, dim: usize, with_ingested_at: bool) -> Arc<Schema> {
+        let inner_item = Arc::new(Field::new("item", DataType::Float32, true));
+        let vector_type = match kind {
+            VectorKind::Single => DataType::FixedSizeList(inner_item, dim as i32),
+            VectorKind::Multivector => {
+                let inner_fsl = DataType::FixedSizeList(inner_item, dim as i32);
+                DataType::List(Arc::new(Field::new("item", inner_fsl, true)))
+            }
+        };
         let mut fields = vec![
             Field::new("id", DataType::UInt64, false),
-            Field::new(
-                "vector",
-                DataType::FixedSizeList(
-                    Arc::new(Field::new("item", DataType::Float32, true)),
-                    dim as i32,
-                ),
-                false,
-            ),
+            Field::new("vector", vector_type, false),
             Field::new("text", DataType::Utf8, true),
         ];
         if with_ingested_at {
@@ -294,11 +337,9 @@ impl NamespaceManager {
     /// handle — removing the old "new connection per call" cost.
     ///
     /// On a miss the table is opened; if it does not yet exist a
-    /// fresh one is created with the `dim`-shaped schema. The
+    /// fresh one is created with the `kind`-/`dim`-shaped schema. The
     /// resulting handle is cached in `self.handles` so the next
     /// caller hits the fast path.
-    /// Return a cached `lancedb::Table` for `ns`, opening (and if
-    /// necessary, creating) one on a cache miss.
     ///
     /// When the table must be created, it is built with the current
     /// schema (including `_ingested_at`). If the table already
@@ -306,6 +347,7 @@ impl NamespaceManager {
     async fn get_or_open_table(
         &self,
         ns: &NamespaceId,
+        kind: VectorKind,
         dim: usize,
     ) -> Result<lancedb::Table, FirnflowError> {
         if let Some(entry) = self.handles.get(ns) {
@@ -318,8 +360,8 @@ impl NamespaceManager {
             Err(_) => {
                 // Fresh namespace: always create with the current
                 // schema, which includes `_ingested_at`.
-                let schema = Self::schema_for_dim(dim, true);
-                let empty = rows_to_batch(&schema, dim, Vec::new(), true)?;
+                let schema = Self::schema_for_kind(kind, dim, true);
+                let empty = rows_to_batch(&schema, kind, dim, Vec::new(), true)?;
                 let reader: Box<dyn RecordBatchReader + Send> =
                     Box::new(RecordBatchIterator::new(vec![Ok(empty)], schema));
                 conn.create_table(TABLE_NAME, reader)
@@ -381,11 +423,13 @@ impl NamespaceManager {
 
     /// Append rows to the namespace's table.
     ///
-    /// On a fresh namespace the dimension is inferred from the first
-    /// row's vector length. All subsequent rows in the request are
-    /// validated against it. On an existing namespace the dimension
-    /// is read from the Lance table schema, and every row must
-    /// match.
+    /// On a fresh namespace the vector kind and dimension are
+    /// inferred from the first row's payload (a non-empty `vector`
+    /// field means [`VectorKind::Single`]; a non-empty `vectors`
+    /// field means [`VectorKind::Multivector`]). All subsequent rows
+    /// in the request are validated against the inferred shape. On
+    /// an existing namespace the kind and dimension are read from
+    /// the Lance table schema; every row must match.
     pub async fn upsert(
         &self,
         ns: &NamespaceId,
@@ -402,33 +446,25 @@ impl NamespaceManager {
         let info = match self.resolve_schema_info(ns).await? {
             Some(info) => info,
             None => {
-                let dim = rows[0].vector.len();
-                if dim == 0 {
-                    return Err(FirnflowError::InvalidRequest(
-                        "row id 0: vector is empty".into(),
-                    ));
-                }
+                let (kind, dim) = inspect_row_payload(&rows[0])?;
                 NamespaceSchemaInfo {
                     dim,
+                    kind,
                     has_ingested_at: true,
                 }
             }
         };
 
+        // Validate every row against the namespace's resolved kind
+        // and dim. Mixed-shape requests fail at the API boundary
+        // with a precise per-row message.
         for row in &rows {
-            if row.vector.len() != info.dim {
-                return Err(FirnflowError::InvalidRequest(format!(
-                    "row id {}: vector length {}, expected {}",
-                    row.id,
-                    row.vector.len(),
-                    info.dim,
-                )));
-            }
+            validate_row_against(row, info.kind, info.dim)?;
         }
 
-        let tbl = self.get_or_open_table(ns, info.dim).await?;
-        let schema = Self::schema_for_dim(info.dim, info.has_ingested_at);
-        let batch = rows_to_batch(&schema, info.dim, rows, info.has_ingested_at)?;
+        let tbl = self.get_or_open_table(ns, info.kind, info.dim).await?;
+        let schema = Self::schema_for_kind(info.kind, info.dim, info.has_ingested_at);
+        let batch = rows_to_batch(&schema, info.kind, info.dim, rows, info.has_ingested_at)?;
         let reader: Box<dyn RecordBatchReader + Send> =
             Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
         tbl.add(reader)
@@ -556,15 +592,35 @@ impl NamespaceManager {
         Ok(Arc::new(store))
     }
 
-    /// Run a search query. Supports three modes:
+    /// Run a search query.
     ///
-    /// - **Vector-only** (`vector` non-empty, `text` is `None`):
-    ///   nearest-neighbour search via `nearest_to`.
-    /// - **FTS-only** (`vector` empty, `text` is `Some`): BM25
-    ///   full-text search via `full_text_search`.
-    /// - **Hybrid** (`vector` non-empty, `text` is `Some`): combined
+    /// The vector payload uses one of two fields, matching the
+    /// namespace's [`VectorKind`]:
+    ///
+    /// - `vector: Vec<f32>` — single-vector namespaces. Length must
+    ///   match the namespace's dimension.
+    /// - `vectors: Option<Vec<Vec<f32>>>` — multivector namespaces.
+    ///   Each inner vector must match the namespace's inner
+    ///   sub-vector dimension. Lance answers multivector queries
+    ///   via the IVF_PQ index when one exists; without an index
+    ///   it brute-force scans every row, which is fine for tiny
+    ///   development corpora but impractical at scale (same
+    ///   trade-off as single-vector queries).
+    ///
+    /// Supported query modes:
+    ///
+    /// - **Vector-only**: one of `vector` or `vectors` set, `text`
+    ///   is `None`. Nearest-neighbour search via `nearest_to`
+    ///   (single) or `nearest_to` + `add_query_vector` (multi).
+    /// - **FTS-only**: both vector fields empty, `text` is `Some`.
+    ///   BM25 full-text search via `full_text_search`.
+    /// - **Hybrid**: a vector field set, `text` is `Some`. Combined
     ///   vector + FTS via Reciprocal Rank Fusion (lancedb handles
-    ///   the fusion internally when both are set on a VectorQuery).
+    ///   the fusion internally when both are set on a `VectorQuery`).
+    ///
+    /// Setting both `vector` and `vectors` returns 400. A payload
+    /// whose shape does not match the namespace's kind returns 400
+    /// with the expected shape named in the error.
     ///
     /// `nprobes` controls how many IVF partitions are searched for
     /// vector queries. Defaults to [`DEFAULT_NPROBES`] (20).
@@ -572,12 +628,13 @@ impl NamespaceManager {
         &self,
         ns: &NamespaceId,
         vector: Vec<f32>,
+        vectors: Option<Vec<Vec<f32>>>,
         k: usize,
         nprobes: Option<usize>,
         text: Option<String>,
     ) -> Result<QueryResultSet, FirnflowError> {
-        let dim = match self.resolve_schema_info(ns).await? {
-            Some(info) => info.dim,
+        let info = match self.resolve_schema_info(ns).await? {
+            Some(info) => info,
             None => {
                 return Ok(QueryResultSet {
                     query_id: String::new(),
@@ -586,34 +643,111 @@ impl NamespaceManager {
             }
         };
 
-        let has_vector = !vector.is_empty();
-        let has_text = text.is_some();
-
-        if !has_vector && !has_text {
+        if !vector.is_empty() && vectors.is_some() {
             return Err(FirnflowError::InvalidRequest(
-                "query must have at least a vector or a text field".into(),
+                "query may set at most one of `vector` or `vectors`".into(),
             ));
         }
 
-        if has_vector && vector.len() != dim {
-            return Err(FirnflowError::InvalidRequest(format!(
-                "query vector length {}, expected {dim}",
-                vector.len(),
-            )));
+        let has_text = text.is_some();
+        // Resolve the query payload into one of three shapes:
+        //   None              → FTS-only
+        //   Single(Vec<f32>)  → single-vector nearest_to
+        //   Multi(Vec<Vec<f32>>) → multivector nearest_to + add_query_vector loop
+        enum QueryShape {
+            Single(Vec<f32>),
+            Multi(Vec<Vec<f32>>),
+        }
+        let shape: Option<QueryShape> = match (
+            !vector.is_empty(),
+            vectors.as_ref().map(|v| !v.is_empty()).unwrap_or(false),
+        ) {
+            (false, false) => None,
+            (true, false) => {
+                if info.kind != VectorKind::Single {
+                    return Err(FirnflowError::InvalidRequest(format!(
+                        "namespace {ns} is multivector, expected `vectors: [[...], ...]` \
+                         but got `vector: [...]`"
+                    )));
+                }
+                if vector.len() != info.dim {
+                    return Err(FirnflowError::InvalidRequest(format!(
+                        "query vector length {}, expected {}",
+                        vector.len(),
+                        info.dim,
+                    )));
+                }
+                Some(QueryShape::Single(vector))
+            }
+            (false, true) => {
+                if info.kind != VectorKind::Multivector {
+                    return Err(FirnflowError::InvalidRequest(format!(
+                        "namespace {ns} is single-vector, expected `vector: [...]` \
+                         but got `vectors: [[...], ...]`"
+                    )));
+                }
+                let sub_vectors = vectors.expect("vectors checked non-empty above");
+                for (idx, sub) in sub_vectors.iter().enumerate() {
+                    if sub.len() != info.dim {
+                        return Err(FirnflowError::InvalidRequest(format!(
+                            "query sub-vector {idx} length {}, expected {}",
+                            sub.len(),
+                            info.dim,
+                        )));
+                    }
+                }
+                Some(QueryShape::Multi(sub_vectors))
+            }
+            (true, true) => unreachable!("guarded by the two-fields check above"),
+        };
+
+        if shape.is_none() && !has_text {
+            return Err(FirnflowError::InvalidRequest(
+                "query must have at least a vector field or a text field".into(),
+            ));
         }
 
         let nprobes = nprobes.unwrap_or(DEFAULT_NPROBES);
-        let tbl = self.get_or_open_table(ns, dim).await?;
+        let tbl = self.get_or_open_table(ns, info.kind, info.dim).await?;
 
-        let stream = if has_vector {
+        let stream = if let Some(shape) = shape {
             // Vector-only or hybrid (lancedb auto-detects hybrid when
-            // both nearest_to and full_text_search are set).
-            let mut vq = tbl
-                .query()
-                .nearest_to(vector)
-                .map_err(|e| FirnflowError::Backend(format!("query.nearest_to: {e}")))?
-                .nprobes(nprobes)
-                .limit(k);
+            // both nearest_to and full_text_search are set). The
+            // shape of the query call depends on the namespace kind:
+            //
+            // - **Single**: pass the dense vector to `nearest_to`.
+            //   lancedb's auto-detection finds the `FixedSizeList`
+            //   vector column from the query length.
+            // - **Multivector**: pass the first sub-vector to
+            //   `nearest_to`, then push each additional sub-vector
+            //   via `add_query_vector`. lancedb 0.27 detects this
+            //   pattern, sees the column is `List<FixedSizeList>`,
+            //   and packs the bag of sub-vectors into a single
+            //   late-interaction (MaxSim) query plan. The auto-
+            //   detection of which column to query against
+            //   only walks top-level `FixedSizeList` columns and
+            //   skips `List<FixedSizeList<...>>`, so multivector
+            //   namespaces must name the column explicitly.
+            let mut vq = match &shape {
+                QueryShape::Single(v) => tbl
+                    .query()
+                    .nearest_to(v.clone())
+                    .map_err(|e| FirnflowError::Backend(format!("query.nearest_to: {e}")))?,
+                QueryShape::Multi(subs) => {
+                    let mut vq = tbl
+                        .query()
+                        .nearest_to(subs[0].clone())
+                        .map_err(|e| FirnflowError::Backend(format!("query.nearest_to: {e}")))?
+                        .column("vector");
+                    for sub in &subs[1..] {
+                        vq = vq.add_query_vector(sub.clone()).map_err(|e| {
+                            FirnflowError::Backend(format!("query.add_query_vector: {e}"))
+                        })?;
+                    }
+                    vq
+                }
+            };
+            vq = vq.nprobes(nprobes).limit(k);
             if let Some(ref t) = text {
                 vq = vq.full_text_search(FullTextSearchQuery::new(t.clone()));
             }
@@ -636,7 +770,7 @@ impl NamespaceManager {
             .await
             .map_err(|e| FirnflowError::Backend(format!("query.collect: {e}")))?;
 
-        let results = batches_to_results(&batches)?;
+        let results = batches_to_results(&batches, info.kind)?;
         Ok(QueryResultSet {
             query_id: String::new(),
             results,
@@ -659,19 +793,26 @@ impl NamespaceManager {
         num_partitions: Option<u32>,
         num_sub_vectors: Option<u32>,
     ) -> Result<(), FirnflowError> {
-        let dim = self
-            .resolve_schema_info(ns)
-            .await?
-            .ok_or_else(|| {
-                FirnflowError::InvalidRequest(format!(
-                    "cannot index namespace {ns}: no data has been upserted yet"
-                ))
-            })?
-            .dim;
+        let info = self.resolve_schema_info(ns).await?.ok_or_else(|| {
+            FirnflowError::InvalidRequest(format!(
+                "cannot index namespace {ns}: no data has been upserted yet"
+            ))
+        })?;
 
-        let tbl = self.get_or_open_table(ns, dim).await?;
+        let tbl = self.get_or_open_table(ns, info.kind, info.dim).await?;
 
-        let mut builder = IvfPqIndexBuilder::default().distance_type(DistanceType::L2);
+        // Single-vector namespaces use the historical L2 default;
+        // multivector namespaces use cosine — Lance's
+        // late-interaction index only supports cosine. The API
+        // surface does not expose a metric override on
+        // `IndexRequest`, so this is a defaulting choice keyed on
+        // the namespace's vector kind, not an override of any
+        // caller input.
+        let metric = match info.kind {
+            VectorKind::Single => DistanceType::L2,
+            VectorKind::Multivector => DistanceType::Cosine,
+        };
+        let mut builder = IvfPqIndexBuilder::default().distance_type(metric);
         if let Some(n) = num_partitions {
             builder = builder.num_partitions(n);
         }
@@ -696,17 +837,13 @@ impl NamespaceManager {
     /// column. Requires that at least some rows have been upserted
     /// with non-null `text` values.
     pub async fn create_fts_index(&self, ns: &NamespaceId) -> Result<(), FirnflowError> {
-        let dim = self
-            .resolve_schema_info(ns)
-            .await?
-            .ok_or_else(|| {
-                FirnflowError::InvalidRequest(format!(
-                    "cannot create FTS index on namespace {ns}: no data has been upserted yet"
-                ))
-            })?
-            .dim;
+        let info = self.resolve_schema_info(ns).await?.ok_or_else(|| {
+            FirnflowError::InvalidRequest(format!(
+                "cannot create FTS index on namespace {ns}: no data has been upserted yet"
+            ))
+        })?;
 
-        let tbl = self.get_or_open_table(ns, dim).await?;
+        let tbl = self.get_or_open_table(ns, info.kind, info.dim).await?;
         tbl.create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
             .execute()
             .await
@@ -759,7 +896,7 @@ impl NamespaceManager {
             )));
         }
 
-        let tbl = self.get_or_open_table(ns, info.dim).await?;
+        let tbl = self.get_or_open_table(ns, info.kind, info.dim).await?;
         tbl.create_index(&[column], Index::BTree(BTreeIndexBuilder::default()))
             .execute()
             .await
@@ -785,17 +922,13 @@ impl NamespaceManager {
     /// Like `create_index`, this is a potentially expensive
     /// operation and the caller should run it in a background task.
     pub async fn compact(&self, ns: &NamespaceId) -> Result<CompactResult, FirnflowError> {
-        let dim = self
-            .resolve_schema_info(ns)
-            .await?
-            .ok_or_else(|| {
-                FirnflowError::InvalidRequest(format!(
-                    "cannot compact namespace {ns}: no data has been upserted yet"
-                ))
-            })?
-            .dim;
+        let info = self.resolve_schema_info(ns).await?.ok_or_else(|| {
+            FirnflowError::InvalidRequest(format!(
+                "cannot compact namespace {ns}: no data has been upserted yet"
+            ))
+        })?;
 
-        let tbl = self.get_or_open_table(ns, dim).await?;
+        let tbl = self.get_or_open_table(ns, info.kind, info.dim).await?;
         let stats = tbl
             .optimize(OptimizeAction::default())
             .await
@@ -872,7 +1005,7 @@ impl NamespaceManager {
             )));
         }
 
-        let tbl = self.get_or_open_table(ns, info.dim).await?;
+        let tbl = self.get_or_open_table(ns, info.kind, info.dim).await?;
         let dataset_wrapper = tbl
             .dataset()
             .ok_or_else(|| FirnflowError::Backend("list requires a native lance table".into()))?;
@@ -925,7 +1058,7 @@ impl NamespaceManager {
             .await
             .map_err(|e| FirnflowError::Backend(format!("scan.collect: {e}")))?;
 
-        let mut rows = batches_to_list_rows(&batches)?;
+        let mut rows = batches_to_list_rows(&batches, info.kind)?;
 
         let next_cursor = if rows.len() > limit {
             rows.truncate(limit);
@@ -973,11 +1106,17 @@ pub struct CompactResult {
     pub fragments_added: usize,
 }
 
-/// Read the schema facts (vector dimension, `_ingested_at` presence)
-/// from a Lance table in one pass. The dimension comes from the
-/// `FixedSizeList.list_size` of the `vector` column; the flag is set
-/// when a column named `_ingested_at` with a `Timestamp(Microsecond)`
-/// type is present.
+/// Read the schema facts (vector dimension, kind, `_ingested_at`
+/// presence) from a Lance table in one pass.
+///
+/// The vector column type drives the kind:
+/// - `FixedSizeList<Float32, dim>` → [`VectorKind::Single`]; `dim`
+///   is the list size.
+/// - `List<FixedSizeList<Float32, dim>>` → [`VectorKind::Multivector`];
+///   `dim` is the inner sub-vector list size.
+///
+/// The `_ingested_at` flag is set when a column of that name with a
+/// `Timestamp(Microsecond)` type is present.
 async fn read_schema_info_from_table(
     tbl: &lancedb::Table,
 ) -> Result<NamespaceSchemaInfo, FirnflowError> {
@@ -985,15 +1124,21 @@ async fn read_schema_info_from_table(
         .schema()
         .await
         .map_err(|e| FirnflowError::Backend(format!("read schema: {e}")))?;
-    let mut dim: Option<usize> = None;
+    let mut dim_kind: Option<(usize, VectorKind)> = None;
     let mut has_ingested_at = false;
     for field in schema.fields() {
         match field.name().as_str() {
-            "vector" => {
-                if let DataType::FixedSizeList(_, size) = field.data_type() {
-                    dim = Some(*size as usize);
+            "vector" => match field.data_type() {
+                DataType::FixedSizeList(_, size) => {
+                    dim_kind = Some((*size as usize, VectorKind::Single));
                 }
-            }
+                DataType::List(inner) => {
+                    if let DataType::FixedSizeList(_, size) = inner.data_type() {
+                        dim_kind = Some((*size as usize, VectorKind::Multivector));
+                    }
+                }
+                _ => {}
+            },
             INGESTED_AT_COLUMN => {
                 if matches!(
                     field.data_type(),
@@ -1005,11 +1150,14 @@ async fn read_schema_info_from_table(
             _ => {}
         }
     }
-    let dim = dim.ok_or_else(|| {
-        FirnflowError::Backend("table schema has no FixedSizeList 'vector' column".into())
+    let (dim, kind) = dim_kind.ok_or_else(|| {
+        FirnflowError::Backend(
+            "table schema 'vector' column is neither FixedSizeList nor List<FixedSizeList>".into(),
+        )
     })?;
     Ok(NamespaceSchemaInfo {
         dim,
+        kind,
         has_ingested_at,
     })
 }
@@ -1024,8 +1172,89 @@ fn current_micros() -> i64 {
         .unwrap_or(0)
 }
 
+/// Inspect a row's vector payload and report the kind + dimension
+/// it implies. Used during fresh-namespace inference: the first row
+/// of the first upsert determines the namespace's kind for the rest
+/// of its life.
+///
+/// Returns [`FirnflowError::InvalidRequest`] if the row is missing
+/// both vector fields, has both fields populated, has an empty
+/// inner-vector list on a multivector payload, or has mixed
+/// sub-vector dimensions within a multivector payload.
+fn inspect_row_payload(row: &UpsertRow) -> Result<(VectorKind, usize), FirnflowError> {
+    let single_set = !row.vector.is_empty();
+    let multi_set = row.vectors.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+    match (single_set, multi_set) {
+        (true, true) => Err(FirnflowError::InvalidRequest(format!(
+            "row id {}: set exactly one of `vector` or `vectors`, not both",
+            row.id
+        ))),
+        (false, false) => Err(FirnflowError::InvalidRequest(format!(
+            "row id {}: missing vector payload (set `vector` for single-vector \
+             namespaces or `vectors` for multivector namespaces)",
+            row.id
+        ))),
+        (true, false) => Ok((VectorKind::Single, row.vector.len())),
+        (false, true) => {
+            let multi = row.vectors.as_ref().expect("checked non-empty above");
+            let dim = multi[0].len();
+            if dim == 0 {
+                return Err(FirnflowError::InvalidRequest(format!(
+                    "row id {}: multivector sub-vector 0 is empty",
+                    row.id
+                )));
+            }
+            for (idx, sub) in multi.iter().enumerate() {
+                if sub.len() != dim {
+                    return Err(FirnflowError::InvalidRequest(format!(
+                        "row id {}: multivector sub-vector {idx} length {}, \
+                         expected {dim} (all sub-vectors in a row must share a dim)",
+                        row.id,
+                        sub.len(),
+                    )));
+                }
+            }
+            Ok((VectorKind::Multivector, dim))
+        }
+    }
+}
+
+/// Validate a row's payload against the namespace's resolved kind
+/// and dimension. The error messages echo the expected payload
+/// shape so a caller hitting the wrong namespace gets a clear
+/// diagnostic.
+fn validate_row_against(
+    row: &UpsertRow,
+    kind: VectorKind,
+    dim: usize,
+) -> Result<(), FirnflowError> {
+    let (row_kind, row_dim) = inspect_row_payload(row)?;
+    if row_kind != kind {
+        let (expected, got) = match kind {
+            VectorKind::Single => ("`vector: [...]`", "`vectors: [[...], ...]`"),
+            VectorKind::Multivector => ("`vectors: [[...], ...]`", "`vector: [...]`"),
+        };
+        return Err(FirnflowError::InvalidRequest(format!(
+            "row id {}: namespace kind is {}, expected {expected} but got {got}",
+            row.id,
+            kind.as_label(),
+        )));
+    }
+    if row_dim != dim {
+        return Err(FirnflowError::InvalidRequest(format!(
+            "row id {}: {} dimension {}, expected {}",
+            row.id,
+            kind.as_label(),
+            row_dim,
+            dim,
+        )));
+    }
+    Ok(())
+}
+
 fn rows_to_batch(
     schema: &Arc<Schema>,
+    kind: VectorKind,
     dim: usize,
     rows: Vec<UpsertRow>,
     include_ingested_at: bool,
@@ -1033,15 +1262,40 @@ fn rows_to_batch(
     let n = rows.len();
     let ids = UInt64Array::from_iter_values(rows.iter().map(|r| r.id));
 
-    let values_builder = Float32Builder::with_capacity(n * dim);
-    let mut list_builder = FixedSizeListBuilder::new(values_builder, dim as i32);
-    for row in &rows {
-        for &v in &row.vector {
-            list_builder.values().append_value(v);
+    let vectors: ArrayRef = match kind {
+        VectorKind::Single => {
+            let values_builder = Float32Builder::with_capacity(n * dim);
+            let mut list_builder = FixedSizeListBuilder::new(values_builder, dim as i32);
+            for row in &rows {
+                for &v in &row.vector {
+                    list_builder.values().append_value(v);
+                }
+                list_builder.append(true);
+            }
+            Arc::new(list_builder.finish())
         }
-        list_builder.append(true);
-    }
-    let vectors = list_builder.finish();
+        VectorKind::Multivector => {
+            let values_builder = Float32Builder::new();
+            let inner_builder = FixedSizeListBuilder::new(values_builder, dim as i32);
+            let mut outer = ListBuilder::new(inner_builder);
+            for row in &rows {
+                let multi = row.vectors.as_ref().ok_or_else(|| {
+                    FirnflowError::InvalidRequest(format!(
+                        "row id {}: multivector namespace requires `vectors` payload",
+                        row.id
+                    ))
+                })?;
+                for sub in multi {
+                    for &v in sub {
+                        outer.values().values().append_value(v);
+                    }
+                    outer.values().append(true);
+                }
+                outer.append(true);
+            }
+            Arc::new(outer.finish())
+        }
+    };
 
     let mut text_builder = StringBuilder::with_capacity(n, n * 64);
     for row in &rows {
@@ -1054,7 +1308,7 @@ fn rows_to_batch(
 
     let mut columns: Vec<ArrayRef> = vec![
         Arc::new(ids) as ArrayRef,
-        Arc::new(vectors) as ArrayRef,
+        vectors,
         Arc::new(texts) as ArrayRef,
     ];
 
@@ -1088,7 +1342,63 @@ fn find_score_column(batch: &RecordBatch) -> Option<&Float32Array> {
     None
 }
 
-fn batches_to_list_rows(batches: &[RecordBatch]) -> Result<Vec<ListRow>, FirnflowError> {
+/// Decode the per-row vector payload from a single batch row.
+///
+/// For [`VectorKind::Single`] this returns the row's full vector as
+/// `Vec<f32>`. For [`VectorKind::Multivector`] it returns an empty
+/// `Vec<f32>` — echoing the full bag of sub-vectors back through
+/// every list/query response would balloon the payload by orders of
+/// magnitude (a ColPali row holds ~1030 × 128 floats), so the v1
+/// contract is "the bag is what you queried with, the server does
+/// not echo it back". Callers that need the bag back can refetch by
+/// id from a future endpoint.
+fn extract_row_vector(
+    batch: &RecordBatch,
+    row: usize,
+    kind: VectorKind,
+    context: &str,
+) -> Result<Vec<f32>, FirnflowError> {
+    match kind {
+        VectorKind::Single => {
+            let vectors = batch
+                .column_by_name("vector")
+                .ok_or_else(|| FirnflowError::Backend(format!("{context}: missing vector column")))?
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .ok_or_else(|| {
+                    FirnflowError::Backend(format!("{context}: vector not FixedSizeList"))
+                })?;
+            let vector_arr = vectors.value(row);
+            let vec_f32 = vector_arr
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or_else(|| {
+                    FirnflowError::Backend(format!("{context}: vector inner not Float32"))
+                })?;
+            Ok((0..vec_f32.len()).map(|i| vec_f32.value(i)).collect())
+        }
+        VectorKind::Multivector => {
+            // Confirm the column shape but do not materialise the
+            // bag — the response intentionally omits it.
+            let _ = batch
+                .column_by_name("vector")
+                .ok_or_else(|| FirnflowError::Backend(format!("{context}: missing vector column")))?
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(|| {
+                    FirnflowError::Backend(format!(
+                        "{context}: multivector column is not a List<FixedSizeList<Float32>>"
+                    ))
+                })?;
+            Ok(Vec::new())
+        }
+    }
+}
+
+fn batches_to_list_rows(
+    batches: &[RecordBatch],
+    kind: VectorKind,
+) -> Result<Vec<ListRow>, FirnflowError> {
     let mut out = Vec::new();
     for batch in batches {
         let ids = batch
@@ -1097,12 +1407,6 @@ fn batches_to_list_rows(batches: &[RecordBatch]) -> Result<Vec<ListRow>, Firnflo
             .as_any()
             .downcast_ref::<UInt64Array>()
             .ok_or_else(|| FirnflowError::Backend("list: id not UInt64".into()))?;
-        let vectors = batch
-            .column_by_name("vector")
-            .ok_or_else(|| FirnflowError::Backend("list: missing vector column".into()))?
-            .as_any()
-            .downcast_ref::<FixedSizeListArray>()
-            .ok_or_else(|| FirnflowError::Backend("list: vector not FixedSizeList".into()))?;
         let texts = batch
             .column_by_name("text")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -1116,12 +1420,7 @@ fn batches_to_list_rows(batches: &[RecordBatch]) -> Result<Vec<ListRow>, Firnflo
             })?;
 
         for row in 0..batch.num_rows() {
-            let vector_arr = vectors.value(row);
-            let vec_f32 = vector_arr
-                .as_any()
-                .downcast_ref::<Float32Array>()
-                .ok_or_else(|| FirnflowError::Backend("list: vector inner not Float32".into()))?;
-            let vector: Vec<f32> = (0..vec_f32.len()).map(|i| vec_f32.value(i)).collect();
+            let vector = extract_row_vector(batch, row, kind, "list")?;
             let text = texts.and_then(|t| {
                 if t.is_null(row) {
                     None
@@ -1140,7 +1439,10 @@ fn batches_to_list_rows(batches: &[RecordBatch]) -> Result<Vec<ListRow>, Firnflo
     Ok(out)
 }
 
-fn batches_to_results(batches: &[RecordBatch]) -> Result<Vec<QueryResult>, FirnflowError> {
+fn batches_to_results(
+    batches: &[RecordBatch],
+    kind: VectorKind,
+) -> Result<Vec<QueryResult>, FirnflowError> {
     let mut out = Vec::new();
     for batch in batches {
         let ids = batch
@@ -1149,14 +1451,6 @@ fn batches_to_results(batches: &[RecordBatch]) -> Result<Vec<QueryResult>, Firnf
             .as_any()
             .downcast_ref::<UInt64Array>()
             .ok_or_else(|| FirnflowError::Backend("query result: id not UInt64".into()))?;
-        let vectors = batch
-            .column_by_name("vector")
-            .ok_or_else(|| FirnflowError::Backend("query result: missing vector column".into()))?
-            .as_any()
-            .downcast_ref::<FixedSizeListArray>()
-            .ok_or_else(|| {
-                FirnflowError::Backend("query result: vector not FixedSizeList".into())
-            })?;
         let scores = find_score_column(batch).ok_or_else(|| {
             FirnflowError::Backend(
                 "query result: no score column (_distance, _score, or _relevance_score)".into(),
@@ -1170,14 +1464,7 @@ fn batches_to_results(batches: &[RecordBatch]) -> Result<Vec<QueryResult>, Firnf
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
         for row in 0..batch.num_rows() {
-            let vector_arr = vectors.value(row);
-            let vec_f32 = vector_arr
-                .as_any()
-                .downcast_ref::<Float32Array>()
-                .ok_or_else(|| {
-                    FirnflowError::Backend("query result: vector inner not Float32".into())
-                })?;
-            let vector: Vec<f32> = (0..vec_f32.len()).map(|i| vec_f32.value(i)).collect();
+            let vector = extract_row_vector(batch, row, kind, "query result")?;
             let text = texts.and_then(|t| {
                 if t.is_null(row) {
                     None
