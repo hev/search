@@ -20,20 +20,22 @@ license = "Apache-2.0"
 # `gcs` registers the native Google Cloud Storage backend so
 # `lancedb::connect("gs://bucket")` resolves to GoogleCloudStorage
 # rather than failing with "No object store provider found".
-lancedb = { version = "=0.27.2", features = ["aws", "gcs"] }
-lance = "=4.0.0"
+lancedb = { version = "=0.29.0", features = ["aws", "gcs"] }
+lance = "=6.0.0"
 
-# Arrow — pinned to the major that lance 4.0.0 requires (^57).
-arrow-array = "57"
-arrow-schema = "57"
+# Arrow — pinned to the major that lance 6.0.0 requires (^58).
+# lancedb 0.29.0's workspace pins arrow* = "58.0.0" exactly; matching
+# the minor keeps the dependency graph on what upstream tested.
+arrow-array = "58"
+arrow-schema = "58"
 
-# `object_store` — lance-io 4.0.0 requires `^0.12.3`, so we match
-# that minor. Used by the DELETE path in `NamespaceManager` to list
-# and delete the namespace prefix; lance uses it internally for every
-# storage operation. `gcp` enables the native Google Cloud Storage
-# client (OAuth2 / service-account JSON) so the delete path can
-# follow `lancedb` onto a `gs://` bucket without going back through
-# the broken GCS S3-interop layer.
+# `object_store` — lance-io 6.0.0 still takes `^0.12.0`. Used by the
+# DELETE path in `NamespaceManager` to list and delete the namespace
+# prefix; lance uses it internally for every storage operation. `gcp`
+# enables the native Google Cloud Storage client (OAuth2 /
+# service-account JSON) so the delete path can follow `lancedb` onto
+# a `gs://` bucket without going back through the broken GCS
+# S3-interop layer.
 object_store = { version = "0.12", features = ["aws", "gcp"] }
 
 # Hybrid RAM + NVMe cache.
