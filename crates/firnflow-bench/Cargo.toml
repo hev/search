@@ -11,3 +11,8 @@ firnflow-core = { path = "../firnflow-core" }
 tokio.workspace = true
 anyhow.workspace = true
 tempfile = "3"
+# The `index_cache_bench` binary installs a custom `CacheBackend`
+# on a `lancedb::Session`. Both surface types come from lancedb's
+# re-exports; the trait itself lives on `lance-core`.
+lancedb.workspace = true
+lance-core.workspace = true

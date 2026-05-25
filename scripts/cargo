@@ -62,6 +62,19 @@ if [ -z "${FIRNFLOW_STORAGE_URI:-}" ]; then
     )
 fi
 
+# Forward every `FIRNFLOW_BENCH_*` variable set on the host. Bench
+# harnesses (the existing cold-vs-warm runner and the index-cache
+# runner) tune themselves via a growing list of these vars, and
+# enumerating each new one in the docker invocation below would
+# rot fast. The generic pattern keeps the wrapper out of the way
+# of bench iteration.
+BENCH_ENV_ARGS=()
+while IFS= read -r line; do
+    name="${line%%=*}"
+    [ -z "${name}" ] && continue
+    BENCH_ENV_ARGS+=( -e "${name}" )
+done < <(env | grep -E '^FIRNFLOW_BENCH_' || true)
+
 exec docker run --rm --init \
     --network host \
     --user "$(id -u):$(id -g)" \
@@ -75,13 +88,7 @@ exec docker run --rm --init \
     ${FIRNFLOW_S3_SECRET_KEY:+-e FIRNFLOW_S3_SECRET_KEY="$FIRNFLOW_S3_SECRET_KEY"} \
     "${BUCKET_DEFAULT_ARGS[@]}" \
     -e FIRNFLOW_AWS_BUCKET="${FIRNFLOW_AWS_BUCKET:-firnflow-cloudfloe}" \
-    ${FIRNFLOW_BENCH_DIM:+-e FIRNFLOW_BENCH_DIM="$FIRNFLOW_BENCH_DIM"} \
-    ${FIRNFLOW_BENCH_ROWS:+-e FIRNFLOW_BENCH_ROWS="$FIRNFLOW_BENCH_ROWS"} \
-    ${FIRNFLOW_BENCH_QUERIES:+-e FIRNFLOW_BENCH_QUERIES="$FIRNFLOW_BENCH_QUERIES"} \
-    ${FIRNFLOW_BENCH_OUT:+-e FIRNFLOW_BENCH_OUT="$FIRNFLOW_BENCH_OUT"} \
-    ${FIRNFLOW_BENCH_CACHE_RAM_MB:+-e FIRNFLOW_BENCH_CACHE_RAM_MB="$FIRNFLOW_BENCH_CACHE_RAM_MB"} \
-    ${FIRNFLOW_BENCH_CACHE_NVME_MB:+-e FIRNFLOW_BENCH_CACHE_NVME_MB="$FIRNFLOW_BENCH_CACHE_NVME_MB"} \
-    ${FIRNFLOW_BENCH_INDEX_NPROBES:+-e FIRNFLOW_BENCH_INDEX_NPROBES="$FIRNFLOW_BENCH_INDEX_NPROBES"} \
+    "${BENCH_ENV_ARGS[@]}" \
     ${FIRNFLOW_S3_REGION:+-e FIRNFLOW_S3_REGION="$FIRNFLOW_S3_REGION"} \
     ${R2_ENDPOINT:+-e R2_ENDPOINT="$R2_ENDPOINT"} \
     ${R2_ACCESS_KEY:+-e R2_ACCESS_KEY="$R2_ACCESS_KEY"} \

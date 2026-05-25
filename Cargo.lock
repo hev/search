@@ -2567,6 +2567,8 @@ version = "0.7.0"
 dependencies = [
  "anyhow",
  "firnflow-core",
+ "lance-core",
+ "lancedb",
  "tempfile",
  "tokio",
 ]
