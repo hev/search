@@ -31,8 +31,11 @@ use firnflow_core::{NamespaceId, NamespaceManager, StorageRoot, UpsertRow, Vecto
 
 /// Inner sub-vector dim. Small enough to keep the test fast; large
 /// enough that randomly aligned vectors don't accidentally produce
-/// degenerate cosine distances.
-const SUB_DIM: usize = 4;
+/// degenerate cosine distances, and large enough that an IVF_PQ
+/// index built with `num_sub_vectors >= 2` has at least two
+/// dimensions per PQ codebook (one codebook per axis pair is the
+/// minimum PQ training stays meaningful under).
+const SUB_DIM: usize = 8;
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -132,8 +135,8 @@ async fn seed_multivector_namespace(manager: &NamespaceManager, ns: &NamespaceId
     ];
     // 300 filler rows with 1 sub-vector each → 302 sub-vectors total,
     // safely above Lance's 256 PQ training floor. Each filler points
-    // along a single axis cycling through 0..=3; collectively they
-    // contribute mass to every cluster centroid.
+    // along a single axis cycling through every axis in `0..SUB_DIM`;
+    // collectively they contribute mass to every cluster centroid.
     for i in 0..300u64 {
         let axis = (i as usize) % SUB_DIM;
         rows.push(with_id(multi(vec![unit(axis)]), 100 + i));
@@ -152,13 +155,21 @@ async fn upsert_then_query_returns_multivector_hits() {
     );
     let ns = NamespaceId::new(unique_namespace("mv-roundtrip")).unwrap();
 
-    // Seed a corpus large enough to train IVF_PQ. Multivector
-    // queries require an index in lancedb 0.27 — Lance does not
-    // accept multi-sub-vector flat slices on the brute-force scan
-    // path, so the test order is upsert → index → query.
+    // Seed a corpus large enough to train IVF_PQ, then build the
+    // index — the test deliberately exercises the indexed late-
+    // interaction path. The brute-force multivector path also works
+    // but does not cover the PQ code path.
+    //
+    // `num_sub_vectors=2` (not 1): one PQ codebook spanning the
+    // whole sub-vector width collapses the codes on small SUB_DIM
+    // corpora and yields a tied-at-zero `_distance` for any row
+    // sharing a single sub-vector with the query — see #53. The
+    // ranking assertion below relies on PQ separating row 1's
+    // two-sub-vector pattern from the filler rows' single-sub-vector
+    // patterns; that separation needs more than one codebook.
     seed_multivector_namespace(&manager, &ns).await;
     manager
-        .create_index(&ns, Some(4), Some(1))
+        .create_index(&ns, Some(4), Some(2))
         .await
         .expect("index build");
 
