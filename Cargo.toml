@@ -33,6 +33,11 @@ lance-core = "=6.0.0"
 # does not depend on someone else's transitive choice.
 async-trait = "0.1"
 
+# `bytes::Bytes` is the buffer type `lance_core::cache::CacheCodec`
+# deserialises from. Pulled in directly so the foyer-backed
+# `CacheBackend` does not depend on lance re-exporting it.
+bytes = "1"
+
 # Arrow — pinned to the major that lance 6.0.0 requires (^58).
 # lancedb 0.29.0's workspace pins arrow* = "58.0.0" exactly; matching
 # the minor keeps the dependency graph on what upstream tested.

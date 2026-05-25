@@ -2581,6 +2581,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "bincode 2.0.1",
+ "bytes",
  "dashmap",
  "foyer",
  "futures",

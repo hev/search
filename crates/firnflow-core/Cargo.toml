@@ -18,6 +18,7 @@ lancedb.workspace = true
 lance.workspace = true
 lance-core.workspace = true
 async-trait.workspace = true
+bytes = { workspace = true }
 arrow-array.workspace = true
 arrow-schema.workspace = true
 futures.workspace = true
