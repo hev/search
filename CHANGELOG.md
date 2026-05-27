@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `FIRNFLOW_MAX_BODY_BYTES` env var raises the request body limit applied to every JSON endpoint. Defaults to 16 MB, up from axum's 2 MB. The previous default was below the size of a single multivector row at typical late-interaction dimensions (around 300-512 sub-vectors of dimension 128 is roughly 2 MB once JSON-encoded), so any practical batch upsert was failing with 413 before the handler had a chance to run. Single-vector workloads also benefit at larger batch sizes. Operators wanting a tighter ceiling lower it; operators wanting more headroom raise it. Refs #54.
+- Optional `num_bits` field on `POST /ns/{namespace}/index`. Accepted values are `4` and `8`; omitting the field keeps Lance's existing 8-bit default. 4-bit codes halve the per-vector index storage at the cost of some recall, and additionally require `num_sub_vectors` to be even (Lance rejects 4-bit PQ over an odd sub-vector count). Validation runs synchronously before the background index task is spawned, so a bad payload returns 400 instead of a misleading 202 followed by a log-only failure. The same `firnflow_core::validate_ivf_pq_options` helper is also called inside `NamespaceManager::create_index`, so direct callers from `firnflow-bench` and integration tests get the same up-front rejection. Refs #54.
+
+### Changed
+- Default request body limit changed from axum's 2 MB to 16 MB. Existing operators inherit the new default automatically; nothing breaks at the previous limit, larger batches simply succeed now.
+- `NamespaceManager::create_index` and `NamespaceService::create_index` gained a fourth parameter, `num_bits: Option<u32>`. All in-tree call sites pass `None` to preserve today's behaviour.
+
 ## [0.7.0] - 2026-05-24
 
 ### Added

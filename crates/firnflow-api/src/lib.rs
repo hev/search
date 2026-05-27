@@ -16,6 +16,7 @@ mod handlers;
 
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::middleware::from_fn_with_state;
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -50,6 +51,7 @@ pub use state::{build_state, AppState};
 pub fn router(state: AppState) -> Router {
     let auth_state = state.auth_state();
     let metrics = Arc::clone(&state.metrics);
+    let body_limit = state.max_body_bytes;
 
     let public = Router::new().route("/health", get(handlers::health));
 
@@ -113,5 +115,6 @@ pub fn router(state: AppState) -> Router {
         .merge(public)
         .merge(metrics_router)
         .merge(protected)
+        .layer(DefaultBodyLimit::max(body_limit))
         .with_state(state)
 }

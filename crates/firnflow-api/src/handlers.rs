@@ -222,11 +222,24 @@ pub async fn create_index(
         ));
     }
 
+    // Validate PQ tuning options synchronously, before spawning the
+    // background task. The manager performs the same check itself
+    // (so direct callers stay protected), but doing it here as well
+    // means a bad payload returns 400 instead of a misleading 202
+    // followed by a log-only failure.
+    firnflow_core::validate_ivf_pq_options(req.num_bits, req.num_sub_vectors)
+        .map_err(ApiError::Core)?;
+
     let service = Arc::clone(&state.service);
     let ns_owned = ns.clone();
     tokio::spawn(async move {
         if let Err(e) = service
-            .create_index(&ns_owned, req.num_partitions, req.num_sub_vectors)
+            .create_index(
+                &ns_owned,
+                req.num_partitions,
+                req.num_sub_vectors,
+                req.num_bits,
+            )
             .await
         {
             tracing::error!(

@@ -24,7 +24,7 @@ pub use manager::{
 };
 pub use metrics::CoreMetrics;
 pub use namespace::NamespaceId;
-pub use query::{IndexRequest, QueryRequest};
+pub use query::{validate_ivf_pq_options, IndexRequest, QueryRequest};
 pub use result::{ListOrder, ListPage, ListRow, QueryResult, QueryResultSet};
 pub use service::NamespaceService;
 pub use storage_root::{Scheme, StorageRoot};

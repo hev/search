@@ -99,6 +99,7 @@ pub async fn test_state_with_auth(
         metrics,
         auth: Arc::new(auth),
         rate_limit,
+        max_body_bytes: 32 * 1024 * 1024,
     };
     (state, tmp)
 }
@@ -158,6 +159,7 @@ pub async fn test_state_offline_with_auth(
         metrics,
         auth: Arc::new(auth),
         rate_limit,
+        max_body_bytes: 32 * 1024 * 1024,
     };
     (state, tmp)
 }
@@ -172,6 +174,7 @@ pub fn dummy_config() -> AppConfig {
         cache_memory_bytes: 4 * 1024 * 1024,
         cache_nvme_path: std::env::temp_dir(),
         cache_nvme_bytes: 16 * 1024 * 1024,
+        max_body_bytes: 32 * 1024 * 1024,
         storage_options: HashMap::new(),
         api_key: None,
         admin_api_key: None,

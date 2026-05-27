@@ -385,6 +385,7 @@
             <tr><td><code>kind</code></td><td>string</td><td>Yes</td><td>-</td><td>Index type. Only <code>"ivf_pq"</code> is supported.</td></tr>
             <tr><td><code>num_partitions</code></td><td>u32</td><td>No</td><td>sqrt(row_count)</td><td>Number of IVF partitions</td></tr>
             <tr><td><code>num_sub_vectors</code></td><td>u32</td><td>No</td><td>dim / 16</td><td>Number of PQ sub-vectors (must divide dimension evenly)</td></tr>
+            <tr><td><code>num_bits</code></td><td>u32</td><td>No</td><td>8</td><td>PQ codebook bit width. Accepted values: 4 or 8. Setting 4 halves the per-vector index storage cost at the cost of some recall; 4-bit additionally requires <code>num_sub_vectors</code> to be even.</td></tr>
           </tbody>
         </table>
 
