@@ -169,7 +169,7 @@ async fn upsert_then_query_returns_multivector_hits() {
     // patterns; that separation needs more than one codebook.
     seed_multivector_namespace(&manager, &ns).await;
     manager
-        .create_index(&ns, Some(4), Some(2))
+        .create_index(&ns, Some(4), Some(2), None)
         .await
         .expect("index build");
 
@@ -342,7 +342,7 @@ async fn create_index_forces_cosine_on_multivector() {
     // would reject a non-cosine metric at build time with
     // "multivector type supports only cosine distance".
     manager
-        .create_index(&ns, Some(4), Some(1))
+        .create_index(&ns, Some(4), Some(1), None)
         .await
         .expect("multivector index build under forced cosine");
 

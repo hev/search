@@ -792,7 +792,14 @@ impl NamespaceManager {
         ns: &NamespaceId,
         num_partitions: Option<u32>,
         num_sub_vectors: Option<u32>,
+        num_bits: Option<u32>,
     ) -> Result<(), FirnflowError> {
+        // Reject unsupported PQ tuning combinations before any I/O
+        // so direct callers (benches, integration tests) bypassing
+        // the API handler still get a synchronous error rather than
+        // a deferred Lance failure.
+        crate::query::validate_ivf_pq_options(num_bits, num_sub_vectors)?;
+
         let info = self.resolve_schema_info(ns).await?.ok_or_else(|| {
             FirnflowError::InvalidRequest(format!(
                 "cannot index namespace {ns}: no data has been upserted yet"
@@ -818,6 +825,9 @@ impl NamespaceManager {
         }
         if let Some(m) = num_sub_vectors {
             builder = builder.num_sub_vectors(m);
+        }
+        if let Some(b) = num_bits {
+            builder = builder.num_bits(b);
         }
 
         tbl.create_index(&["vector"], Index::IvfPq(builder))

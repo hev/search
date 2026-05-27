@@ -34,6 +34,12 @@ pub struct AppConfig {
     pub cache_nvme_path: PathBuf,
     /// NVMe tier capacity, in bytes.
     pub cache_nvme_bytes: usize,
+    /// Maximum request body size in bytes. Applied as a single
+    /// router-level `DefaultBodyLimit` layer so every JSON endpoint
+    /// inherits the same ceiling. Defaults to 16 MB; operators
+    /// running larger multivector batches raise it via
+    /// `FIRNFLOW_MAX_BODY_BYTES`.
+    pub max_body_bytes: usize,
     /// `object_store`-style options passed straight through to
     /// `NamespaceManager` and, transitively, to lancedb. The exact
     /// keys depend on the resolved scheme: `aws_*` for S3-family
@@ -101,6 +107,7 @@ impl std::fmt::Debug for AppConfig {
             .field("cache_memory_bytes", &self.cache_memory_bytes)
             .field("cache_nvme_path", &self.cache_nvme_path)
             .field("cache_nvme_bytes", &self.cache_nvme_bytes)
+            .field("max_body_bytes", &self.max_body_bytes)
             .field("storage_options", &RedactedOptions(&self.storage_options))
             .field("api_key", &self.api_key)
             .field("admin_api_key", &self.admin_api_key)
@@ -127,6 +134,9 @@ impl AppConfig {
         let cache_nvme_bytes: usize = env_or("FIRNFLOW_CACHE_NVME_BYTES", "268435456")
             .parse()
             .context("FIRNFLOW_CACHE_NVME_BYTES")?;
+        let max_body_bytes: usize = env_or("FIRNFLOW_MAX_BODY_BYTES", "16777216")
+            .parse()
+            .context("FIRNFLOW_MAX_BODY_BYTES")?;
 
         let storage_options = build_storage_options_for(storage_root.scheme());
 
@@ -152,6 +162,7 @@ impl AppConfig {
             cache_memory_bytes,
             cache_nvme_path,
             cache_nvme_bytes,
+            max_body_bytes,
             storage_options,
             api_key,
             admin_api_key,
@@ -432,6 +443,7 @@ mod tests {
             cache_memory_bytes: 0,
             cache_nvme_path: std::env::temp_dir(),
             cache_nvme_bytes: 0,
+            max_body_bytes: 16 * 1024 * 1024,
             storage_options: opts,
             api_key: None,
             admin_api_key: None,
@@ -489,6 +501,7 @@ mod tests {
             cache_memory_bytes: 0,
             cache_nvme_path: std::env::temp_dir(),
             cache_nvme_bytes: 0,
+            max_body_bytes: 16 * 1024 * 1024,
             storage_options: opts,
             api_key: None,
             admin_api_key: None,

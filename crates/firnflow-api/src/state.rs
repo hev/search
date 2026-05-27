@@ -36,6 +36,10 @@ pub struct AppState {
     /// Rate-limit knobs separate from `auth` so the router can
     /// build governor layers without needing to mutate `auth`.
     pub rate_limit: RateLimitSettings,
+    /// Maximum request body size in bytes. The router reads this
+    /// once at build time and installs a single global
+    /// `DefaultBodyLimit` layer; it is not consulted per request.
+    pub max_body_bytes: usize,
 }
 
 impl AppState {
@@ -106,6 +110,7 @@ pub async fn build_state(cfg: &AppConfig) -> anyhow::Result<AppState> {
         metrics,
         auth: Arc::new(auth),
         rate_limit: cfg.rate_limit.clone(),
+        max_body_bytes: cfg.max_body_bytes,
     })
 }
 

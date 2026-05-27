@@ -69,6 +69,11 @@
           <td>Address and port for the HTTP listener. Use <code>127.0.0.1:3000</code> to restrict to localhost.</td>
         </tr>
         <tr>
+          <td><code>FIRNFLOW_MAX_BODY_BYTES</code></td>
+          <td><code>16777216</code> (16 MB)</td>
+          <td>Maximum request body size for every JSON endpoint. Raise this when upserting large batches (multivector workloads in particular hit the ceiling fast, around 2 MB per row at 512 sub-vectors of dimension 128). Lower it to tighten the DoS surface in front of a trusted client.</td>
+        </tr>
+        <tr>
           <td><code>RUST_LOG</code></td>
           <td><code>info</code></td>
           <td>Log level filter. Supports <code>tracing</code> directives like <code>firnflow_api=debug,firnflow_core=trace</code>.</td>
@@ -298,6 +303,7 @@ services:
 FIRNFLOW_STORAGE_URI=s3://prod-firn-vectors
 FIRNFLOW_S3_REGION=eu-west-1
 FIRNFLOW_BIND=0.0.0.0:3000
+FIRNFLOW_MAX_BODY_BYTES=33554432            # 32 MB body limit for larger batches
 FIRNFLOW_CACHE_MEMORY_BYTES=268435456
 FIRNFLOW_CACHE_NVME_PATH=/var/lib/firnflow/cache
 FIRNFLOW_CACHE_NVME_BYTES=10737418240
