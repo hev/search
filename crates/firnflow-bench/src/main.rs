@@ -300,6 +300,7 @@ async fn main() -> anyhow::Result<()> {
             k: 10,
             nprobes: None,
             text: None,
+            semantic_cache: None,
         })
         .collect();
 
@@ -310,6 +311,7 @@ async fn main() -> anyhow::Result<()> {
             k: 10,
             nprobes: Some(cfg.nprobes),
             text: None,
+            semantic_cache: None,
         })
         .collect();
 

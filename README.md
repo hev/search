@@ -249,6 +249,38 @@ The handler returns 400 if the payload shape does not match the namespace's kind
 
 **Encoders that produce vectors in the right shape:** ColBERTv2 (text passages), ColPali (documents, slides, PDFs), ColQwen2 / ColIDEFICS (multimodal — natural images and documents). Firn stays model-agnostic: the caller computes the bag of small vectors and POSTs it.
 
+## Opt-in semantic cache
+
+The exact result cache only helps when the same JSON request repeats verbatim. For workloads where users phrase the same intent in slightly different ways — "holiday photos" vs "photos of my holidays", where the query vectors are very close but not byte-identical — `POST /ns/{ns}/query` accepts an opt-in `semantic_cache` block that sits behind the exact cache and lets a near-duplicate query reuse a previous result.
+
+```bash
+curl -X POST http://localhost:3000/ns/photos/query \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "vector": [0.10, 0.21, 0.29, 0.40],
+       "k": 10,
+       "semantic_cache": {
+         "enabled": true,
+         "min_similarity": 0.995
+       }
+     }'
+```
+
+The read path is:
+
+1. Compute the exact-cache key (which does **not** include the `semantic_cache` block, so toggling the option does not split otherwise-identical entries).
+2. On an exact hit, return the cached bytes — semantic layer is not consulted.
+3. On an exact miss, scan the per-namespace semantic sidecar for a cached query whose vector cosine-similarity is at least `min_similarity` and whose `k` / `nprobes` match. If something clears the bar, return its bytes.
+4. Otherwise run the backend query, populate both layers, and return the fresh result.
+
+**v1 boundaries** (returns 400 otherwise):
+
+- single-vector queries only — `vectors`, `text`, and hybrid shapes are rejected when `semantic_cache.enabled` is true;
+- `min_similarity` must be in `(0.0, 1.0]`. Omitting picks a deliberately strict default of `0.995`;
+- the sidecar is in-memory, single-process, and bounded to 1024 entries per namespace generation. Writes / deletes / compactions drop the namespace's sidecar list together with the exact cache. Index builds do not invalidate either layer.
+
+**Why opt-in.** A semantic hit is an *approximate* result reuse, not proof that Firn searched the corpus for the new query. High vector similarity does not guarantee an identical top-k, especially under strict ranking. Three Prometheus counters — `firnflow_semantic_cache_hits_total`, `firnflow_semantic_cache_misses_total`, and `firnflow_semantic_cache_rejections_total{reason=…}` — make the behaviour visible so operators can decide whether the latency win is worth the approximation for a given workload.
+
 ## Development and Benchmarking
 
 **Firn** uses a containerized toolchain. No local Rust installation is required.

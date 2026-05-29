@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Opt-in semantic cache.** `POST /ns/{ns}/query` now accepts a `semantic_cache: { "enabled": true, "min_similarity": 0.995 }` block. When set, a query that misses the exact result cache will look for a previous query against the same namespace generation whose vector is within `min_similarity` cosine of the incoming one and whose surrounding shape (`k`, `nprobes`) matches; if found, the cached top-k bytes are reused. The default behaviour is unchanged — requests without the field, or with `enabled: false`, only short-circuit on exact-cache hits. v1 only applies to single-vector queries with no text/filters; multivector, FTS, and hybrid queries with the field enabled return 400 with a clear error. The default cosine threshold is 0.995; per-request overrides must lie in `(0.0, 1.0]`.
+- `firnflow_semantic_cache_hits_total{namespace}`, `firnflow_semantic_cache_misses_total{namespace}`, and `firnflow_semantic_cache_rejections_total{namespace, reason}` Prometheus counters expose semantic-layer behaviour. `reason` is one of `unsupported_query_shape` or `empty_index` — bounded set so cardinality stays manageable.
+- `firnflow_core` exports `SemanticCacheRequest`, `validate_semantic_cache_request`, `effective_semantic_threshold`, and `DEFAULT_SEMANTIC_MIN_SIMILARITY` for callers that want to build the request struct directly (the bench harness, custom clients).
+- `crates/firnflow-core/tests/service_semantic_cache.rs` and `crates/firnflow-api/tests/api_semantic_cache.rs` cover the new behaviour at the service and HTTP boundaries: exact-hit short-circuit, near-duplicate hit, opt-out bypass, k mismatch, write invalidation, ineligible-shape 400, and the `firnflow_semantic_cache_hits_total` metric surfacing through `/metrics`.
+
+### Changed
+- `QueryRequest` gains an `Option<SemanticCacheRequest>` field, defaulted to `None`. Existing JSON callers see no change. The exact-cache hash deliberately excludes the new field — toggling opt-in semantic caching does not split otherwise-identical entries; cached results from before this release stay reachable.
+- `NamespaceCache` gains `try_get`, `populate_with_generation`, and `generation_counter` so the service can interleave the semantic-cache lookup between exact miss and backend call without duplicating the existing generation discipline. The legacy `get_or_populate` is unchanged and still drives the per-namespace invalidation tests.
+- `NamespaceService::upsert`, `delete`, and `compact` invalidate the semantic sidecar in the same step they invalidate the exact cache. Index builds (`create_index`, `create_fts_index`, `create_scalar_index`) do **not** invalidate either layer — the underlying data is unchanged.
+
 ## [0.7.1] - 2026-05-27
 
 ### Added

@@ -201,9 +201,34 @@
             <tr><td><code>k</code></td><td>integer</td><td>Yes</td><td>Number of results to return</td></tr>
             <tr><td><code>nprobes</code></td><td>integer</td><td>No</td><td>IVF partitions to probe (default 20). Higher values trade latency for recall.</td></tr>
             <tr><td><code>text</code></td><td>string</td><td>No*</td><td>Text query for full-text or hybrid search</td></tr>
+            <tr><td><code>semantic_cache</code></td><td>object</td><td>No</td><td>Opt-in semantic-cache controls. See <em>Semantic cache</em> below. Omitting the field preserves the legacy exact-cache-only behaviour.</td></tr>
           </tbody>
         </table>
         <p><small>* At least one of <code>vector</code>, <code>vectors</code>, or <code>text</code> must be present. Setting both <code>vector</code> and <code>vectors</code> on the same request returns 400.</small></p>
+
+        <h4>Semantic cache</h4>
+        <p>An optional <code>semantic_cache</code> block lets the server reuse a previous query's result when the new query vector is very close to a recent one against the same namespace generation. The exact result cache is still consulted first; only when it misses does the semantic layer get a chance to short-circuit. Eligible requests are single-vector only in v1; multivector, FTS, and hybrid requests with the field enabled return 400.</p>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>semantic_cache.enabled</code></td><td>bool</td><td>Yes (within the block)</td><td>When <code>true</code>, an exact-cache miss may be answered from a cached near-duplicate query. When <code>false</code> (or the whole block is omitted), only exact hits short-circuit.</td></tr>
+            <tr><td><code>semantic_cache.min_similarity</code></td><td>float32</td><td>No</td><td>Cosine-similarity floor for a semantic hit. Must lie in <code>(0.0, 1.0]</code>. Omitting picks the server default (<code>0.995</code>) — deliberately strict because a semantic hit is an approximate top-k, not the exact one.</td></tr>
+          </tbody>
+        </table>
+        <p>Behaviour:</p>
+        <ul>
+          <li><strong>The <code>semantic_cache</code> block does not change the exact-cache key.</strong> Toggling <code>enabled</code> on and off does not split otherwise-identical entries.</li>
+          <li><strong>k and nprobes must match</strong> between the incoming request and the cached candidate; mismatches are skipped.</li>
+          <li><strong>Writes, deletes, and compactions drop the semantic layer</strong> alongside the exact cache. Index builds do <em>not</em> invalidate either layer.</li>
+          <li><strong>Behaviour is observable</strong> via three Prometheus counters: <code>firnflow_semantic_cache_hits_total{namespace}</code>, <code>firnflow_semantic_cache_misses_total{namespace}</code>, and <code>firnflow_semantic_cache_rejections_total{namespace, reason}</code> (with bounded reason labels: <code>unsupported_query_shape</code>, <code>empty_index</code>).</li>
+        </ul>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "vector": [0.10, 0.21, 0.29, 0.40],
+    "k": 10,
+    "semantic_cache": {"enabled": true, "min_similarity": 0.995}
+  }'</code></pre>
 
         <h4>Response (200)</h4>
         <table>
