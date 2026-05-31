@@ -108,6 +108,7 @@ async fn service_cache_aside_invalidates_on_upsert() {
         k: 10,
         nprobes: None,
         text: None,
+        semantic_cache: None,
     };
 
     // ---- 1. upsert via service: two rows ----

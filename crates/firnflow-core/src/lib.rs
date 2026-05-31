@@ -24,8 +24,11 @@ pub use manager::{
 };
 pub use metrics::CoreMetrics;
 pub use namespace::NamespaceId;
-pub use query::{validate_ivf_pq_options, IndexRequest, QueryRequest};
+pub use query::{
+    effective_semantic_threshold, validate_ivf_pq_options, validate_semantic_cache_request,
+    IndexRequest, QueryRequest, SemanticCacheRequest, DEFAULT_SEMANTIC_MIN_SIMILARITY,
+};
 pub use result::{ListOrder, ListPage, ListRow, QueryResult, QueryResultSet};
-pub use service::NamespaceService;
+pub use service::{NamespaceService, QueryCacheSource, QueryOutcome};
 pub use storage_root::{Scheme, StorageRoot};
 pub use vector::VectorKind;

@@ -6,6 +6,9 @@
 //!
 //! * `firnflow_cache_hits_total{namespace}`
 //! * `firnflow_cache_misses_total{namespace}`
+//! * `firnflow_semantic_cache_hits_total{namespace}`
+//! * `firnflow_semantic_cache_misses_total{namespace}`
+//! * `firnflow_semantic_cache_rejections_total{namespace, reason}`
 //! * `firnflow_query_duration_seconds{namespace, query_type}`
 //! * `firnflow_write_duration_seconds{namespace}`
 //! * `firnflow_active_namespaces`
@@ -44,6 +47,9 @@ pub struct CoreMetrics {
     registry: Registry,
     cache_hits: IntCounterVec,
     cache_misses: IntCounterVec,
+    semantic_cache_hits: IntCounterVec,
+    semantic_cache_misses: IntCounterVec,
+    semantic_cache_rejections: IntCounterVec,
     query_duration: HistogramVec,
     write_duration: HistogramVec,
     active_namespaces: IntGauge,
@@ -86,6 +92,55 @@ impl CoreMetrics {
         .map_err(metrics_err)?;
         registry
             .register(Box::new(cache_misses.clone()))
+            .map_err(metrics_err)?;
+
+        let semantic_cache_hits = IntCounterVec::new(
+            Opts::new(
+                "firnflow_semantic_cache_hits_total",
+                "Opt-in semantic-cache hits: a previously-cached \
+                 result whose query vector was within the \
+                 caller-supplied (or default) cosine threshold of \
+                 the incoming request. Always preceded by an exact \
+                 result-cache miss — exact hits never consult the \
+                 semantic layer.",
+            ),
+            &["namespace"],
+        )
+        .map_err(metrics_err)?;
+        registry
+            .register(Box::new(semantic_cache_hits.clone()))
+            .map_err(metrics_err)?;
+
+        let semantic_cache_misses = IntCounterVec::new(
+            Opts::new(
+                "firnflow_semantic_cache_misses_total",
+                "Opt-in semantic-cache misses: semantic caching was \
+                 enabled and eligible, but no cached query vector \
+                 cleared the cosine threshold. Counted once per \
+                 query, after the exact-cache miss.",
+            ),
+            &["namespace"],
+        )
+        .map_err(metrics_err)?;
+        registry
+            .register(Box::new(semantic_cache_misses.clone()))
+            .map_err(metrics_err)?;
+
+        let semantic_cache_rejections = IntCounterVec::new(
+            Opts::new(
+                "firnflow_semantic_cache_rejections_total",
+                "Opt-in semantic-cache lookups rejected before any \
+                 similarity check. `reason` is one of: \
+                 `unsupported_query_shape` (eligibility rule failed \
+                 at lookup time — request shape mismatched the v1 \
+                 single-vector constraints), `empty_index` (no \
+                 cached entries for this namespace generation).",
+            ),
+            &["namespace", "reason"],
+        )
+        .map_err(metrics_err)?;
+        registry
+            .register(Box::new(semantic_cache_rejections.clone()))
             .map_err(metrics_err)?;
 
         let query_duration = HistogramVec::new(
@@ -208,6 +263,9 @@ impl CoreMetrics {
             registry,
             cache_hits,
             cache_misses,
+            semantic_cache_hits,
+            semantic_cache_misses,
+            semantic_cache_rejections,
             query_duration,
             write_duration,
             active_namespaces,
@@ -253,6 +311,57 @@ impl CoreMetrics {
     pub fn record_cache_miss(&self, ns: &NamespaceId) {
         self.touch(ns);
         self.cache_misses.with_label_values(&[ns.as_str()]).inc();
+    }
+
+    /// Record an opt-in semantic-cache hit for `ns`.
+    pub fn record_semantic_cache_hit(&self, ns: &NamespaceId) {
+        self.touch(ns);
+        self.semantic_cache_hits
+            .with_label_values(&[ns.as_str()])
+            .inc();
+    }
+
+    /// Record an opt-in semantic-cache miss for `ns` (eligibility
+    /// satisfied, no cached vector cleared the threshold).
+    pub fn record_semantic_cache_miss(&self, ns: &NamespaceId) {
+        self.touch(ns);
+        self.semantic_cache_misses
+            .with_label_values(&[ns.as_str()])
+            .inc();
+    }
+
+    /// Record a semantic-cache rejection for `ns`. `reason` must be
+    /// one of the documented values: `unsupported_query_shape`,
+    /// `empty_index`.
+    pub fn record_semantic_cache_rejection(&self, ns: &NamespaceId, reason: &str) {
+        self.touch(ns);
+        self.semantic_cache_rejections
+            .with_label_values(&[ns.as_str(), reason])
+            .inc();
+    }
+
+    /// Current value of `firnflow_semantic_cache_hits_total{namespace=…}`.
+    /// Test-only accessor; production reads `/metrics`.
+    pub fn semantic_cache_hits_value(&self, ns: &NamespaceId) -> u64 {
+        self.semantic_cache_hits
+            .with_label_values(&[ns.as_str()])
+            .get()
+    }
+
+    /// Current value of `firnflow_semantic_cache_misses_total{namespace=…}`.
+    /// Test-only accessor; production reads `/metrics`.
+    pub fn semantic_cache_misses_value(&self, ns: &NamespaceId) -> u64 {
+        self.semantic_cache_misses
+            .with_label_values(&[ns.as_str()])
+            .get()
+    }
+
+    /// Current value of
+    /// `firnflow_semantic_cache_rejections_total{namespace=…,reason=…}`.
+    pub fn semantic_cache_rejections_value(&self, ns: &NamespaceId, reason: &str) -> u64 {
+        self.semantic_cache_rejections
+            .with_label_values(&[ns.as_str(), reason])
+            .get()
     }
 
     /// Record a query duration observation.
