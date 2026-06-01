@@ -226,7 +226,7 @@ readinessProbe:
       {"vector": [0.0, 1.0, ...], "k": 10}
     ]
   }'</code></pre>
-    <p>This returns immediately (202) and runs the queries in the background, populating the cache as it goes. Monitor <code>firnflow_cache_misses_total</code> to track warmup progress.</p>
+    <p>This returns immediately (202) and runs the queries in the background, populating the exact cache as it goes. If your production traffic uses semantic caching, include the same <code>semantic_cache</code> block on eligible single-vector warmup queries so the in-memory semantic sidecar is seeded too. Monitor <code>firnflow_cache_misses_total</code> to track warmup progress and <code>firnflow_semantic_cache_hits_total</code> / <code>firnflow_semantic_cache_rejections_total</code> to confirm the semantic layer is behaving as expected.</p>
 
     <h2>Recommended operational setup</h2>
     <ul>
