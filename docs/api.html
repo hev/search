@@ -357,7 +357,7 @@
         <span class="endpoint-desc">Pre-warm the cache (async)</span>
       </div>
       <div class="endpoint-body">
-        <p>Accepts a list of queries and runs them in a background task to populate the cache. Returns <code>202 Accepted</code> immediately. Useful for warming the cache after a deployment or before expected traffic.</p>
+        <p>Accepts a list of queries and runs them in a background task to populate the cache. Returns <code>202 Accepted</code> immediately. Useful for warming the cache after a deployment or before expected traffic. Query objects use the same schema as <code>/query</code>; include <code>semantic_cache: {"enabled": true}</code> on eligible single-vector warmup queries if you also want to seed the semantic sidecar.</p>
 
         <h4>Request body</h4>
         <table>
@@ -388,7 +388,7 @@
 
         <div class="callout callout-info">
           <div class="callout-title">Monitoring warmup progress</div>
-          Watch the <code>firnflow_cache_misses_total</code> metric to track how many warmup queries have completed. Failures inside the background task are logged server-side but do not affect the HTTP response.
+          Watch the <code>firnflow_cache_misses_total</code> metric to track how many warmup queries have completed. For semantic warmup, also watch <code>firnflow_semantic_cache_rejections_total{reason="empty_index"}</code> at startup and <code>firnflow_semantic_cache_hits_total</code> once near-duplicate traffic starts. Failures inside the background task are logged server-side but do not affect the HTTP response.
         </div>
       </div>
     </div>

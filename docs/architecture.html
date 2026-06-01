@@ -60,7 +60,8 @@
       </tbody>
     </table>
 
-    <p>The cache stores complete, serialised query result sets. When a query hits the cache, zero bytes are read from object storage. When it misses, the result is fetched from the backend and stored in the cache for future use.</p>
+    <p>The exact cache stores complete, serialised query result sets. When a query hits the cache, zero bytes are read from object storage. When it misses, the result is fetched from the backend and stored in the cache for future use.</p>
+    <p>Single-vector queries can also opt into a small in-memory semantic sidecar. After an exact-cache miss, Firn can compare the incoming query vector with recent cached query vectors in the same namespace generation. If cosine similarity clears the request's threshold and <code>k</code> / <code>nprobes</code> match, Firn reuses the previous top-k bytes without touching object storage. This is approximate result reuse, so callers must opt in per request.</p>
 
     <h2>Request middleware</h2>
     <p>Every protected endpoint runs through a fixed middleware stack before the handler. The stack is wired up in <code>firnflow_api::router</code> and the order is load-bearing — bucketing on a validated <code>Principal</code> rather than an attacker-supplied header is the whole reason auth runs first.</p>
@@ -87,12 +88,14 @@ handler</code></pre>
     <h2>Query path</h2>
     <p>Every query follows this exact sequence:</p>
     <ol>
-      <li><strong>Hash the query.</strong> The full <code>QueryRequest</code> (vector, k, nprobes, text) is serialised with bincode and hashed with xxh3 to produce a deterministic <code>QueryHash</code>.</li>
+      <li><strong>Hash the query.</strong> The cacheable search fields in <code>QueryRequest</code> (vector, vectors, k, nprobes, text) are serialised with bincode and hashed with xxh3 to produce a deterministic <code>QueryHash</code>. The <code>semantic_cache</code> control block is deliberately excluded so toggling it does not split otherwise-identical exact-cache entries.</li>
       <li><strong>Build the cache key.</strong> The key is a tuple of <code>(namespace, generation, query_hash)</code>. The generation counter ensures stale results are never returned after a write.</li>
       <li><strong>Check foyer.</strong> The HybridCache checks RAM first, then NVMe. On a hit, the serialised result is returned and a <code>cache_hits_total</code> metric is recorded.</li>
-      <li><strong>On miss: query object storage.</strong> LanceDB runs the query against the Lance table on the configured backend (vector nearest-neighbour, BM25 FTS, or hybrid) using the namespace's pooled <code>Connection</code> and <code>Table</code> handle &mdash; the first request for a namespace opens and caches the handle, every subsequent request skips the credential-resolution and manifest-read round-trips. The result is serialised with bincode and stored in foyer. A <code>cache_misses_total</code> and <code>s3_requests_total</code> metric are recorded. (The metric name predates native GCS support; it now counts object-store operations regardless of backend.)</li>
+      <li><strong>Optional semantic lookup.</strong> If the exact cache misses and the request includes <code>semantic_cache.enabled: true</code>, Firn scans the namespace's in-memory semantic sidecar for a nearby single-vector query with matching <code>k</code> and resolved <code>nprobes</code>. A hit returns that cached result immediately and records <code>firnflow_semantic_cache_hits_total</code>. Ineligible shapes such as multivector, FTS, and hybrid requests return 400 when semantic caching is enabled.</li>
+      <li><strong>On miss: query object storage.</strong> LanceDB runs the query against the Lance table on the configured backend (vector nearest-neighbour, multivector, BM25 FTS, or hybrid) using the namespace's pooled <code>Connection</code> and <code>Table</code> handle &mdash; the first request for a namespace opens and caches the handle, every subsequent request skips the credential-resolution and manifest-read round-trips. The result is serialised with bincode and stored in foyer. Eligible semantic-cache requests also add the query vector and result bytes to the sidecar. The exact-cache miss counter was already recorded before the semantic lookup; backend work records <code>s3_requests_total</code>. (The metric name predates native GCS support; it now counts object-store operations regardless of backend.)</li>
       <li><strong>Return the result.</strong> The query duration (cache hit or miss) is recorded in the <code>query_duration_seconds</code> histogram.</li>
     </ol>
+    <p>The semantic sidecar is bounded to 1024 entries per namespace generation and lives only in the Firn process. Writes, deletes, and compactions drop it alongside the exact cache; index builds leave both layers intact because rows have not changed.</p>
 
     <h2>Write path</h2>
     <p>Writes follow a strict ordering to prevent stale cache state:</p>
