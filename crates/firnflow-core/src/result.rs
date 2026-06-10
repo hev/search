@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::vector::VectorKind;
+
 /// A single search hit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryResult {
@@ -77,4 +79,36 @@ pub struct ListPage {
     /// Opaque cursor to pass as `?cursor=` on the next call, or
     /// `None` if no further rows are available in the chosen order.
     pub next_cursor: Option<String>,
+}
+
+/// Operational metadata for a namespace, returned by
+/// `GET /ns/{namespace}`.
+///
+/// Read directly from the Lance table — it is namespace state, not a
+/// query result, so it is never cached.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NamespaceInfo {
+    /// Namespace name.
+    pub namespace: String,
+    /// Vector representation: `"single"` or `"multivector"`.
+    pub kind: VectorKind,
+    /// Vector dimension. For multivector namespaces this is the inner
+    /// sub-vector width.
+    pub vector_dim: usize,
+    /// Live row count (`Table::count_rows`). Note that without
+    /// idempotent upsert (see issue #31), re-sending a row id appends
+    /// another row, so this counts physical rows, not distinct ids.
+    pub row_count: usize,
+    /// Number of Lance data fragments. A growing count is the signal
+    /// to `POST /ns/{namespace}/compact`.
+    pub fragment_count: usize,
+    /// Whether a vector index (the IVF_PQ / HNSW family) is built.
+    pub has_vector_index: bool,
+    /// Whether a BM25 full-text index is built on the `text` column.
+    pub has_fts_index: bool,
+    /// Whether a scalar index (BTree / bitmap / label-list) is built.
+    pub has_scalar_index: bool,
+    /// Current Lance table version. Advances on every commit; this is
+    /// the value the result cache derives its generation from.
+    pub table_version: u64,
 }

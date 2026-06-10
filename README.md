@@ -212,6 +212,7 @@ curl -X POST http://localhost:3000/ns/demo/upsert \
 | :--- | :--- | :--- | :--- |
 | `/health` | `GET` | open | Liveness check |
 | `/metrics` | `GET` | metrics or open | Prometheus exposition format |
+| `/ns/{ns}` | `GET` | read/write | Namespace metadata (row count, fragment count, indexes, table version); 404 if it has no data yet |
 | `/ns/{ns}` | `DELETE` | admin | Removes all data (object storage + cache) for a namespace |
 | `/ns/{ns}/upsert` | `POST` | read/write | Append vectors and data (not deduplicated by `id`) |
 | `/ns/{ns}/query` | `POST` | read/write | Vector, FTS, or hybrid search |

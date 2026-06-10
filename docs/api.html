@@ -326,6 +326,58 @@
       </div>
     </div>
 
+    <!-- GET /ns/{ns} -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/ns/{namespace}</span>
+        <span class="endpoint-desc">Namespace metadata</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Returns operational metadata for a namespace: its vector shape, live row count, fragment count, which index kinds are built, and the current Lance table version. Useful for dashboards and for deciding when to compact or build an index, without querying the data or inspecting raw objects.</p>
+        <p>Like <code>/list</code>, this bypasses the foyer cache; it is namespace state, not a query result. It never creates a table, so a namespace that has never been written returns 404.</p>
+
+        <h4>Response (200)</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>namespace</code></td><td>string</td><td>Namespace name</td></tr>
+            <tr><td><code>kind</code></td><td>string</td><td><code>single</code> or <code>multivector</code></td></tr>
+            <tr><td><code>vector_dim</code></td><td>integer</td><td>Vector dimension (inner sub-vector width for multivector namespaces)</td></tr>
+            <tr><td><code>row_count</code></td><td>integer</td><td>Live row count. Counts physical rows; until idempotent upsert lands, re-using an <code>id</code> adds a row</td></tr>
+            <tr><td><code>fragment_count</code></td><td>integer</td><td>Number of Lance data fragments. A growing count is the cue to compact</td></tr>
+            <tr><td><code>has_vector_index</code></td><td>bool</td><td>Whether an IVF_PQ / HNSW vector index is built</td></tr>
+            <tr><td><code>has_fts_index</code></td><td>bool</td><td>Whether a BM25 full-text index is built</td></tr>
+            <tr><td><code>has_scalar_index</code></td><td>bool</td><td>Whether a BTree / bitmap / label-list scalar index is built</td></tr>
+            <tr><td><code>table_version</code></td><td>u64</td><td>Current Lance table version; advances on every commit</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Status codes</h4>
+        <table>
+          <thead><tr><th>Code</th><th>When</th></tr></thead>
+          <tbody>
+            <tr><td>200</td><td>Success</td></tr>
+            <tr><td>404</td><td>Namespace has no data yet (no Lance table exists)</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Example</h4>
+        <pre><code>curl http://localhost:3000/ns/demo</code></pre>
+        <pre><code>{
+  "namespace": "demo",
+  "kind": "single",
+  "vector_dim": 1536,
+  "row_count": 100000,
+  "fragment_count": 3,
+  "has_vector_index": true,
+  "has_fts_index": false,
+  "has_scalar_index": false,
+  "table_version": 42
+}</code></pre>
+      </div>
+    </div>
+
     <!-- DELETE /ns/{ns} -->
     <div class="endpoint">
       <div class="endpoint-header" aria-expanded="true">

@@ -4,6 +4,7 @@
 //! * `POST   /ns/{namespace}/upsert`
 //! * `POST   /ns/{namespace}/query`
 //! * `GET    /ns/{namespace}/list`
+//! * `GET    /ns/{namespace}`
 //! * `DELETE /ns/{namespace}`
 //! * `POST   /ns/{namespace}/warmup`
 //! * `POST   /ns/{namespace}/index`
@@ -23,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use firnflow_core::{
     decode_list_cursor, FirnflowError, IndexRequest, ListOrder, ListPage, NamespaceId,
-    QueryRequest, UpsertRow as CoreUpsertRow, LIST_MAX_LIMIT,
+    NamespaceInfo, QueryRequest, UpsertRow as CoreUpsertRow, LIST_MAX_LIMIT,
 };
 
 use crate::error::ApiError;
@@ -456,6 +457,25 @@ pub async fn list(
 
     let page = state.manager.list(&ns, limit, order, cursor).await?;
     Ok(Json(page))
+}
+
+/// Return operational metadata for a namespace: vector kind and
+/// dimension, row count, fragment count, which index kinds are built,
+/// and the current table version.
+///
+/// Like `/list`, this bypasses the foyer cache and calls
+/// `state.manager.info(...)` directly — it is namespace state, not a
+/// query result, so caching it would only risk staleness. Returns 404
+/// when the namespace has never been written.
+pub async fn info(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+) -> Result<Json<NamespaceInfo>, ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+    match state.manager.info(&ns).await? {
+        Some(info) => Ok(Json(info)),
+        None => Err(ApiError::NotFound(format!("namespace {ns} does not exist"))),
+    }
 }
 
 /// Prometheus scrape endpoint. Serialises the process-wide

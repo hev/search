@@ -47,7 +47,7 @@ use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::ColumnOrdering;
 use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder, FullTextSearchQuery};
 use lancedb::index::vector::IvfPqIndexBuilder;
-use lancedb::index::Index;
+use lancedb::index::{Index, IndexType};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::table::OptimizeAction;
 use lancedb::DistanceType;
@@ -59,7 +59,7 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use crate::metrics::CoreMetrics;
 use crate::query::DEFAULT_NPROBES;
-use crate::result::{ListOrder, ListPage, ListRow};
+use crate::result::{ListOrder, ListPage, ListRow, NamespaceInfo};
 use crate::storage_root::Scheme;
 use crate::vector::VectorKind;
 use crate::{FirnflowError, NamespaceId, QueryResult, QueryResultSet, StorageRoot};
@@ -462,7 +462,12 @@ impl NamespaceManager {
                 self.cache_handle(ns, conn, tbl.clone());
                 Ok(Some((tbl, info)))
             }
-            Err(_) => Ok(None),
+            // Only a genuine "table does not exist" means the namespace
+            // has no data. Storage, auth, and transient errors must
+            // propagate as backend errors, not be misreported as a
+            // missing namespace (the `info` endpoint maps `None` to 404).
+            Err(lancedb::Error::TableNotFound { .. }) => Ok(None),
+            Err(e) => Err(FirnflowError::Backend(format!("open table {ns}: {e}"))),
         }
     }
 
@@ -1143,6 +1148,89 @@ impl NamespaceManager {
 
         Ok(ListPage { rows, next_cursor })
     }
+
+    /// Gather operational metadata for a namespace without running a
+    /// query: vector kind and dimension, live row count, fragment
+    /// count, which index kinds are built, and the current table
+    /// version.
+    ///
+    /// Returns `Ok(None)` when the namespace has no table yet (nothing
+    /// has been written) so the API layer can answer 404. Never creates
+    /// a table. `count_rows` and `list_indices` read table metadata on
+    /// the backend, so this is a metadata round-trip and is
+    /// deliberately not cached.
+    pub async fn info(&self, ns: &NamespaceId) -> Result<Option<NamespaceInfo>, FirnflowError> {
+        // This path opens the table and reads its metadata directly,
+        // bypassing NamespaceService, so record the backend hit here —
+        // same as `/list` — to keep `firnflow_s3_requests_total` an
+        // honest count of Firn-initiated object-store operations.
+        self.metrics.record_s3_request(ns, "info");
+
+        let Some((tbl, schema)) = self.open_existing(ns).await? else {
+            return Ok(None);
+        };
+
+        let row_count = tbl
+            .count_rows(None)
+            .await
+            .map_err(|e| FirnflowError::Backend(format!("count_rows: {e}")))?;
+
+        let indices = tbl
+            .list_indices()
+            .await
+            .map_err(|e| FirnflowError::Backend(format!("list_indices: {e}")))?;
+        let (has_vector_index, has_fts_index, has_scalar_index) =
+            classify_index_types(indices.iter().map(|i| i.index_type.clone()));
+
+        // Fragment count and table version come from the in-memory
+        // manifest on the (now pooled) handle — no extra round-trip.
+        let dataset = tbl
+            .dataset()
+            .ok_or_else(|| {
+                FirnflowError::Backend("namespace info requires a native lance table".into())
+            })?
+            .get()
+            .await
+            .map_err(|e| FirnflowError::Backend(format!("resolve dataset: {e}")))?;
+        let manifest = dataset.manifest();
+
+        Ok(Some(NamespaceInfo {
+            namespace: ns.to_string(),
+            kind: schema.kind,
+            vector_dim: schema.dim,
+            row_count,
+            fragment_count: manifest.fragments.len(),
+            has_vector_index,
+            has_fts_index,
+            has_scalar_index,
+            table_version: manifest.version,
+        }))
+    }
+}
+
+/// Classify a namespace's built indexes into `(vector, fts, scalar)`
+/// presence flags. The IVF / HNSW family are vector indexes, `FTS` is
+/// the BM25 full-text index, and BTree / bitmap / label-list are scalar
+/// indexes. Exhaustive over [`IndexType`] on purpose: a new Lance index
+/// kind will fail to compile here until it is classified deliberately.
+fn classify_index_types(types: impl Iterator<Item = IndexType>) -> (bool, bool, bool) {
+    let mut vector = false;
+    let mut fts = false;
+    let mut scalar = false;
+    for ty in types {
+        match ty {
+            IndexType::IvfFlat
+            | IndexType::IvfSq
+            | IndexType::IvfPq
+            | IndexType::IvfRq
+            | IndexType::IvfHnswPq
+            | IndexType::IvfHnswSq
+            | IndexType::IvfHnswFlat => vector = true,
+            IndexType::FTS => fts = true,
+            IndexType::BTree | IndexType::Bitmap | IndexType::LabelList => scalar = true,
+        }
+    }
+    (vector, fts, scalar)
 }
 
 /// Encode a `(timestamp_micros, id)` pair as a 32-character hex
@@ -1585,5 +1673,27 @@ mod tests {
     #[test]
     fn cursor_rejects_non_hex() {
         assert!(decode_list_cursor(&"z".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn classify_index_types_buckets_by_family() {
+        // No indexes: all false.
+        assert_eq!(classify_index_types([].into_iter()), (false, false, false));
+
+        // One of each family.
+        assert_eq!(
+            classify_index_types([IndexType::IvfPq, IndexType::FTS, IndexType::BTree].into_iter()),
+            (true, true, true)
+        );
+
+        // HNSW variants count as vector; bitmap / label-list as scalar.
+        assert_eq!(
+            classify_index_types([IndexType::IvfHnswSq].into_iter()),
+            (true, false, false)
+        );
+        assert_eq!(
+            classify_index_types([IndexType::Bitmap, IndexType::LabelList].into_iter()),
+            (false, false, true)
+        );
     }
 }
