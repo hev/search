@@ -76,7 +76,7 @@ scrape_configs:
           <td><code>firnflow_cache_hits_total</code></td>
           <td>Counter</td>
           <td><code>namespace</code></td>
-          <td>Total cache hits. Each hit means the result was served from RAM or NVMe with zero object-storage access.</td>
+          <td>Total cache hits. A hit serves the result from RAM or NVMe without re-running the search. Once a namespace's handle is warm a hit makes no object-storage access; the first query to a namespace in a process reads its manifest once (to form the version-based cache key) even when it then hits the cache.</td>
         </tr>
         <tr>
           <td><code>firnflow_cache_misses_total</code></td>

@@ -108,10 +108,11 @@
       <div class="endpoint-header" aria-expanded="true">
         <span class="method method-post">POST</span>
         <span class="endpoint-path">/ns/{namespace}/upsert</span>
-        <span class="endpoint-desc">Insert or update vectors and text</span>
+        <span class="endpoint-desc">Append vectors and text</span>
       </div>
       <div class="endpoint-body">
         <p>Appends rows to the namespace's Lance table. The vector dimension and the vector kind (single-vector or multivector) are inferred from the first upsert and enforced on subsequent calls. After a successful write, all cached query results for this namespace are invalidated.</p>
+        <p>Rows are appended and not deduplicated by <code>id</code>: re-sending a row with an <code>id</code> that already exists adds another row rather than replacing the previous one. Idempotent upsert by <code>id</code> is planned.</p>
 
         <p>Each row carries one of two vector payload shapes, depending on the namespace's kind:</p>
         <ul>
@@ -125,7 +126,7 @@
           <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
           <tbody>
             <tr><td><code>rows</code></td><td>array</td><td>Yes</td><td>List of rows to insert</td></tr>
-            <tr><td><code>rows[].id</code></td><td>u64</td><td>Yes</td><td>Unique identifier for the row</td></tr>
+            <tr><td><code>rows[].id</code></td><td>u64</td><td>Yes</td><td>Caller-assigned row identifier. Not deduplicated; re-using an id appends another row today.</td></tr>
             <tr><td><code>rows[].vector</code></td><td>float32[]</td><td>One of</td><td>Single dense vector (single-vector namespaces). Length must match the namespace dimension.</td></tr>
             <tr><td><code>rows[].vectors</code></td><td>float32[][]</td><td>One of</td><td>Bag of equal-length sub-vectors (multivector namespaces). Each inner vector must match the namespace's inner sub-vector dimension; outer list length is the per-row sub-vector count.</td></tr>
             <tr><td><code>rows[].text</code></td><td>string</td><td>No</td><td>Text payload for full-text search</td></tr>
@@ -178,7 +179,7 @@
         <span class="endpoint-desc">Vector, full-text, or hybrid search</span>
       </div>
       <div class="endpoint-body">
-        <p>Queries the namespace through the cache-aside path. On a cache hit, the result is returned from RAM or NVMe with zero object-storage access. On a miss, the query runs against the configured backend via LanceDB and the result is cached.</p>
+        <p>Queries the namespace through the cache-aside path. On a cache hit, the result is returned from RAM or NVMe without re-running the search; once the namespace handle is warm a hit makes no object-storage access, though the first query to a namespace in a process reads the table manifest once to form the version-based cache key. On a miss, the query runs against the configured backend via LanceDB and the result is cached.</p>
 
         <h4>Query modes</h4>
         <p>The query mode is determined by which fields are present. The vector field uses <code>vector: float32[]</code> for single-vector namespaces and <code>vectors: float32[][]</code> for multivector namespaces:</p>
@@ -219,7 +220,7 @@
         <ul>
           <li><strong>The <code>semantic_cache</code> block does not change the exact-cache key.</strong> Toggling <code>enabled</code> on and off does not split otherwise-identical entries.</li>
           <li><strong>k and nprobes must match</strong> between the incoming request and the cached candidate; mismatches are skipped.</li>
-          <li><strong>Writes, deletes, and compactions drop the semantic layer</strong> alongside the exact cache. Index builds do <em>not</em> invalidate either layer.</li>
+          <li><strong>Any committed change drops the semantic layer</strong> alongside the exact cache: writes, deletes, compactions, and index builds. An index build invalidates too, because it is a Lance commit that advances the table version the cache keys on, even though the rows are unchanged.</li>
           <li><strong>Behaviour is observable</strong> via three Prometheus counters: <code>firnflow_semantic_cache_hits_total{namespace}</code>, <code>firnflow_semantic_cache_misses_total{namespace}</code>, and <code>firnflow_semantic_cache_rejections_total{namespace, reason}</code> (with bounded reason labels: <code>unsupported_query_shape</code>, <code>empty_index</code>).</li>
         </ul>
         <pre><code>curl -X POST http://localhost:3000/ns/demo/query \

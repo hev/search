@@ -28,7 +28,7 @@
     <div class="hero">
       <h1>Vector search on object storage</h1>
       <p class="subtitle">
-        A multi-tenant search engine that pairs LanceDB with a tiered RAM + NVMe cache. Every namespace lives on cheap object storage (AWS S3, MinIO, R2, Tigris, DigitalOcean Spaces, or native Google Cloud Storage) with near-zero idle cost. Every cache hit costs zero backend requests.
+        A multi-tenant search engine that pairs LanceDB with a tiered RAM + NVMe cache. Every namespace lives on cheap object storage (AWS S3, MinIO, R2, Tigris, DigitalOcean Spaces, or native Google Cloud Storage) with near-zero idle cost. A cache hit never re-runs the search, and once a namespace's handle is warm it costs zero backend requests.
       </p>
       <div class="hero-actions">
         <a href="quickstart.html" class="btn btn-primary">Get started</a>
@@ -39,7 +39,7 @@
     <div class="stats">
       <div class="stat">
         <div class="value">72 &micro;s</div>
-        <div class="label">Warm query latency (AWS S3)</div>
+        <div class="label">Warm query latency (repeated query)</div>
       </div>
       <div class="stat">
         <div class="value">25x</div>
@@ -57,7 +57,7 @@
 
     <h2>How it works</h2>
     <p>
-      Firn stores every namespace under its own object-storage prefix using <strong>LanceDB</strong> as the storage engine. A tiered cache powered by <strong>foyer</strong> sits in front of the backend, serving repeated queries from RAM or NVMe in microseconds instead of milliseconds. Single-vector queries can also opt into semantic caching, where a near-duplicate query may reuse a previous top-k result when its vector clears your cosine-similarity threshold. Writes automatically invalidate both cache layers for the affected namespace using an O(1) generation counter strategy.
+      Firn stores every namespace under its own object-storage prefix using <strong>LanceDB</strong> as the storage engine. A tiered cache powered by <strong>foyer</strong> sits in front of the backend, serving repeated queries from RAM or NVMe in microseconds instead of milliseconds. Single-vector queries can also opt into semantic caching, where a near-duplicate query may reuse a previous top-k result when its vector clears your cosine-similarity threshold. Writes automatically invalidate both cache layers for the affected namespace, because the cache key carries the Lance table version and every committed write advances it.
     </p>
     <p>
       The result: your data lives cheaply on object storage, but hot and near-duplicate queries can feel local. The <code>/metrics</code> endpoint shows exactly how many backend requests the exact and semantic cache layers are saving you.
@@ -74,7 +74,7 @@
     <div class="card-grid">
       <a href="quickstart.html" class="card" style="text-decoration:none;color:inherit">
         <h3>Quickstart</h3>
-        <p>Docker Compose up, first upsert, first query, and check your metrics in under two minutes.</p>
+        <p>Docker Compose up, first upsert, first query, and check your metrics.</p>
       </a>
       <a href="api.html" class="card" style="text-decoration:none;color:inherit">
         <h3>API Reference</h3>
@@ -114,7 +114,7 @@
     </table>
 
     <p>
-      Without an index, each cache miss costs <strong>25 seconds</strong>. With IVF_PQ, that drops to under 1 second. The cache eliminates the backend round-trip entirely for repeated queries, bringing latency to microseconds regardless of index type.
+      Without an index, each cache miss costs <strong>25 seconds</strong>. With IVF_PQ, that drops to under 1 second. For repeated queries the cache serves the stored result without re-running the search, bringing latency to microseconds regardless of index type.
     </p>
 
     <h2>Key technologies</h2>
