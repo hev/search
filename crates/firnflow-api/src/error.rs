@@ -19,11 +19,14 @@ use firnflow_core::FirnflowError;
 
 /// API error variants. `Core` wraps a `firnflow-core` error and
 /// inherits its existing 4xx/5xx mapping. `Unauthorized`,
-/// `Forbidden`, and `RateLimited` are API-layer-only.
+/// `Forbidden`, `NotFound`, and `RateLimited` are API-layer-only.
 pub enum ApiError {
     Core(FirnflowError),
     Unauthorized,
     Forbidden,
+    /// The addressed resource does not exist (e.g. metadata for a
+    /// namespace that has never been written). Renders as 404.
+    NotFound(String),
     RateLimited(Duration),
 }
 
@@ -63,6 +66,9 @@ impl IntoResponse for ApiError {
                 }),
             )
                 .into_response(),
+            ApiError::NotFound(msg) => {
+                (StatusCode::NOT_FOUND, Json(ErrorBody { error: msg })).into_response()
+            }
             ApiError::RateLimited(wait) => {
                 let secs = wait.as_secs().max(1);
                 let mut response = (

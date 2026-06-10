@@ -37,7 +37,8 @@ pub use state::{build_state, AppState};
 ///   [`auth::require_metrics_token`], which short-circuits when no
 ///   `FIRNFLOW_METRICS_TOKEN` is configured (preserving the
 ///   pre-0.5.0 default-public behaviour).
-/// * **Read/Write** — `upsert`, `query`, `list`, `warmup`. Stacks
+/// * **Read/Write** — `upsert`, `query`, `list`, `warmup`, and the
+///   `GET /ns/{namespace}` metadata endpoint. Stacks
 ///   `require_write` and the per-principal limiter inside a single
 ///   `ServiceBuilder` so the limiter sees the `Principal` extension
 ///   that auth attaches.
@@ -69,7 +70,11 @@ pub fn router(state: AppState) -> Router {
         .route("/ns/{namespace}/upsert", post(handlers::upsert))
         .route("/ns/{namespace}/query", post(handlers::query))
         .route("/ns/{namespace}/list", get(handlers::list))
-        .route("/ns/{namespace}/warmup", post(handlers::warmup));
+        .route("/ns/{namespace}/warmup", post(handlers::warmup))
+        // GET /ns/{namespace} (namespace metadata) shares its path with
+        // the admin-tier DELETE; axum merges the two method routers
+        // since the methods differ, and each keeps its own auth layer.
+        .route("/ns/{namespace}", get(handlers::info));
     // ServiceBuilder applies layers top-to-bottom: auth first
     // (attaches the Principal extension), principal limiter second
     // (reads it). `axum::Router::layer` then mounts the whole stack

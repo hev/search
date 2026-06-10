@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GET /ns/{namespace}` returns namespace metadata: vector kind and dimension, live row count, fragment count, which index kinds are built (vector / FTS / scalar), and the current Lance table version. Read/write tier, bypasses the cache (it is namespace state, not a query result), and records a `firnflow_s3_requests_total{operation="info"}` tick so the backend read stays visible in the cost signal. Returns 404 only for a genuinely missing table; storage or auth failures surface as 5xx rather than a misleading "namespace does not exist". Closes #14.
+
 ## [0.8.1] - 2026-06-10
 
 ### Added
