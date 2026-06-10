@@ -16,22 +16,24 @@
 //!
 //! ## Invalidation
 //!
-//! Each namespace's entry list is stamped with the generation
-//! counter at insert time. Two routes invalidate them:
+//! Each namespace's entry list is stamped with the generation at
+//! insert time. The generation is the Lance table version, which the
+//! read path writes into the shared [`GenerationCounter`] (via
+//! `NamespaceCache::set_generation`) before every lookup. Two routes
+//! drop stale entries:
 //!
 //! 1. **Eager**: [`NamespaceService`](crate::NamespaceService) calls
-//!    [`SemanticCache::invalidate`] alongside the exact-cache
-//!    invalidation on every write/delete/compact. Same shape as
-//!    [`crate::cache::NamespaceCache::invalidate`].
-//! 2. **Lazy / defence-in-depth**: every lookup and insert reads
-//!    the current generation from the supplied
-//!    [`GenerationCounter`] and drops any stale list before
-//!    proceeding. This catches any path that bumps the generation
-//!    without notifying the sidecar.
+//!    [`SemanticCache::invalidate`] on every write/delete/compact to
+//!    free the memory immediately.
+//! 2. **Lazy / defence-in-depth**: every lookup and insert compares
+//!    the current generation against the list's stamp and drops a
+//!    stale list before proceeding.
 //!
-//! Index builds do **not** invalidate semantic entries — the
-//! underlying rows are unchanged and the cached top-k is still
-//! correct. This matches the exact-cache behaviour.
+//! Because the generation is the table version, **any** commit moves
+//! it — including index builds. So unlike the earlier design, an index
+//! build now drops the semantic entries on the next lookup, matching
+//! the exact cache: the rows are unchanged, but post-index queries
+//! re-run against the new index rather than replaying a cached top-k.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

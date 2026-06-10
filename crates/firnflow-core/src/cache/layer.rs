@@ -148,11 +148,32 @@ impl NamespaceCache {
         self.cache.insert(key, value);
     }
 
-    /// Invalidate every cache entry for a namespace.
+    /// Set the cache generation for a namespace to an externally
+    /// supplied value — in practice the Lance table version the
+    /// [`NamespaceManager`](crate::NamespaceManager) reports.
     ///
-    /// O(1): increments the namespace generation counter. Previously
-    /// cached entries remain in foyer's underlying store until LFU/LRU
-    /// reclaims them, but are no longer reachable by key.
+    /// The read path calls this before every lookup so the exact-cache
+    /// key (and the semantic sidecar, which shares this counter) is
+    /// derived from the persistent table version rather than a
+    /// process-local sequence. This is what lets recovered NVMe entries
+    /// survive a restart without being served stale: the version
+    /// reflects every committed write, so a key computed after a
+    /// restart matches a recovered entry only when the table has not
+    /// changed since that entry was stored.
+    pub fn set_generation(&self, ns: &NamespaceId, generation: u64) {
+        self.generations.set(ns, generation);
+    }
+
+    /// Invalidate every cache entry for a namespace by bumping the
+    /// generation counter.
+    ///
+    /// No longer driven by the write path — invalidation now follows
+    /// the Lance table version via [`set_generation`](Self::set_generation),
+    /// which advances on every commit. Retained as a primitive for the
+    /// generation-counter unit tests and any caller that needs an
+    /// explicit, process-local bump. Previously cached entries remain
+    /// in foyer's underlying store until LFU/LRU reclaims them, but are
+    /// no longer reachable by key.
     pub fn invalidate(&self, ns: &NamespaceId) -> u64 {
         self.generations.bump(ns)
     }
@@ -169,5 +190,17 @@ impl NamespaceCache {
     /// single-sourced — only the exact cache bumps the counter.
     pub fn generation_counter(&self) -> Arc<GenerationCounter> {
         Arc::clone(&self.generations)
+    }
+
+    /// Flush the NVMe write buffer and shut the cache down cleanly.
+    ///
+    /// Delegates to foyer's graceful shutdown so entries inserted before
+    /// the call are durable on disk. The cache must not be used after
+    /// this returns.
+    pub async fn close(&self) -> Result<(), FirnflowError> {
+        self.cache
+            .close()
+            .await
+            .map_err(|e| FirnflowError::Cache(format!("cache close: {e}")))
     }
 }
