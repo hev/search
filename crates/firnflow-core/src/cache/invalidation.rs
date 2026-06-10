@@ -41,6 +41,24 @@ impl GenerationCounter {
         let entry = self.inner.entry(ns.clone()).or_default();
         entry.fetch_add(1, Ordering::AcqRel) + 1
     }
+
+    /// Overwrite the generation for a namespace with an externally
+    /// supplied value.
+    ///
+    /// The read path uses this to seed the counter from the Lance
+    /// table version, which is persistent and monotonic across process
+    /// restarts. Unlike [`bump`](Self::bump), which produces a
+    /// process-local sequence that resets to 0 on restart, a value set
+    /// from the table version makes the cache key reproducible: the
+    /// same table state always yields the same generation, so a
+    /// recovered NVMe entry is only reachable when the namespace has
+    /// not changed since the entry was stored.
+    pub fn set(&self, ns: &NamespaceId, value: u64) {
+        self.inner
+            .entry(ns.clone())
+            .or_default()
+            .store(value, Ordering::Release);
+    }
 }
 
 #[cfg(test)]

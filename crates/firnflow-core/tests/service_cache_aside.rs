@@ -1,20 +1,26 @@
 //! `NamespaceService` cache-aside cycle integration test.
 //!
-//! Proves the full loop:
+//! The cache generation is the Lance table version, so invalidation is
+//! intrinsic to the data: every committed write advances the version,
+//! and the next read derives a new cache key. There is no service-level
+//! "bump" to bypass, which means the classic "write through the manager
+//! to observe a stale read" trick no longer produces staleness — a
+//! manager-level write advances the version just the same. The cache is
+//! instead proven to be in the hot path via the reported
+//! [`QueryCacheSource`].
 //!
-//! 1. upsert via the service → rows land in Lance, cache is invalidated
-//! 2. query via the service → cache miss, manager runs the search,
-//!    result is serialised into foyer
-//! 3. query again → cache hit, no backend call, same bytes returned
-//! 4. *side-channel* upsert directly through the manager, bypassing
-//!    the service → the cache is intentionally not invalidated
-//! 5. query via the service → still a cache hit; stale result
-//!    returned (this is the whole point of step 4 — if it returned
-//!    fresh data here the cache would be a no-op and the test
-//!    wouldn't be testing invalidation at all)
-//! 6. upsert via the service once more → bumps the generation
-//! 7. query via the service → cache miss again, repopulates with
-//!    the fresh post-step-4 rows
+//! The loop:
+//!
+//! 1. upsert via the service → rows land in Lance (version advances)
+//! 2. query → cache miss (`Backend`), manager runs the search, result
+//!    serialised into foyer
+//! 3. query again → cache hit (`ExactCache`), no backend call, same hits
+//! 4. *side-channel* upsert directly through the manager → advances the
+//!    table version
+//! 5. query → cache miss (`Backend`) again, because the version moved;
+//!    the fresh row is reflected (no stale read, unlike the old design)
+//! 6. upsert via the service once more → version advances again
+//! 7. query → cache miss (`Backend`), repopulates with every row
 //!
 //! Gated `#[ignore]`: needs MinIO up.
 //!
@@ -30,7 +36,8 @@ use std::sync::Arc;
 use firnflow_core::cache::NamespaceCache;
 use firnflow_core::metrics::test_metrics;
 use firnflow_core::{
-    NamespaceId, NamespaceManager, NamespaceService, QueryRequest, StorageRoot, UpsertRow,
+    NamespaceId, NamespaceManager, NamespaceService, QueryCacheSource, QueryRequest, StorageRoot,
+    UpsertRow,
 };
 
 const DIM: usize = 8;
@@ -75,7 +82,7 @@ fn unit_vector(axis: usize) -> Vec<f32> {
 
 #[tokio::test]
 #[ignore]
-async fn service_cache_aside_invalidates_on_upsert() {
+async fn service_cache_aside_follows_table_version() {
     // ---- setup ----
     let bucket = env_or("FIRNFLOW_S3_BUCKET", "firnflow-test");
     let tmp = tempfile::tempdir().unwrap();
@@ -124,46 +131,74 @@ async fn service_cache_aside_invalidates_on_upsert() {
         .expect("service.upsert initial");
 
     // ---- 2. first query: cache miss, populates with 2 hits ----
-    let r1 = service.query(&ns, &req).await.expect("query #1");
-    assert_eq!(r1.results.len(), 2, "step 2: expected 2 cached hits");
+    let r1 = service
+        .query_with_cache_source(&ns, &req)
+        .await
+        .expect("query #1");
+    assert_eq!(r1.cache_source, QueryCacheSource::Backend, "step 2: miss");
+    assert_eq!(r1.result.results.len(), 2, "step 2: expected 2 hits");
 
     // ---- 3. second query: cache hit, same 2 hits ----
-    let r2 = service.query(&ns, &req).await.expect("query #2");
-    assert_eq!(r2.results.len(), 2, "step 3: expected same 2 cached hits");
+    let r2 = service
+        .query_with_cache_source(&ns, &req)
+        .await
+        .expect("query #2");
     assert_eq!(
-        r1.results[0].id, r2.results[0].id,
-        "step 3: identical top hit across hit/miss"
+        r2.cache_source,
+        QueryCacheSource::ExactCache,
+        "step 3: identical repeat must be served from the exact cache — \
+         this is what proves the cache is in the hot path"
+    );
+    assert_eq!(r2.result.results.len(), 2, "step 3: same 2 cached hits");
+    assert_eq!(
+        r1.result.results[0].id, r2.result.results[0].id,
+        "step 3: identical top hit across miss/hit"
     );
 
-    // ---- 4. side-channel upsert via manager, bypassing the cache ----
+    // ---- 4. side-channel upsert via manager, bypassing the service ----
     manager
         .upsert(&ns, vec![UpsertRow::from((3, unit_vector(2)))])
         .await
         .expect("manager.upsert bypass");
 
-    // ---- 5. third query: still a cache hit, still 2 hits ----
-    let r3 = service.query(&ns, &req).await.expect("query #3");
+    // ---- 5. third query: cache miss again — the manager write advanced
+    //         the table version, so the generation changed and the fresh
+    //         row is reflected. Under the old generation-counter design
+    //         this returned the stale 2-result set; version-derived
+    //         generation makes the bypass write visible. ----
+    let r3 = service
+        .query_with_cache_source(&ns, &req)
+        .await
+        .expect("query #3");
     assert_eq!(
-        r3.results.len(),
-        2,
-        "step 5: cache must still serve the stale 2-result set, \
-         not the fresh 3-row table. If this fails, the cache is \
-         a no-op and the test is not exercising invalidation."
+        r3.cache_source,
+        QueryCacheSource::Backend,
+        "step 5: a manager-level write advances the table version, so the \
+         next read misses the cache and reflects the new row"
+    );
+    assert_eq!(
+        r3.result.results.len(),
+        3,
+        "step 5: the bypass row is visible — no stale read"
     );
 
-    // ---- 6. upsert via service: bumps generation, evicts stale ----
+    // ---- 6. upsert via service: advances the version again ----
     service
         .upsert(&ns, vec![UpsertRow::from((4, unit_vector(3)))])
         .await
         .expect("service.upsert invalidating");
 
     // ---- 7. fourth query: cache miss, repopulates with all 4 ----
-    let r4 = service.query(&ns, &req).await.expect("query #4");
+    let r4 = service
+        .query_with_cache_source(&ns, &req)
+        .await
+        .expect("query #4");
+    assert_eq!(r4.cache_source, QueryCacheSource::Backend, "step 7: miss");
     assert_eq!(
-        r4.results.len(),
+        r4.result.results.len(),
         4,
-        "step 7: after invalidation the cache must repopulate and \
-         surface every row — the two from step 1, the bypass row \
-         from step 4, and the new row from step 6."
+        "step 7: after the version advanced the cache repopulates and \
+         surfaces every row — the two from step 1, the bypass row from \
+         step 4, and the new row from step 6"
     );
 }

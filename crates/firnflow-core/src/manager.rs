@@ -242,6 +242,49 @@ impl NamespaceManager {
         self.schema_info.get(ns).map(|r| r.has_ingested_at)
     }
 
+    /// Current cache generation for a namespace: the Lance table
+    /// version.
+    ///
+    /// The version advances on every commit — append, delete, index
+    /// build, compaction — and is persisted in the table manifest, so
+    /// it is identical across process restarts and across replicas
+    /// reading the same bucket. The result cache keys on this value so
+    /// a recovered NVMe entry is never served once the table it was
+    /// computed against has moved on.
+    ///
+    /// Returns `0` for a namespace that has no table yet (nothing has
+    /// been written). Lance table versions start at 1, so `0` can
+    /// never collide with a real version.
+    ///
+    /// Cheap on the hot path: when the namespace has a pooled handle,
+    /// `Table::version()` is an in-memory manifest read with no
+    /// object-store round-trip. A cold namespace pays one table-open —
+    /// the same cost a backend query would incur — and the handle is
+    /// then pooled. Never creates a table: a query against a
+    /// never-written namespace must not materialise one.
+    pub async fn generation(&self, ns: &NamespaceId) -> Result<u64, FirnflowError> {
+        // Warm pool: read the version straight off the cached handle.
+        // Clone the handle and drop the map guard before awaiting so we
+        // never hold a DashMap reference across an `.await`.
+        if let Some(entry) = self.handles.get(ns) {
+            let tbl = entry.table.clone();
+            drop(entry);
+            return tbl
+                .version()
+                .await
+                .map_err(|e| FirnflowError::Backend(format!("table.version: {e}")));
+        }
+        // Cold: open the table if it exists (caching the handle), else
+        // report generation 0 without creating anything.
+        match self.open_existing(ns).await? {
+            Some((tbl, _info)) => tbl
+                .version()
+                .await
+                .map_err(|e| FirnflowError::Backend(format!("table.version: {e}"))),
+            None => Ok(0),
+        }
+    }
+
     /// Number of namespaces currently holding a pooled
     /// `lancedb::Connection` + `lancedb::Table` handle. Mirrors the
     /// `firnflow_cached_handles` gauge and is exposed for tests
