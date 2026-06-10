@@ -18,11 +18,11 @@ Benchmarked at 100,000 vectors of 1536 dimensions (OpenAI embedding size) agains
 Two numbers decide whether Firn fits your workload, so it is worth being exact about them:
 
 *   **The IVF_PQ index is what makes search on object storage practical.** With no index every query is a brute-force scan at ~25 s; with one, a cold query is ~979 ms. Build the index (`POST /ns/{ns}/index`) after your first batch of writes.
-*   **The cache accelerates queries that repeat, not queries that are new.** A warm hit is a byte-identical repeat of an earlier query against the same namespace generation. It returns in microseconds and costs zero backend requests. A query Firn has not seen before misses the result cache and pays the cold cost above. See [What the cache does and does not do](#what-the-cache-does-and-does-not-do).
+*   **The cache accelerates queries that repeat, not queries that are new.** A warm hit is a byte-identical repeat of an earlier query against the same namespace generation. It returns in microseconds and, once the namespace's handle is warm, makes zero backend requests. A query Firn has not seen before misses the result cache and pays the cold cost above. See [What the cache does and does not do](#what-the-cache-does-and-does-not-do).
 
 ## What the cache does and does not do
 
-Firn caches a complete serialised query result set, keyed on the namespace, its generation counter, and a hash of the full query. A hit needs an exact repeat of the same query against the same namespace generation. Any write to the namespace bumps the generation and invalidates its cached results in O(1) time, so a running server does not return stale results after a write.
+Firn caches a complete serialised query result set, keyed on the namespace, its current Lance table version, and a hash of the full query. A hit needs an exact repeat of the same query against the same version. Any committed write advances the version and makes the namespace's cached results unreachable, so a running server does not return stale results after a write. Because the version is persisted, that holds across a restart too. Forming the key reads that version, so the first query to a namespace in a process opens its table handle (one manifest read) even on a cache hit; later hits read it from memory.
 
 Novel queries always miss this cache and pay the full LanceDB-over-S3 cost. That cost is already low once an IVF_PQ index exists, and LanceDB's own IVF_PQ / FTS indexes, the per-namespace connection pool, and OS page caching reduce it further, but Firn's result cache does not. If your traffic is mostly unique queries the result-cache hit rate will be low by design, and the value is the cost and multi-tenant operational model of search on object storage rather than a microsecond latency on every call. The opt-in [semantic cache](#opt-in-semantic-cache) widens hits to near-duplicate queries, in exchange for returning an approximate result that was not freshly searched.
 
@@ -290,7 +290,7 @@ The read path is:
 
 - single-vector queries only — `vectors`, `text`, and hybrid shapes are rejected when `semantic_cache.enabled` is true;
 - `min_similarity` must be in `(0.0, 1.0]`. Omitting picks a deliberately strict default of `0.995`;
-- the sidecar is in-memory, single-process, and bounded to 1024 entries per namespace generation. Writes / deletes / compactions drop the namespace's sidecar list together with the exact cache. Index builds do not invalidate either layer.
+- the sidecar is in-memory, single-process, and bounded to 1024 entries per namespace generation. Any committed change drops both layers for the namespace: writes, deletes, and compactions, and also index builds, since an index build is itself a Lance commit that advances the table version the cache keys on.
 
 **Why opt-in.** A semantic hit is an *approximate* result reuse, not proof that Firn searched the corpus for the new query. High vector similarity does not guarantee an identical top-k, especially under strict ranking. Three Prometheus counters — `firnflow_semantic_cache_hits_total`, `firnflow_semantic_cache_misses_total`, and `firnflow_semantic_cache_rejections_total{reason=…}` — make the behaviour visible so operators can decide whether the latency win is worth the approximation for a given workload.
 

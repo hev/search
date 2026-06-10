@@ -89,43 +89,43 @@ handler</code></pre>
     <p>Every query follows this exact sequence:</p>
     <ol>
       <li><strong>Hash the query.</strong> The cacheable search fields in <code>QueryRequest</code> (vector, vectors, k, nprobes, text) are serialised with bincode and hashed with xxh3 to produce a deterministic <code>QueryHash</code>. The <code>semantic_cache</code> control block is deliberately excluded so toggling it does not split otherwise-identical exact-cache entries.</li>
-      <li><strong>Build the cache key.</strong> The key is a tuple of <code>(namespace, generation, query_hash)</code>. The generation counter ensures stale results are never returned after a write.</li>
+      <li><strong>Build the cache key.</strong> The key is a tuple of <code>(namespace, generation, query_hash)</code>. The generation is derived from the namespace's current Lance table version, read from the pooled handle (in memory once the handle is warm), so it advances on every committed write and is stable across process restarts &mdash; a recovered NVMe entry is only reachable while the table is unchanged. The manifest commit timestamp is folded in so a deleted-and-recreated namespace does not reuse a prior incarnation's cache entries.</li>
       <li><strong>Check foyer.</strong> The HybridCache checks RAM first, then NVMe. On a hit, the serialised result is returned and a <code>cache_hits_total</code> metric is recorded.</li>
       <li><strong>Optional semantic lookup.</strong> If the exact cache misses and the request includes <code>semantic_cache.enabled: true</code>, Firn scans the namespace's in-memory semantic sidecar for a nearby single-vector query with matching <code>k</code> and resolved <code>nprobes</code>. A hit returns that cached result immediately and records <code>firnflow_semantic_cache_hits_total</code>. Ineligible shapes such as multivector, FTS, and hybrid requests return 400 when semantic caching is enabled.</li>
       <li><strong>On miss: query object storage.</strong> LanceDB runs the query against the Lance table on the configured backend (vector nearest-neighbour, multivector, BM25 FTS, or hybrid) using the namespace's pooled <code>Connection</code> and <code>Table</code> handle &mdash; the first request for a namespace opens and caches the handle, every subsequent request skips the credential-resolution and manifest-read round-trips. The result is serialised with bincode and stored in foyer. Eligible semantic-cache requests also add the query vector and result bytes to the sidecar. The exact-cache miss counter was already recorded before the semantic lookup; backend work records <code>s3_requests_total</code>. (The metric name predates native GCS support; it now counts object-store operations regardless of backend.)</li>
       <li><strong>Return the result.</strong> The query duration (cache hit or miss) is recorded in the <code>query_duration_seconds</code> histogram.</li>
     </ol>
-    <p>The semantic sidecar is bounded to 1024 entries per namespace generation and lives only in the Firn process. Writes, deletes, and compactions drop it alongside the exact cache; index builds leave both layers intact because rows have not changed.</p>
+    <p>The semantic sidecar is bounded to 1024 entries per namespace generation and lives only in the Firn process. Any committed change &mdash; write, delete, compaction, or index build &mdash; advances the table version and so drops both the exact cache and the sidecar for that namespace on the next read. Index builds invalidate even though the rows are unchanged, because building an index is itself a Lance commit; the trade-off buys post-build queries that use the new index instead of replaying a pre-index result.</p>
 
     <h2>Write path</h2>
     <p>Writes follow a strict ordering to prevent stale cache state:</p>
     <ol>
       <li><strong>Append to object storage.</strong> Rows are appended to the namespace's Lance table via LanceDB's native append API.</li>
-      <li><strong>Invalidate the cache.</strong> Only after the write to the backend succeeds, the namespace's generation counter is atomically incremented. This makes all previously cached entries for that namespace unreachable by key.</li>
+      <li><strong>Invalidation is intrinsic.</strong> A successful append advances the Lance table version, so the next read derives a new generation and every entry cached against the prior version becomes unreachable by key. There is no separate invalidation step to forget.</li>
       <li><strong>Record metrics.</strong> <code>write_duration_seconds</code> and <code>s3_requests_total{operation=upsert}</code> are updated.</li>
     </ol>
-    <p>The "invalidate after confirmed write" ordering is critical: if the upstream write fails, the cache is left untouched with valid data. There is no window where the cache is empty and queries would storm the backend.</p>
+    <p>This is automatic and safe: the version only advances on a committed write, so a failed write leaves the generation &mdash; and therefore the cache &mdash; untouched with valid data. There is no window where the cache is empty and queries would storm the backend.</p>
 
     <h2>Cache invalidation</h2>
-    <p>Firn uses a <strong>generation counter</strong> strategy for cache invalidation. This was chosen after evaluating several alternatives.</p>
+    <p>Firn keys cached results on the <strong>Lance table version</strong>, so invalidation falls out of the data itself rather than a separate bookkeeping step.</p>
 
     <h3>How it works</h3>
-    <p>A <code>DashMap&lt;NamespaceId, AtomicU64&gt;</code> tracks a generation number for each namespace. The foyer cache key includes the generation:</p>
+    <p>The cache key carries a per-namespace generation:</p>
     <pre><code>CacheKey {
     namespace: NamespaceId,
     generation: u64,
     query: QueryHash,
 }</code></pre>
-    <p>On any write to a namespace, the generation is atomically incremented. All previously cached entries (at the old generation) are now unreachable by key construction. foyer's normal LFU/LRU eviction reclaims their space over time.</p>
+    <p>The generation is a hash of the namespace's current Lance table <code>version</code> and the manifest's commit <code>timestamp_nanos</code>. The query read path reads these from the pooled table handle and forms the generation before consulting the cache. Because the version advances on every commit (append, delete, compaction, index build), any change moves the generation and leaves entries cached against the prior version unreachable by key construction; foyer's normal LFU/LRU eviction reclaims their space over time. The commit timestamp distinguishes two incarnations of a namespace that reach the same version after a delete-and-recreate.</p>
 
     <h3>Why this approach</h3>
     <table>
       <thead><tr><th>Property</th><th>Value</th></tr></thead>
       <tbody>
-        <tr><td>Invalidation cost</td><td>O(1) per write, regardless of cached query count</td></tr>
-        <tr><td>Auxiliary memory</td><td>One <code>u64</code> per namespace (not per cache entry)</td></tr>
-        <tr><td>Race conditions</td><td>None. The generation is captured at query start, so a concurrent write cannot cause a stale result to be cached at the new generation.</td></tr>
-        <tr><td>Trade-off</td><td>Stale-generation entries remain in the cache until evicted by foyer. Under write-heavy workloads, the NVMe tier may hold unreachable entries temporarily.</td></tr>
+        <tr><td>Invalidation cost</td><td>O(1) and implicit &mdash; a committed write already changes the version.</td></tr>
+        <tr><td>Survives restart</td><td>Yes. The version lives in the Lance manifest, so a recovered NVMe entry is only reachable while the table is unchanged. An earlier in-memory counter reset to 0 on restart and could serve stale entries.</td></tr>
+        <tr><td>Replication</td><td>Single replica per bucket. The version is read from the cached handle without a <code>checkout_latest</code>, so one process does not observe another's commits.</td></tr>
+        <tr><td>Trade-off</td><td>Forming the generation reads the version before the cache lookup, so the first query to a namespace in a process opens its handle (one manifest read) even on a cache hit; later hits read the version from memory. Stale-generation entries also linger until foyer evicts them.</td></tr>
       </tbody>
     </table>
 

@@ -220,7 +220,7 @@
         <ul>
           <li><strong>The <code>semantic_cache</code> block does not change the exact-cache key.</strong> Toggling <code>enabled</code> on and off does not split otherwise-identical entries.</li>
           <li><strong>k and nprobes must match</strong> between the incoming request and the cached candidate; mismatches are skipped.</li>
-          <li><strong>Writes, deletes, and compactions drop the semantic layer</strong> alongside the exact cache. Index builds do <em>not</em> invalidate either layer.</li>
+          <li><strong>Any committed change drops the semantic layer</strong> alongside the exact cache: writes, deletes, compactions, and index builds. An index build invalidates too, because it is a Lance commit that advances the table version the cache keys on, even though the rows are unchanged.</li>
           <li><strong>Behaviour is observable</strong> via three Prometheus counters: <code>firnflow_semantic_cache_hits_total{namespace}</code>, <code>firnflow_semantic_cache_misses_total{namespace}</code>, and <code>firnflow_semantic_cache_rejections_total{namespace, reason}</code> (with bounded reason labels: <code>unsupported_query_shape</code>, <code>empty_index</code>).</li>
         </ul>
         <pre><code>curl -X POST http://localhost:3000/ns/demo/query \

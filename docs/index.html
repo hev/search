@@ -28,7 +28,7 @@
     <div class="hero">
       <h1>Vector search on object storage</h1>
       <p class="subtitle">
-        A multi-tenant search engine that pairs LanceDB with a tiered RAM + NVMe cache. Every namespace lives on cheap object storage (AWS S3, MinIO, R2, Tigris, DigitalOcean Spaces, or native Google Cloud Storage) with near-zero idle cost. Every cache hit costs zero backend requests.
+        A multi-tenant search engine that pairs LanceDB with a tiered RAM + NVMe cache. Every namespace lives on cheap object storage (AWS S3, MinIO, R2, Tigris, DigitalOcean Spaces, or native Google Cloud Storage) with near-zero idle cost. A cache hit never re-runs the search, and once a namespace's handle is warm it costs zero backend requests.
       </p>
       <div class="hero-actions">
         <a href="quickstart.html" class="btn btn-primary">Get started</a>
