@@ -57,7 +57,7 @@
 
     <h2>How it works</h2>
     <p>
-      Firn stores every namespace under its own object-storage prefix using <strong>LanceDB</strong> as the storage engine. A tiered cache powered by <strong>foyer</strong> sits in front of the backend, serving repeated queries from RAM or NVMe in microseconds instead of milliseconds. Single-vector queries can also opt into semantic caching, where a near-duplicate query may reuse a previous top-k result when its vector clears your cosine-similarity threshold. Writes automatically invalidate both cache layers for the affected namespace using an O(1) generation counter strategy.
+      Firn stores every namespace under its own object-storage prefix using <strong>LanceDB</strong> as the storage engine. A tiered cache powered by <strong>foyer</strong> sits in front of the backend, serving repeated queries from RAM or NVMe in microseconds instead of milliseconds. Single-vector queries can also opt into semantic caching, where a near-duplicate query may reuse a previous top-k result when its vector clears your cosine-similarity threshold. Writes automatically invalidate both cache layers for the affected namespace, because the cache key carries the Lance table version and every committed write advances it.
     </p>
     <p>
       The result: your data lives cheaply on object storage, but hot and near-duplicate queries can feel local. The <code>/metrics</code> endpoint shows exactly how many backend requests the exact and semantic cache layers are saving you.
@@ -114,7 +114,7 @@
     </table>
 
     <p>
-      Without an index, each cache miss costs <strong>25 seconds</strong>. With IVF_PQ, that drops to under 1 second. The cache eliminates the backend round-trip entirely for repeated queries, bringing latency to microseconds regardless of index type.
+      Without an index, each cache miss costs <strong>25 seconds</strong>. With IVF_PQ, that drops to under 1 second. For repeated queries the cache serves the stored result without re-running the search, bringing latency to microseconds regardless of index type.
     </p>
 
     <h2>Key technologies</h2>

@@ -179,7 +179,7 @@
         <span class="endpoint-desc">Vector, full-text, or hybrid search</span>
       </div>
       <div class="endpoint-body">
-        <p>Queries the namespace through the cache-aside path. On a cache hit, the result is returned from RAM or NVMe with zero object-storage access. On a miss, the query runs against the configured backend via LanceDB and the result is cached.</p>
+        <p>Queries the namespace through the cache-aside path. On a cache hit, the result is returned from RAM or NVMe without re-running the search; once the namespace handle is warm a hit makes no object-storage access, though the first query to a namespace in a process reads the table manifest once to form the version-based cache key. On a miss, the query runs against the configured backend via LanceDB and the result is cached.</p>
 
         <h4>Query modes</h4>
         <p>The query mode is determined by which fields are present. The vector field uses <code>vector: float32[]</code> for single-vector namespaces and <code>vectors: float32[][]</code> for multivector namespaces:</p>
