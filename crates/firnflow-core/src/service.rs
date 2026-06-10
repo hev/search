@@ -120,12 +120,15 @@ impl NamespaceService {
         &self.semantic
     }
 
-    /// Write path: append rows via the manager, then invalidate
-    /// every cached query result for this namespace. Invalidation
-    /// happens *after* the write succeeds so that a failed append
-    /// leaves the cache in a self-consistent state (worst case the
-    /// cache keeps returning pre-failure results until the next
-    /// successful write).
+    /// Write path: append rows via the manager. The append advances
+    /// the Lance table version, which is the cache generation, so the
+    /// next read derives a new generation and every result cached
+    /// against the pre-write version becomes unreachable — no explicit
+    /// cache bump is needed. Because the version only moves on a
+    /// successful commit, a failed append leaves the cache
+    /// self-consistent (it keeps serving the pre-failure results). The
+    /// semantic sidecar is cleared eagerly to free memory rather than
+    /// wait for its lazy generation-mismatch drop on the next lookup.
     ///
     /// Records `s3_requests_total{operation="upsert"}` eagerly (one
     /// per call) and `write_duration_seconds` on return.
@@ -137,27 +140,30 @@ impl NamespaceService {
         let start = Instant::now();
         self.metrics.record_s3_request(ns, "upsert");
         self.manager.upsert(ns, rows).await?;
-        self.cache.invalidate(ns);
         self.semantic.invalidate(ns);
         self.metrics.record_write(ns, start.elapsed().as_secs_f64());
         Ok(())
     }
 
-    /// Delete every object under the namespace prefix and invalidate
-    /// its cache entries.
+    /// Delete every object under the namespace prefix.
     ///
-    /// Same after-success ordering as [`upsert`](Self::upsert): the
-    /// manager-side S3 cleanup runs first, and only if it succeeds
-    /// do we bump the generation counter. A failed delete leaves
-    /// the cache serving the pre-delete entries, which is
-    /// self-consistent with the data still sitting in S3.
+    /// Removing the Lance table drops the namespace back to "no table"
+    /// (generation 0 on the next read), so results cached against the
+    /// deleted table become unreachable. Recreating the namespace under
+    /// the same name is safe even though its Lance version restarts at
+    /// 1: the cache generation folds in the manifest commit timestamp
+    /// (see [`NamespaceManager::generation`](crate::NamespaceManager::generation)),
+    /// so the recreated incarnation keys differently from the deleted
+    /// one and cannot re-serve its cached bytes. The semantic sidecar is
+    /// cleared eagerly. A failed delete leaves the cache serving the
+    /// pre-delete entries, self-consistent with the data still sitting
+    /// in object storage.
     ///
-    /// Returns the number of S3 objects the manager removed.
+    /// Returns the number of objects the manager removed.
     pub async fn delete(&self, ns: &NamespaceId) -> Result<usize, FirnflowError> {
         let start = Instant::now();
         self.metrics.record_s3_request(ns, "delete");
         let count = self.manager.delete(ns).await?;
-        self.cache.invalidate(ns);
         self.semantic.invalidate(ns);
         self.metrics.record_write(ns, start.elapsed().as_secs_f64());
         Ok(count)
@@ -201,6 +207,17 @@ impl NamespaceService {
         validate_semantic_cache_request(req)?;
 
         let query_hash = hash_query_for_cache(req)?;
+
+        // Derive the cache generation from the persistent Lance table
+        // version before consulting either layer. The in-process
+        // generation counter resets to 0 on restart; the table version
+        // does not, so seeding the counter from it makes a recovered
+        // NVMe entry reachable only when the namespace has not changed
+        // since the entry was stored. Both the exact cache and the
+        // semantic sidecar (which shares the counter) key off this
+        // value. Cheap on a warm handle — an in-memory manifest read.
+        let generation = self.manager.generation(ns).await?;
+        self.cache.set_generation(ns, generation);
 
         // 1. Exact cache — always consulted, opt-in or not.
         let (exact_hit, captured_generation) = self.cache.try_get(ns, query_hash).await;
@@ -303,10 +320,14 @@ impl NamespaceService {
     /// Records `firnflow_index_build_duration_seconds{namespace, kind}`
     /// on completion — the "Index Tax" metric.
     ///
-    /// Index build does **not** invalidate the cache. Cached results
-    /// are still correct post-build; the index is a structural
-    /// optimisation, not a data change. The semantic sidecar is
-    /// likewise left untouched.
+    /// Building an index is a Lance commit, so it advances the table
+    /// version and the next read derives a new generation: results
+    /// cached before the build become unreachable. This is a behaviour
+    /// change from the old generation-counter design, which left the
+    /// cache untouched on index builds. It is the safer default —
+    /// post-build queries run against the new index instead of
+    /// replaying a pre-index cached result — at the cost of dropping
+    /// the warm cache after an infrequent, operator-triggered build.
     pub async fn create_index(
         &self,
         ns: &NamespaceId,
@@ -339,8 +360,10 @@ impl NamespaceService {
     /// only). Records `firnflow_index_build_duration_seconds{kind="scalar"}`
     /// on completion.
     ///
-    /// Index build does **not** invalidate the cache: the index is
-    /// a pure read-path optimisation, the data underneath is unchanged.
+    /// Like the other index builders, this is a Lance commit, so it
+    /// advances the table version and the next read derives a new
+    /// generation — the warm cache is dropped even though the rows
+    /// themselves are unchanged. See [`create_index`](Self::create_index).
     pub async fn create_scalar_index(
         &self,
         ns: &NamespaceId,
@@ -356,16 +379,17 @@ impl NamespaceService {
 
     /// Compact the namespace's data files.
     ///
+    /// Compaction is a Lance commit, so it advances the table version
+    /// and the next read derives a new generation — results cached
+    /// against the pre-compaction version fall out of reach without an
+    /// explicit bump. The semantic sidecar is cleared eagerly.
+    ///
     /// Records `firnflow_compaction_duration_seconds{namespace}` on
-    /// completion. Invalidates both the exact cache and the semantic
-    /// sidecar after a successful compaction — the underlying data
-    /// files change, so cached result bytes may reference stale file
-    /// offsets.
+    /// completion.
     pub async fn compact(&self, ns: &NamespaceId) -> Result<CompactResult, FirnflowError> {
         let start = Instant::now();
         self.metrics.record_s3_request(ns, "compact");
         let result = self.manager.compact(ns).await?;
-        self.cache.invalidate(ns);
         self.semantic.invalidate(ns);
         self.metrics
             .record_compaction(ns, start.elapsed().as_secs_f64());
