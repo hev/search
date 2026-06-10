@@ -2,22 +2,33 @@
 
 **Firn** is a high-performance, multi-tenant vector and full-text search engine backed by object storage (AWS S3, MinIO, Cloudflare R2, Tigris, DigitalOcean Spaces, Google Cloud Storage). It is designed as a credible open-source alternative to turbopuffer, proving that a professional-grade tiered storage architecture (**RAM → NVMe → object storage**) is achievable entirely from open-source components. See [Storage backends](#storage-backends) for the full compatibility matrix.
 
-The cost efficiency of object storage with the speed of local RAM. A multi-tenant vector and full-text search engine backed by any S3-compatible bucket or native Google Cloud Storage. Built with LanceDB and Foyer for microsecond-scale search latency on top of object storage.
+A multi-tenant vector and full-text search engine backed by any S3-compatible bucket or native Google Cloud Storage. Built on LanceDB and foyer: your data lives on cheap object storage, and a tiered RAM + NVMe cache serves repeated queries without a backend round-trip.
 
-## 25 Seconds to 72 Microseconds
+## Performance
 
-On real-world cloud infrastructure (AWS S3), a raw linear scan of 100,000 vectors can take **25 seconds** per query. By pairing **LanceDB** with a tiered **foyer** (RAM + NVMe) cache, **Firn** collapses that bottleneck:
+Benchmarked at 100,000 vectors of 1536 dimensions (OpenAI embedding size) against AWS S3 in `eu-west-1`:
 
-*   **Cold Query (S3 Linear Scan):** ~25.1s
-*   **Cold Query (ANN Indexed):** ~979ms (**25x faster**)
-*   **Warm Query (Internal Engine):** **~72µs** (**350,000x faster**)
-*   **End-to-End HTTP (Warm):** **< 5ms** (including network RTT and JSON overhead)
+| Query path | p50 latency |
+| --- | --- |
+| Cold, no index (brute-force scan over S3) | ~25.1 s |
+| Cold, IVF_PQ index (first run of a given query) | ~979 ms |
+| Warm (byte-identical repeat, served from cache) | ~72 µs |
+| End-to-end HTTP, warm | < 5 ms |
 
-Every cache hit results in **zero** object-storage requests, directly reducing your cloud bill while providing "instant" search response times.
+Two numbers decide whether Firn fits your workload, so it is worth being exact about them:
+
+*   **The IVF_PQ index is what makes search on object storage practical.** With no index every query is a brute-force scan at ~25 s; with one, a cold query is ~979 ms. Build the index (`POST /ns/{ns}/index`) after your first batch of writes.
+*   **The cache accelerates queries that repeat, not queries that are new.** A warm hit is a byte-identical repeat of an earlier query against the same namespace generation. It returns in microseconds and costs zero backend requests. A query Firn has not seen before misses the result cache and pays the cold cost above. See [What the cache does and does not do](#what-the-cache-does-and-does-not-do).
+
+## What the cache does and does not do
+
+Firn caches a complete serialised query result set, keyed on the namespace, its generation counter, and a hash of the full query. A hit needs an exact repeat of the same query against the same namespace generation. Any write to the namespace bumps the generation and invalidates its cached results in O(1) time, so a running server does not return stale results after a write.
+
+Novel queries always miss this cache and pay the full LanceDB-over-S3 cost. That cost is already low once an IVF_PQ index exists, and LanceDB's own IVF_PQ / FTS indexes, the per-namespace connection pool, and OS page caching reduce it further, but Firn's result cache does not. If your traffic is mostly unique queries the result-cache hit rate will be low by design, and the value is the cost and multi-tenant operational model of search on object storage rather than a microsecond latency on every call. The opt-in [semantic cache](#opt-in-semantic-cache) widens hits to near-duplicate queries, in exchange for returning an approximate result that was not freshly searched.
 
 ### Demo
 
-Cold query, warm query, full-text search, and cache proof, all in 60 seconds. This demo runs against local MinIO; on real AWS S3 the cold query takes 25 seconds instead of 109ms, making the cache speedup even more dramatic.
+Cold query, warm query, full-text search, and cache proof, all in 60 seconds. The demo runs against local MinIO with no index, so the cold query is fast here (~109 ms). On real AWS S3 an unindexed cold query is closer to ~25 s; an IVF_PQ index brings cold queries down to ~979 ms, and repeated queries are served from cache in microseconds.
 
 ![Firn demo](bench/demo.gif)
 
@@ -150,6 +161,8 @@ curl -X POST http://localhost:3000/ns/demo/upsert \
      }'
 ```
 
+Rows are appended. Re-sending a row whose `id` already exists adds another row rather than replacing the old one; idempotent upsert by `id` is planned (tracked in [#31](https://github.com/gordonmurray/firnflow/issues/31)).
+
 ### 3. Perform a Search
 Query the same namespace for the nearest neighbor:
 
@@ -199,7 +212,7 @@ curl -X POST http://localhost:3000/ns/demo/upsert \
 | `/health` | `GET` | open | Liveness check |
 | `/metrics` | `GET` | metrics or open | Prometheus exposition format |
 | `/ns/{ns}` | `DELETE` | admin | Removes all data (object storage + cache) for a namespace |
-| `/ns/{ns}/upsert` | `POST` | read/write | Insert/update vectors and data |
+| `/ns/{ns}/upsert` | `POST` | read/write | Append vectors and data (not deduplicated by `id`) |
 | `/ns/{ns}/query` | `POST` | read/write | Vector, FTS, or hybrid search |
 | `/ns/{ns}/list` | `GET` | read/write | Cursor-paginated list ordered by `_ingested_at` |
 | `/ns/{ns}/warmup` | `POST` | read/write | Non-blocking cache pre-warm hint |

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- README and docs-site performance framing rewritten for accuracy. The headline no longer compares a warm cache hit against an unindexed brute-force scan; it leads with the measured cold IVF_PQ (~979 ms) and warm-repeat (~72 µs) numbers and states plainly that the result cache only accelerates byte-identical repeat queries, not novel ones. A "What the cache does and does not do" section spells out that novel queries miss the result cache and pay the full backend cost. The `docs/index.html` warm-latency stat tile is relabelled from "(AWS S3)" to "(repeated query)" because warm hits never touch the backend.
+- `/upsert` is now described as append rather than "insert or update" in `docs/api.html` and the README API table: rows are appended and not deduplicated by `id`. Idempotent upsert by `id` is tracked in #31.
+- `docs/quickstart.html` semantic-cache example now uses the recommended default threshold (`min_similarity: 0.995`) instead of `0.98`, matching the surrounding guidance, and the "two minutes" wording no longer omits the from-source build time.
+
 ## [0.8.0] - 2026-05-31
 
 ### Added

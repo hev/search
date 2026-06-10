@@ -108,10 +108,11 @@
       <div class="endpoint-header" aria-expanded="true">
         <span class="method method-post">POST</span>
         <span class="endpoint-path">/ns/{namespace}/upsert</span>
-        <span class="endpoint-desc">Insert or update vectors and text</span>
+        <span class="endpoint-desc">Append vectors and text</span>
       </div>
       <div class="endpoint-body">
         <p>Appends rows to the namespace's Lance table. The vector dimension and the vector kind (single-vector or multivector) are inferred from the first upsert and enforced on subsequent calls. After a successful write, all cached query results for this namespace are invalidated.</p>
+        <p>Rows are appended and not deduplicated by <code>id</code>: re-sending a row with an <code>id</code> that already exists adds another row rather than replacing the previous one. Idempotent upsert by <code>id</code> is planned.</p>
 
         <p>Each row carries one of two vector payload shapes, depending on the namespace's kind:</p>
         <ul>
@@ -125,7 +126,7 @@
           <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
           <tbody>
             <tr><td><code>rows</code></td><td>array</td><td>Yes</td><td>List of rows to insert</td></tr>
-            <tr><td><code>rows[].id</code></td><td>u64</td><td>Yes</td><td>Unique identifier for the row</td></tr>
+            <tr><td><code>rows[].id</code></td><td>u64</td><td>Yes</td><td>Caller-assigned row identifier. Not deduplicated; re-using an id appends another row today.</td></tr>
             <tr><td><code>rows[].vector</code></td><td>float32[]</td><td>One of</td><td>Single dense vector (single-vector namespaces). Length must match the namespace dimension.</td></tr>
             <tr><td><code>rows[].vectors</code></td><td>float32[][]</td><td>One of</td><td>Bag of equal-length sub-vectors (multivector namespaces). Each inner vector must match the namespace's inner sub-vector dimension; outer list length is the per-row sub-vector count.</td></tr>
             <tr><td><code>rows[].text</code></td><td>string</td><td>No</td><td>Text payload for full-text search</td></tr>

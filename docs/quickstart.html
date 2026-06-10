@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Quickstart - Firn</title>
-  <meta name="description" content="Get Firn running in two minutes with Docker Compose. Insert vectors, run queries, and check your cache metrics.">
+  <meta name="description" content="Get Firn running with Docker Compose. Insert vectors, run queries, and check your cache metrics.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -46,7 +46,7 @@
 
   <main class="content">
     <h1>Quickstart</h1>
-    <p class="subtitle">Get Firn running locally in under two minutes. All you need is Docker.</p>
+    <p class="subtitle">Get Firn running locally with Docker. The first <code>docker compose up --build</code> compiles the server from source, so give it a few minutes; later starts take seconds.</p>
 
     <h2>Prerequisites</h2>
     <ul>
@@ -112,7 +112,7 @@ curl -X POST http://localhost:3000/ns/demo/query \
   -d '{
     "vector": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "k": 2,
-    "semantic_cache": {"enabled": true, "min_similarity": 0.98}
+    "semantic_cache": {"enabled": true, "min_similarity": 0.995}
   }'
 
 # Near-duplicate query: exact cache misses, semantic cache may hit.
@@ -121,7 +121,7 @@ curl -X POST http://localhost:3000/ns/demo/query \
   -d '{
     "vector": [0.0, 0.999, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0],
     "k": 2,
-    "semantic_cache": {"enabled": true, "min_similarity": 0.98}
+    "semantic_cache": {"enabled": true, "min_similarity": 0.995}
   }'</code></pre>
 
     <div class="callout callout-warning">
