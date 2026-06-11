@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - The async endpoints (`warmup`, `index`, `fts-index`, `scalar-index`, `compact`) now return `{ operation_id, kind, namespace, status }` in their `202 Accepted` instead of a `{ "status": "... queued" }` confirmation; warmup additionally keeps its `queued` count. Clients should poll `GET /operations/{operation_id}` for completion rather than scraping the duration histograms.
+- `/upsert` is now idempotent by row `id`: it writes through LanceDB's merge-insert keyed on `id` instead of an unconditional append. Re-sending a row whose `id` already exists replaces the stored row in full (vector, text, and `_ingested_at`) rather than adding a second copy, so client retries after an ambiguous timeout and genuine document updates are both safe, and `/query` and `/list` no longer surface duplicate rows for an updated id. Duplicate ids within a single request are rejected with `400` (Lance leaves merge behaviour undefined when several source rows match one target row). `_ingested_at` now records the most recent write to a row rather than its first insert, so `/list` ordered by `_ingested_at` reads as "recently written or updated". Merge-insert finds matches by scanning for `id`; there is no scalar index on `id` yet, so writes to a large namespace pay a full-fragment scan per batch — an auto-built BTree on `id` is tracked in #66. Closes #31.
 
 ## [0.8.1] - 2026-06-10
 
