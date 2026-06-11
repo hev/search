@@ -127,7 +127,7 @@ async fn reupsert_replaces_single_vector_row() {
     // the new vector; id=1 is the top hit, carries the new text, and
     // appears exactly once.
     let results = manager
-        .query(&ns, unit_vector(2), None, 10, None, None)
+        .query(&ns, unit_vector(2), None, 10, None, None, true)
         .await
         .expect("query")
         .results;
@@ -270,7 +270,15 @@ async fn multivector_reupsert_replaces_not_appends() {
     );
 
     let results = manager
-        .query(&ns, Vec::new(), Some(vec![unit_vector(2)]), 10, None, None)
+        .query(
+            &ns,
+            Vec::new(),
+            Some(vec![unit_vector(2)]),
+            10,
+            None,
+            None,
+            true,
+        )
         .await
         .expect("multivector query")
         .results;
