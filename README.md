@@ -33,6 +33,36 @@ Cold query, warm query, full-text search, and cache proof, all in 60 seconds. Th
 
 ![Firn demo](bench/demo.gif)
 
+## Python package
+
+The engine also ships as [`firn` on PyPI](https://pypi.org/project/firn/), embedding Firn in your Python process with no server to run. Vector, BM25 full-text, and hybrid search work against a local directory or any supported object-storage backend.
+
+```bash
+pip install firn
+```
+
+```python
+import firn
+
+db = firn.connect("./firn_data")  # a local folder; or storage_url="s3://bucket"
+
+db.add([
+    {"id": 1, "vector": [1.0, 0.0, 0.0, 0.0], "text": "the quick brown fox"},
+    {"id": 2, "vector": [0.0, 1.0, 0.0, 0.0], "text": "a lazy dog sleeps"},
+    {"id": 3, "vector": [0.0, 0.0, 1.0, 0.0], "text": "the fox runs fast"},
+])
+
+# full-text + vector, fused in one call
+for hit in db.search("fox", vector=[1.0, 0.0, 0.0, 0.0], limit=3):
+    print(hit.id, hit.score, hit.text)
+```
+
+![firn Python package demo](bench/python-demo.gif)
+
+`tenant="customer-42"` on any call selects a physically separate namespace, the same isolation the server provides. Wheels cover Linux x86_64 and aarch64 and macOS, on Python 3.10 and newer; the package versions independently of the server on its own `firn-v*` tags (current: `firn 0.1.0`). Runnable examples, including image search with CLIP embeddings on object storage, live in [`examples/`](examples/).
+
+The v0.1 scope is embedded use only: the package does not connect to a running Firn server, every row carries a vector (`text` rides along for full-text and hybrid search), and deletes are namespace-level rather than per row.
+
 ## Architecture
 
 **Firn** is built on a "Tiered Storage" philosophy:
