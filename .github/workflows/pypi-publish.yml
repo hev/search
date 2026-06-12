@@ -41,12 +41,37 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+      # macOS wheels build natively on the runner, so protoc is installed
+      # here. The Linux wheels build inside the manylinux container and
+      # pick protoc up from before-script-linux on the maturin step below.
+      # lance-encoding's build script needs protoc (prost-build).
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
       # abi3-py310 means one wheel per platform serves every Python >= 3.10.
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux || 'auto' }}
+          # The manylinux container has no protoc. Download a pinned
+          # release, verify it against a known SHA256, and unpack it
+          # under /usr/local so the binary and its bundled well-known
+          # .proto types (/usr/local/include) are both on the default
+          # search path. One x86_64 protoc serves the aarch64 job too:
+          # the build script runs on the host arch during cross-compile.
+          before-script-linux: |
+            set -euo pipefail
+            PROTOC_VERSION=28.3
+            PROTOC_SHA256=0ad949f04a6a174da83cdcbdb36dee0a4925272a5b6d83f79a6bf9852076d53f
+            cd /tmp
+            curl -fsSL -o protoc.zip \
+              "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+            echo "${PROTOC_SHA256}  protoc.zip" | sha256sum -c -
+            command -v unzip >/dev/null 2>&1 || yum install -y unzip
+            unzip -o protoc.zip -d /usr/local 'bin/protoc' 'include/*'
+            chmod +x /usr/local/bin/protoc
+            protoc --version
           args: --release --strip --out dist -m python/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
