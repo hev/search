@@ -69,7 +69,18 @@ jobs:
             curl -fsSL -o /tmp/protoc.zip \
               "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
             echo "${PROTOC_SHA256}  /tmp/protoc.zip" | sha256sum -c -
-            command -v unzip >/dev/null 2>&1 || yum install -y unzip
+            # The x86_64 manylinux image ships unzip; the aarch64 cross
+            # image is Debian-based and ships neither unzip nor yum, so
+            # install unzip with whichever manager the image provides.
+            if ! command -v unzip >/dev/null 2>&1; then
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update && apt-get install -y unzip
+              elif command -v dnf >/dev/null 2>&1; then
+                dnf install -y unzip
+              else
+                yum install -y unzip
+              fi
+            fi
             unzip -o /tmp/protoc.zip -d /usr/local 'bin/protoc' 'include/*'
             chmod +x /usr/local/bin/protoc
             protoc --version
