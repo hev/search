@@ -166,6 +166,44 @@ scrape_configs:
       <code>firnflow_s3_requests_total</code> is the metric that proves backend work happened. For exact-cache-only traffic, compare <code>s3_requests_total{operation="query"}</code> against <code>cache_misses_total</code>; they should be equal. For semantic-cache traffic, semantic hits make <code>s3_requests_total{operation="query"}</code> lower than exact-cache misses. (The metric name is historical and kept stable for dashboard continuity; it counts requests against any configured backend.)
     </div>
 
+    <h3>Object cache metrics</h3>
+    <p>These track the optional byte-range <a href="configuration.html#object-cache">object cache</a>. They are global rather than per-namespace, because the cache operates at the object-store layer beneath the namespace abstraction and has no namespace label. They are always registered and read <code>0</code> when the object cache is disabled.</p>
+    <table>
+      <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>firnflow_object_cache_hits_total</code></td>
+          <td>Counter</td>
+          <td><em>none</em></td>
+          <td>Byte-range reads served from the local object cache without an object-storage round-trip. The primary effectiveness signal for cold and novel queries.</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_object_cache_misses_total</code></td>
+          <td>Counter</td>
+          <td><em>none</em></td>
+          <td>Cacheable reads that missed, were fetched from object storage, and were then written to the local cache.</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_object_cache_inner_gets_total</code></td>
+          <td>Counter</td>
+          <td><em>none</em></td>
+          <td>Reads forwarded to object storage: misses plus uncacheable passthroughs (manifests, version pointers, and HEAD / conditional / versioned reads, which are never cached).</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_object_cache_s3_bytes_total</code></td>
+          <td>Counter</td>
+          <td><em>none</em></td>
+          <td>Total bytes fetched from object storage by the cache on misses. A proxy for egress and request-size cost avoided on subsequent hits.</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_object_cache_evictions_total</code></td>
+          <td>Counter</td>
+          <td><em>none</em></td>
+          <td>Entries evicted from the local cache to stay within <code>FIRNFLOW_OBJECT_CACHE_BYTES</code>. A high rate relative to hits suggests the byte cap is too small for the working set.</td>
+        </tr>
+      </tbody>
+    </table>
+
     <h3>Auth and rate-limit metrics</h3>
     <table>
       <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
@@ -213,6 +251,15 @@ histogram_quantile(0.99, rate(firnflow_query_duration_seconds_bucket[5m]))</code
 
     <h3>Object-storage requests saved (total avoided queries)</h3>
     <pre><code>sum(firnflow_cache_hits_total) + sum(firnflow_semantic_cache_hits_total)</code></pre>
+
+    <h3>Object-cache hit rate</h3>
+    <p>The fraction of cacheable byte-range reads served from the local object cache:</p>
+    <pre><code>sum(rate(firnflow_object_cache_hits_total[5m]))
+/
+(sum(rate(firnflow_object_cache_hits_total[5m])) + sum(rate(firnflow_object_cache_misses_total[5m])))</code></pre>
+
+    <h3>Object-storage bytes fetched by the object cache</h3>
+    <pre><code>rate(firnflow_object_cache_s3_bytes_total[5m])</code></pre>
     <p>Each exact-cache hit and semantic-cache hit is one object-storage query that did not happen. Semantic-cache hits are approximate result reuse, so track them separately when correctness calibration matters.</p>
 
     <h3>Semantic-cache hit rate (eligible lookups)</h3>

@@ -11,6 +11,7 @@ pub mod error;
 pub mod manager;
 pub mod metrics;
 pub mod namespace;
+pub mod object_cache;
 pub mod query;
 pub mod result;
 pub mod service;

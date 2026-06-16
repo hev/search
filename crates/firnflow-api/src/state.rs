@@ -79,11 +79,34 @@ pub async fn build_state(cfg: &AppConfig) -> anyhow::Result<AppState> {
     let metrics =
         Arc::new(CoreMetrics::new().map_err(|e| anyhow::anyhow!("build metrics registry: {e}"))?);
 
-    let manager = Arc::new(NamespaceManager::new(
+    let mut manager = NamespaceManager::new(
         cfg.storage_root.clone(),
         cfg.storage_options.clone(),
         Arc::clone(&metrics),
-    ));
+    );
+    if cfg.object_cache_enabled {
+        std::fs::create_dir_all(&cfg.object_cache_dir).with_context(|| {
+            format!(
+                "creating object cache directory {}",
+                cfg.object_cache_dir.display()
+            )
+        })?;
+        let mut oc_cfg = firnflow_core::object_cache::ObjectCacheConfig::new(
+            cfg.object_cache_dir.clone(),
+            cfg.object_cache_bytes,
+        );
+        oc_cfg.max_entry_bytes = cfg.object_cache_max_entry_bytes;
+        // Hand the registered object-cache counters in so hits/misses/evictions surface at /metrics.
+        let session =
+            firnflow_core::object_cache::build_cached_session(&oc_cfg, metrics.object_cache());
+        manager = manager.with_object_cache_session(session);
+        tracing::info!(
+            dir = %cfg.object_cache_dir.display(),
+            capacity_bytes = cfg.object_cache_bytes,
+            "object cache enabled (issue #51): Lance object-store reads served from local NVMe"
+        );
+    }
+    let manager = Arc::new(manager);
 
     std::fs::create_dir_all(&cfg.cache_nvme_path).with_context(|| {
         format!(

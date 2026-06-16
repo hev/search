@@ -57,6 +57,20 @@ pub struct AppConfig {
     pub metrics_token: Option<Secret>,
     /// Rate-limiter knobs. `None` everywhere ⇒ both limiters off.
     pub rate_limit: RateLimitSettings,
+    /// Object cache (issue #51): when `true`, Lance object-store reads (index
+    /// and data byte ranges) are served from a local-NVMe cache, cutting S3
+    /// round-trips on warm/repeat/novel queries. `FIRNFLOW_OBJECT_CACHE_ENABLED`
+    /// (default off).
+    pub object_cache_enabled: bool,
+    /// Directory for the object cache. `FIRNFLOW_OBJECT_CACHE_DIR`.
+    pub object_cache_dir: PathBuf,
+    /// Object cache on-disk capacity in bytes (LRU eviction).
+    /// `FIRNFLOW_OBJECT_CACHE_BYTES` (default 10 GiB).
+    pub object_cache_bytes: u64,
+    /// Largest single read the object cache will buffer + cache; larger reads
+    /// stream straight through uncached, bounding the RAM one miss can use.
+    /// `FIRNFLOW_OBJECT_CACHE_MAX_ENTRY_BYTES` (default 256 MiB).
+    pub object_cache_max_entry_bytes: u64,
 }
 
 /// True when the given storage-options key holds credential-bearing
@@ -138,6 +152,20 @@ impl AppConfig {
             .parse()
             .context("FIRNFLOW_MAX_BODY_BYTES")?;
 
+        let object_cache_enabled = env_bool("FIRNFLOW_OBJECT_CACHE_ENABLED", false)?;
+        let object_cache_dir = PathBuf::from(env_or(
+            "FIRNFLOW_OBJECT_CACHE_DIR",
+            "/tmp/firnflow-object-cache",
+        ));
+        let object_cache_bytes: u64 = env_or("FIRNFLOW_OBJECT_CACHE_BYTES", "10737418240")
+            .parse()
+            .context("FIRNFLOW_OBJECT_CACHE_BYTES")?;
+        // Default 256 MiB; see firnflow_core::object_cache::DEFAULT_MAX_ENTRY_BYTES.
+        let object_cache_max_entry_bytes: u64 =
+            env_or("FIRNFLOW_OBJECT_CACHE_MAX_ENTRY_BYTES", "268435456")
+                .parse()
+                .context("FIRNFLOW_OBJECT_CACHE_MAX_ENTRY_BYTES")?;
+
         let storage_options = build_storage_options_for(storage_root.scheme());
 
         let api_key = optional_secret("FIRNFLOW_API_KEY");
@@ -168,6 +196,10 @@ impl AppConfig {
             admin_api_key,
             metrics_token,
             rate_limit,
+            object_cache_enabled,
+            object_cache_dir,
+            object_cache_bytes,
+            object_cache_max_entry_bytes,
         })
     }
 }
@@ -452,6 +484,10 @@ mod tests {
             admin_api_key: None,
             metrics_token: None,
             rate_limit: RateLimitSettings::default(),
+            object_cache_enabled: false,
+            object_cache_dir: std::env::temp_dir(),
+            object_cache_bytes: 0,
+            object_cache_max_entry_bytes: 0,
         };
 
         let dbg = format!("{:?}", cfg);
@@ -510,6 +546,10 @@ mod tests {
             admin_api_key: None,
             metrics_token: None,
             rate_limit: RateLimitSettings::default(),
+            object_cache_enabled: false,
+            object_cache_dir: std::env::temp_dir(),
+            object_cache_bytes: 0,
+            object_cache_max_entry_bytes: 0,
         };
 
         let dbg = format!("{:?}", cfg);

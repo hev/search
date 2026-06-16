@@ -177,6 +177,11 @@ pub struct NamespaceManager {
     /// namespace delete / index build / compaction.
     handles: DashMap<NamespaceId, NamespaceHandle>,
     metrics: Arc<CoreMetrics>,
+    /// Optional lance [`Session`] whose object-store registry wraps cloud
+    /// stores with the local-NVMe byte-range cache (issue #51). When set, it is
+    /// passed to every `lancedb::connect()` so Lance reads are served from the
+    /// cache. `None` disables the object cache (default).
+    object_cache_session: Option<Arc<lance::session::Session>>,
 }
 
 impl NamespaceManager {
@@ -210,7 +215,18 @@ impl NamespaceManager {
             schema_info: DashMap::new(),
             handles: DashMap::new(),
             metrics,
+            object_cache_session: None,
         }
+    }
+
+    /// Enable the local-NVMe object cache (issue #51) by supplying a lance
+    /// [`Session`] whose object-store registry wraps cloud reads with the
+    /// byte-range cache (build one via
+    /// [`crate::object_cache::build_cached_session`]). Every subsequent
+    /// `lancedb::connect()` routes its object-store reads through the cache.
+    pub fn with_object_cache_session(mut self, session: Arc<lance::session::Session>) -> Self {
+        self.object_cache_session = Some(session);
+        self
     }
 
     /// The configured storage root. Exposed for diagnostics and
@@ -366,8 +382,15 @@ impl NamespaceManager {
     }
 
     async fn connect(&self, ns: &NamespaceId) -> Result<lancedb::Connection, FirnflowError> {
-        lancedb::connect(&self.uri(ns))
-            .storage_options(self.storage_options.clone())
+        let mut builder =
+            lancedb::connect(&self.uri(ns)).storage_options(self.storage_options.clone());
+        if let Some(session) = &self.object_cache_session {
+            // Route Lance object-store reads through the local-NVMe byte-range
+            // cache (issue #51). Sharing one session across connections reuses
+            // the wrapped stores and their cache.
+            builder = builder.session(session.clone());
+        }
+        builder
             .execute()
             .await
             .map_err(|e| FirnflowError::Backend(format!("lancedb connect: {e}")))
