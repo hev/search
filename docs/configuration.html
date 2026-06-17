@@ -221,6 +221,41 @@ GOOGLE_APPLICATION_CREDENTIALS=/etc/firnflow/gcp-sa.json</code></pre>
       The cache is a performance optimisation, not durable storage. Data in the configured object store is always the source of truth. If the cache is lost (restart, crash, disk failure), Firn repopulates it transparently on the next query.
     </div>
 
+    <h2 id="object-cache">Object cache</h2>
+    <p>The object cache is a separate, optional layer from the result cache above. It is a local byte-range cache that sits <em>under</em> the storage engine: on a cache miss the engine still reads the namespace's data and index files from object storage, but those reads are served from local disk on subsequent queries. It accelerates cold and novel queries (different filters, new vectors) that the result cache cannot help, because they never hit object storage twice for the same bytes.</p>
+    <p>It only caches immutable, uniquely-named objects (data fragments and index files, which are written once and never mutated). Manifests, version pointers, and transaction logs are always read straight through, so a write, delete, compaction, or index build is reflected immediately &mdash; the cache cannot serve stale data. It is disabled by default.</p>
+
+    <table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>FIRNFLOW_OBJECT_CACHE_ENABLED</code></td>
+          <td><code>false</code></td>
+          <td>Enable the byte-range object cache. When off, every object-storage read goes straight to the backend.</td>
+        </tr>
+        <tr>
+          <td><code>FIRNFLOW_OBJECT_CACHE_DIR</code></td>
+          <td><code>/tmp/firnflow-object-cache</code></td>
+          <td>Directory for cached object bytes. In production, point this at a fast local SSD/NVMe. Existing files are scanned and counted toward the capacity on startup, so the cache survives a restart within its byte budget.</td>
+        </tr>
+        <tr>
+          <td><code>FIRNFLOW_OBJECT_CACHE_BYTES</code></td>
+          <td><code>10737418240</code> (10 GB)</td>
+          <td>Maximum bytes of cached object data held on disk. When full, least-recently-used entries are evicted. The cap is enforced across restarts (small per-entry size sidecars are negligible additional overhead).</td>
+        </tr>
+        <tr>
+          <td><code>FIRNFLOW_OBJECT_CACHE_MAX_ENTRY_BYTES</code></td>
+          <td><code>268435456</code> (256 MB)</td>
+          <td>Largest single read the cache will buffer and store. A read above this is streamed straight through and not cached, so one large fragment read cannot spike memory by its full size. Lower it on memory-constrained hosts; raise it to cache larger fragments whole.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout callout-info">
+      <div class="callout-title">Result cache vs object cache</div>
+      The result cache stores whole query results and turns a repeated query into zero object-storage reads. The object cache stores raw file byte ranges and makes the <em>first</em> execution of a new query cheaper the next time similar data is read. They are complementary and can be enabled together.
+    </div>
+
     <h2>Authentication</h2>
     <p>Firn supports optional bearer-token authentication. Both keys are opt-in via env: when neither is set, the API stays open and logs a single startup <code>WARN</code> (the default for the local-dev compose stack).</p>
 

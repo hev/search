@@ -183,6 +183,10 @@ pub fn dummy_config() -> AppConfig {
         admin_api_key: None,
         metrics_token: None,
         rate_limit: RateLimitSettings::default(),
+        object_cache_enabled: false,
+        object_cache_dir: std::env::temp_dir(),
+        object_cache_bytes: 0,
+        object_cache_max_entry_bytes: 0,
     }
 }
 

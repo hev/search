@@ -2580,14 +2580,20 @@ version = "0.8.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "async-trait",
  "aws-config",
  "aws-sdk-s3",
  "bincode 2.0.1",
+ "bytes",
+ "chrono",
  "dashmap",
+ "filetime",
  "foyer",
  "futures",
  "lance",
+ "lance-io",
  "lancedb",
+ "lru",
  "object_store 0.12.5",
  "prometheus",
  "serde",
@@ -2595,6 +2601,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
  "xxhash-rust",
 ]
 

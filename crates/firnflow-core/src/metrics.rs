@@ -15,6 +15,11 @@
 //! * `firnflow_s3_requests_total{namespace, operation}`
 //! * `firnflow_cached_handles`
 //! * `firnflow_auth_rejections_total{reason}`
+//! * `firnflow_object_cache_hits_total`
+//! * `firnflow_object_cache_misses_total`
+//! * `firnflow_object_cache_inner_gets_total`
+//! * `firnflow_object_cache_s3_bytes_total`
+//! * `firnflow_object_cache_evictions_total`
 //!
 //! Constructed once at process start (in
 //! `firnflow-api::state::build_state`), wrapped in `Arc`, and
@@ -36,6 +41,7 @@ use prometheus::{
     Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, Opts, Registry, TextEncoder,
 };
 
+use crate::object_cache::ObjectCacheMetrics;
 use crate::{FirnflowError, NamespaceId};
 
 /// Process-wide metrics registry and typed handles.
@@ -58,6 +64,7 @@ pub struct CoreMetrics {
     compaction_duration: HistogramVec,
     cached_handles: IntGauge,
     auth_rejections: IntCounterVec,
+    object_cache: Arc<ObjectCacheMetrics>,
     seen_namespaces: DashSet<NamespaceId>,
 }
 
@@ -259,6 +266,11 @@ impl CoreMetrics {
             .register(Box::new(auth_rejections.clone()))
             .map_err(metrics_err)?;
 
+        // Object-cache (issue #51) byte-range cache counters, registered into the same registry so
+        // they surface at `/metrics`. Global (not per-namespace): the cache sits below the namespace
+        // abstraction in the object-store layer.
+        let object_cache = Arc::new(ObjectCacheMetrics::register(&registry).map_err(metrics_err)?);
+
         Ok(Self {
             registry,
             cache_hits,
@@ -274,6 +286,7 @@ impl CoreMetrics {
             compaction_duration,
             cached_handles,
             auth_rejections,
+            object_cache,
             seen_namespaces: DashSet::new(),
         })
     }
@@ -281,6 +294,13 @@ impl CoreMetrics {
     /// Borrow the underlying registry for the /metrics handler.
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// Shared object-cache counter handle, to hand to
+    /// `object_cache::build_cached_session`. Increments on it are
+    /// reflected in this registry's `/metrics` render.
+    pub fn object_cache(&self) -> Arc<ObjectCacheMetrics> {
+        self.object_cache.clone()
     }
 
     /// Serialise the current metric state as a Prometheus text

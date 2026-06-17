@@ -257,6 +257,10 @@ async fn secret_debug_does_not_leak_in_app_config() {
         admin_api_key: Some(Secret::new("UNIQUE_ADMIN_KEY_PLEASE_DO_NOT_LEAK")),
         metrics_token: Some(Secret::new("UNIQUE_METRICS_KEY_PLEASE_DO_NOT_LEAK")),
         rate_limit: RateLimitSettings::default(),
+        object_cache_enabled: false,
+        object_cache_dir: std::env::temp_dir(),
+        object_cache_bytes: 0,
+        object_cache_max_entry_bytes: 0,
     };
     let dbg = format!("{:?}", cfg);
     assert!(
@@ -313,6 +317,10 @@ async fn duplicate_keys_fail_startup_before_cache_setup() {
         admin_api_key: Some(Secret::new("identical-token")),
         metrics_token: None,
         rate_limit: RateLimitSettings::default(),
+        object_cache_enabled: false,
+        object_cache_dir: std::env::temp_dir(),
+        object_cache_bytes: 0,
+        object_cache_max_entry_bytes: 0,
     };
 
     let err = match build_state(&cfg).await {

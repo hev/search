@@ -129,6 +129,18 @@ handler</code></pre>
       </tbody>
     </table>
 
+    <h2>Object cache</h2>
+    <p>The result cache above answers a whole query from a single cached payload, so a repeated query reads nothing from object storage. It cannot help a query it has never seen &mdash; a new filter, a new vector, or the first query after a restart still falls through to the backend, where cold latency is dominated by object-storage reads. The object cache is an optional second layer that targets exactly those reads. It is disabled by default and enabled with <code>FIRNFLOW_OBJECT_CACHE_ENABLED</code>.</p>
+    <p>It sits one level below the storage engine: a local byte-range cache wrapped around the object store the engine reads through. When the engine asks for a range of a file, the cache serves it from local disk if present, otherwise fetches it from object storage and keeps a copy. The next query that touches the same data and index bytes &mdash; even a different query shape &mdash; is served locally.</p>
+
+    <h3>What it caches, and why that is safe</h3>
+    <p>Correctness rests on caching only objects that are immutable once written. Lance writes data fragments and index files under unique, write-once paths and never mutates them in place, so a cached byte range can never go stale: a later version is a different file with a different name. The cache restricts itself to those object classes.</p>
+    <p>Everything that <em>can</em> change is always read straight through, never cached: manifests, the version pointer, and transaction logs, plus any HEAD, conditional, or explicitly-versioned read. Because the manifest is always read live, a write, delete, compaction, or index build is observed immediately &mdash; the engine resolves the new manifest, which names new fragment and index files, and the cache simply misses on those new names and fetches them. A deleted-and-recreated namespace is safe for the same reason: it writes fresh unique paths, so old cached bytes are unreachable rather than served. There is no invalidation step because there is nothing mutable to invalidate.</p>
+
+    <h3>Capacity and restart</h3>
+    <p>The cache is bounded by a byte budget (<code>FIRNFLOW_OBJECT_CACHE_BYTES</code>); when full it evicts least-recently-used entries. On startup it scans its directory and counts existing files toward the budget, evicting down to the cap before serving, so a restart reuses the warm cache without exceeding its bound. Like every cache here it is a performance layer only &mdash; object storage remains the source of truth, and losing the local cache costs latency, never data.</p>
+    <p>Effectiveness and savings are observable through the <a href="monitoring.html">object-cache metrics</a> (<code>firnflow_object_cache_hits_total</code>, <code>_misses_total</code>, <code>_s3_bytes_total</code>, <code>_evictions_total</code>).</p>
+
     <h2>Connection pool</h2>
     <p>The namespace manager caches a <code>lancedb::Connection</code> and <code>Table</code> handle per namespace after the first open. Without the pool, every upsert and every cache-miss query would re-run credential resolution (AWS chain or Google service-account JSON, depending on backend) and re-read the Lance table manifest; with the pool, those costs are paid once per namespace per process lifetime.</p>
 

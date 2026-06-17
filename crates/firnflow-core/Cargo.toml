@@ -22,11 +22,21 @@ futures.workspace = true
 bincode.workspace = true
 prometheus.workspace = true
 object_store.workspace = true
+# object cache (issue #51): byte-range NVMe cache wrapped under Lance via a
+# custom ObjectStoreProvider. lance-io provides the provider/registry traits;
+# the rest are needed to implement object_store::ObjectStore for the wrapper.
+lance-io = "=6.0.0"
+async-trait = "0.1"
+bytes = "1"
+chrono = "0.4"
+url = "2"
+lru = "0.16"
 
 [dev-dependencies]
 tempfile = "3"
 aws-config.workspace = true
 aws-sdk-s3.workspace = true
+filetime = "0.2"
 
 [[bench]]
 name = "serialisation"
