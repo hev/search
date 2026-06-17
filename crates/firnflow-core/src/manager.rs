@@ -413,7 +413,11 @@ impl NamespaceManager {
     /// Drop a namespace's cached handle and decrement the gauge.
     /// Called after operations that change the table's manifest or
     /// remove its data: delete, index build, compaction.
-    fn evict_handle(&self, ns: &NamespaceId) {
+    ///
+    /// Also exposed publicly so the benchmark harness can simulate a
+    /// "dropped handle" measurement case without triggering a
+    /// destructive op. A no-op when no handle is currently pooled.
+    pub fn evict_handle(&self, ns: &NamespaceId) {
         if self.handles.remove(ns).is_some() {
             self.metrics.dec_cached_handles();
         }
