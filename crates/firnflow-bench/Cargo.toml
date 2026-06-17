@@ -5,6 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "firnflow benchmark harness for cold vs warm query latency."
+# Two binaries ship from this crate (the original cold-vs-warm
+# harness at `src/main.rs` and the first-query-profile harness at
+# `src/bin/first_query_profile.rs`); cargo refuses to pick one
+# implicitly so pin the default to preserve the existing
+# `cargo run -p firnflow-bench` invocation.
+default-run = "firnflow-bench"
 
 [dependencies]
 firnflow-core = { path = "../firnflow-core" }
