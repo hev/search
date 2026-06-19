@@ -1792,6 +1792,20 @@ pub fn validate_arrow_import_schema(
         None => false,
     };
 
+    // Reject unknown columns so a misspelled name (or stray data the
+    // server would otherwise silently drop) is a clear 400. Only `id`,
+    // one of `vector`/`vectors`, and `text` are read.
+    const ALLOWED: &[&str] = &["id", "vector", "vectors", "text"];
+    for field in schema.fields() {
+        if !ALLOWED.contains(&field.name().as_str()) {
+            return Err(FirnflowError::InvalidRequest(format!(
+                "import: unexpected column `{}`; allowed columns are `id`, \
+                 one of `vector`/`vectors`, and optional `text`",
+                field.name()
+            )));
+        }
+    }
+
     Ok((kind, dim, has_text))
 }
 
@@ -1843,20 +1857,62 @@ impl IngestReader {
             ));
         }
 
-        // Multivector rows must carry at least one sub-vector; an empty
-        // list would have no MaxSim contribution and the JSON path never
-        // produces one.
-        if matches!(self.kind, VectorKind::Multivector) {
-            let list = vector.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                ArrowError::InvalidArgumentError("import: `vectors` is not a List array".into())
-            })?;
-            let offsets = list.value_offsets();
-            if offsets.windows(2).any(|w| w[1] - w[0] == 0) {
-                return Err(ArrowError::InvalidArgumentError(
-                    "import: a row has an empty `vectors` list (multivector rows need at \
-                     least one sub-vector)"
-                        .into(),
-                ));
+        // Reject nulls anywhere inside the vector payload, not just at the
+        // top level. A valid Arrow `FixedSizeList<Float32>` can carry a
+        // non-null row with null float children, and a multivector input
+        // can carry null inner sub-vectors or null floats — none of which
+        // the JSON `/upsert` path can produce, so `/import` rejects them
+        // too. (`FixedSizeList` makes the per-vector width structural, so
+        // there is no separate dim check.)
+        match self.kind {
+            VectorKind::Single => {
+                let fsl = vector
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .ok_or_else(|| {
+                        ArrowError::InvalidArgumentError(
+                            "import: `vector` is not a FixedSizeList array".into(),
+                        )
+                    })?;
+                if fsl.values().null_count() != 0 {
+                    return Err(ArrowError::InvalidArgumentError(
+                        "import: `vector` contains null float values".into(),
+                    ));
+                }
+            }
+            VectorKind::Multivector => {
+                let list = vector.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                    ArrowError::InvalidArgumentError("import: `vectors` is not a List array".into())
+                })?;
+                // Each row needs at least one sub-vector (an empty list has
+                // no MaxSim contribution; the JSON path never makes one).
+                let offsets = list.value_offsets();
+                if offsets.windows(2).any(|w| w[1] - w[0] == 0) {
+                    return Err(ArrowError::InvalidArgumentError(
+                        "import: a row has an empty `vectors` list (multivector rows need at \
+                         least one sub-vector)"
+                            .into(),
+                    ));
+                }
+                let inner = list.values();
+                if inner.null_count() != 0 {
+                    return Err(ArrowError::InvalidArgumentError(
+                        "import: `vectors` contains null sub-vectors".into(),
+                    ));
+                }
+                let inner_fsl = inner
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .ok_or_else(|| {
+                        ArrowError::InvalidArgumentError(
+                            "import: `vectors` inner is not a FixedSizeList array".into(),
+                        )
+                    })?;
+                if inner_fsl.values().null_count() != 0 {
+                    return Err(ArrowError::InvalidArgumentError(
+                        "import: `vectors` contains null float values".into(),
+                    ));
+                }
             }
         }
 
@@ -2337,6 +2393,12 @@ mod tests {
                 Field::new("id", DataType::UInt64, false),
                 Field::new("vector", single_vec.clone(), false),
                 Field::new("text", DataType::Int32, true),
+            ]),
+            // unknown/extra column (e.g. a misspelled name)
+            Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new("vector", single_vec.clone(), false),
+                Field::new("vectr", single_vec.clone(), false),
             ]),
         ];
         for (i, s) in rejected.iter().enumerate() {

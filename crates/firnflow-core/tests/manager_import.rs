@@ -9,8 +9,9 @@
 //! 2. A multi-batch stream lands in **one** Lance commit (the table
 //!    version advances by exactly 1), i.e. no per-batch commit
 //!    amplification — the whole point of the feature.
-//! 3. Row-level validation rejects null ids and empty multivector rows
-//!    as `InvalidRequest`.
+//! 3. Row-level validation rejects null ids, null float values inside a
+//!    vector or sub-vector, and empty multivector rows as
+//!    `InvalidRequest`.
 //!
 //! Gated `#[ignore]`: needs MinIO up.
 //!
@@ -317,6 +318,75 @@ async fn import_rejects_empty_multivector_row() {
         .import_arrow(&ns, reader(schema, vec![batch]))
         .await
         .expect_err("empty multivector row must be rejected");
+    assert!(
+        matches!(err, FirnflowError::InvalidRequest(_)),
+        "expected InvalidRequest, got {err:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn import_rejects_null_float_in_single_vector() {
+    let mgr = manager();
+    let ns = NamespaceId::new(unique_namespace("import-nullfloat")).unwrap();
+    let schema = single_schema();
+
+    // Two non-null rows; the second carries a null float child value,
+    // which a `FixedSizeList<Float32>` allows but the JSON path can't make.
+    let id_arr = UInt64Array::from_iter_values([1u64, 2]);
+    let mut list = FixedSizeListBuilder::new(Float32Builder::new(), DIM as i32);
+    for _ in 0..DIM {
+        list.values().append_value(0.0);
+    }
+    list.append(true);
+    list.values().append_null();
+    for _ in 1..DIM {
+        list.values().append_value(0.0);
+    }
+    list.append(true);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(id_arr), Arc::new(list.finish())],
+    )
+    .unwrap();
+
+    let err = mgr
+        .import_arrow(&ns, reader(schema, vec![batch]))
+        .await
+        .expect_err("null float in a vector must be rejected");
+    assert!(
+        matches!(err, FirnflowError::InvalidRequest(_)),
+        "expected InvalidRequest, got {err:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn import_rejects_null_float_in_multivector() {
+    let mgr = manager();
+    let ns = NamespaceId::new(unique_namespace("import-mvnullfloat")).unwrap();
+    let schema = multi_schema();
+
+    // One row, one sub-vector whose first float is null.
+    let id_arr = UInt64Array::from_iter_values([1u64]);
+    let inner = FixedSizeListBuilder::new(Float32Builder::new(), DIM as i32);
+    let mut outer = ListBuilder::new(inner);
+    outer.values().values().append_null();
+    for _ in 1..DIM {
+        outer.values().values().append_value(0.0);
+    }
+    outer.values().append(true);
+    outer.append(true);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(id_arr), Arc::new(outer.finish())],
+    )
+    .unwrap();
+
+    let err = mgr
+        .import_arrow(&ns, reader(schema, vec![batch]))
+        .await
+        .expect_err("null float in a sub-vector must be rejected");
     assert!(
         matches!(err, FirnflowError::InvalidRequest(_)),
         "expected InvalidRequest, got {err:?}"

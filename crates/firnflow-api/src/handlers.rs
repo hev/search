@@ -15,7 +15,7 @@
 //! * `GET    /operations/{operation_id}`
 //! * `GET    /metrics`
 
-use std::io::{BufReader, Write};
+use std::io::BufReader;
 use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
@@ -28,6 +28,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 
 use firnflow_core::{
     decode_list_cursor, validate_arrow_import_schema, FirnflowError, IndexRequest, ListOrder,
@@ -514,11 +515,17 @@ pub async fn import(
     // Spool the body to disk so the Lance write/commit can run in the
     // background after a fast 202, and so memory stays bounded. The
     // route bypasses the global body limit, so the import-specific byte
-    // cap is the guard against filling the spool disk.
-    let mut tmp = tempfile::Builder::new()
+    // cap is the guard against filling the spool disk. Writes go through
+    // `tokio::fs` (the blocking pool) rather than blocking a runtime
+    // worker on disk for the duration of a multi-GB upload.
+    let tmp = tempfile::Builder::new()
         .prefix("firnflow-import-")
         .tempfile_in(&state.import_tmp_dir)
         .map_err(|e| FirnflowError::Backend(format!("import: create temp file: {e}")))?;
+    let mut writer = tokio::fs::File::from_std(
+        tmp.reopen()
+            .map_err(|e| FirnflowError::Backend(format!("import: open spool file: {e}")))?,
+    );
     let cap = state.import_max_bytes;
     let mut written: u64 = 0;
     let mut stream = body.into_data_stream();
@@ -532,11 +539,18 @@ pub async fn import(
                 format!("import body exceeds FIRNFLOW_IMPORT_MAX_BYTES ({cap} bytes)"),
             ));
         }
-        tmp.write_all(&chunk)
+        writer
+            .write_all(&chunk)
+            .await
             .map_err(|e| FirnflowError::Backend(format!("import: spool write: {e}")))?;
     }
-    tmp.flush()
+    writer
+        .flush()
+        .await
         .map_err(|e| FirnflowError::Backend(format!("import: spool flush: {e}")))?;
+    // Drop the async writer's fd before re-reading the file below; the
+    // bytes are already visible to a fresh handle on the same host.
+    drop(writer);
 
     // Validate the Arrow schema up front so a bad request is a 400
     // before any background work starts (the schema is the first IPC

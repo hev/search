@@ -194,6 +194,7 @@
           <li>exactly one of <code>vector</code> (<code>FixedSizeList&lt;Float32, dim&gt;</code>, single-vector) or <code>vectors</code> (<code>List&lt;FixedSizeList&lt;Float32, dim&gt;&gt;</code>, multivector). The <code>FixedSizeList</code> child field must be named <code>item</code> (the default for e.g. PyArrow).</li>
           <li>optional <code>text</code> — <code>Utf8</code>.</li>
           <li><code>_ingested_at</code> must <strong>not</strong> be present; the server sets it.</li>
+          <li>any other column is rejected — a misspelled name is a <code>400</code>, not silently dropped. Vector floats must be non-null (no null child values inside a vector or sub-vector), and multivector rows must have at least one sub-vector.</li>
         </ul>
         <p>On a fresh namespace the stream fixes the vector kind and dimension; on an existing one they must match. Schema problems are rejected with <code>400</code> before any work starts; row-level problems (null <code>id</code>, empty multivector row) and a truncated/malformed stream surface as a <strong>failed operation</strong> after the <code>202</code>.</p>
 
