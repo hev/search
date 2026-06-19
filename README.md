@@ -249,6 +249,7 @@ If `FIRNFLOW_ADMIN_API_KEY` is unset, the read/write key authorises admin routes
 | `/ns/{ns}` | `GET` | read/write | Namespace metadata (row count, fragment count, indexes, table version); 404 if it has no data yet |
 | `/ns/{ns}` | `DELETE` | admin | Removes all data (object storage + cache) for a namespace |
 | `/ns/{ns}/upsert` | `POST` | read/write | Insert or update vectors and data (latest-write-wins by `id`) |
+| `/ns/{ns}/import` | `POST` | read/write | Bulk-ingest an Arrow IPC stream (binary, insert-only, async 202). For large first loads; bypasses the JSON body limit |
 | `/ns/{ns}/query` | `POST` | read/write | Vector, FTS, or hybrid search |
 | `/ns/{ns}/list` | `GET` | read/write | Cursor-paginated list ordered by `_ingested_at` |
 | `/ns/{ns}/warmup` | `POST` | read/write | Non-blocking cache pre-warm hint |
@@ -258,7 +259,7 @@ If `FIRNFLOW_ADMIN_API_KEY` is unset, the read/write key authorises admin routes
 | `/ns/{ns}/compact` | `POST` | admin | Compact and prune data files (async, returns 202) |
 | `/operations/{id}` | `GET` | read/write | Status of a background operation by the `operation_id` from its 202; 404 if unknown or evicted |
 
-The async endpoints (`warmup`, `index`, `fts-index`, `scalar-index`, `compact`) return an opaque `operation_id` in their `202`; poll `GET /operations/{id}` to see whether the work is `running`, `succeeded`, or `failed` instead of inferring it from metrics.
+The async endpoints (`import`, `warmup`, `index`, `fts-index`, `scalar-index`, `compact`) return an opaque `operation_id` in their `202`; poll `GET /operations/{id}` to see whether the work is `running`, `succeeded`, or `failed` instead of inferring it from metrics.
 
 Auth column: `open` = no header required; `read/write` = `FIRNFLOW_API_KEY` (or `FIRNFLOW_ADMIN_API_KEY`); `admin` = `FIRNFLOW_ADMIN_API_KEY` if configured, otherwise `FIRNFLOW_API_KEY` via the single-key fallback. `/metrics` is `metrics` when `FIRNFLOW_METRICS_TOKEN` is set, otherwise `open`.
 
@@ -268,19 +269,18 @@ Two ingest shapes have different cost profiles, and it helps to treat them diffe
 
 **Idempotent updates** (retries, re-ingesting changed documents) are what `/upsert` is built for. It is keyed by `id` and latest-write-wins, so re-sending a row is safe. The first write to a namespace builds a BTree on `id`, which is what the per-batch merge-insert uses to find existing rows instead of scanning every data file.
 
-**A large first load** (millions of rows into a fresh namespace over S3) needs a bit more care. Every `/upsert` is a separate commit, so a long run of small batches produces many small data files, and the per-commit and per-file bookkeeping adds up. Two things keep throughput steady:
+**A large first load** (millions of rows into a fresh namespace over S3) should use `POST /ns/{ns}/import`. The `/upsert` JSON path has two costs at this scale: every call is a separate Lance commit, so a long run of small batches piles up commit and small-fragment bookkeeping, and JSON encodes each `f32` as decimal text (~3x the bytes of the 4-byte binary form), which also runs into the `FIRNFLOW_MAX_BODY_BYTES` limit. `/import` avoids both: the body is an [Arrow IPC stream](https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format) (binary, columnar, no float inflation), the route is not bound by the body limit (so a whole corpus can stream in one request), and the entire stream is appended in a single commit.
 
-- **Use larger batches.** Fewer, bigger commits beat many tiny ones. The body limit is `FIRNFLOW_MAX_BODY_BYTES` (default 16 MB), so size batches up toward that rather than sending rows a handful at a time.
-- **Build indexes after the bulk load, not during it.** Index builds are most efficient over settled data.
+It is insert-only: a repeated `id` makes a second row, so `/import` is for first-loads or known-new ids, not idempotent updates (use `/upsert` for those). The request streams its body to disk and returns `202` with an `operation_id` once validated; poll `GET /operations/{id}` for completion. The byte cap is `FIRNFLOW_IMPORT_MAX_BYTES` (default 8 GiB; `0` disables it) and the spool directory is `FIRNFLOW_IMPORT_TMP_DIR` (default the system temp dir).
 
 A recommended recipe for a first load:
 
-1. **Load** the data in large `/upsert` batches.
-2. **Compact** once the load is done: `POST /ns/{ns}/compact`. This merges the many small data files into fewer large ones and folds freshly written rows into the existing `id` index.
-3. **Build the query indexes**: `POST /ns/{ns}/index` (vector), `POST /ns/{ns}/fts-index` (full-text), and `POST /ns/{ns}/scalar-index` with `{"column": "_ingested_at"}` if you page with `/list`. These are async; poll `GET /operations/{id}`.
+1. **Load** the data with `POST /ns/{ns}/import` (one Arrow IPC stream, or a few large ones).
+2. **Compact** once the load is done: `POST /ns/{ns}/compact`. This merges data files into fewer large ones.
+3. **Build the query indexes**: `POST /ns/{ns}/index` (vector), `POST /ns/{ns}/fts-index` (full-text), `POST /ns/{ns}/scalar-index` with `{"column": "id"}` if you will then do idempotent `/upsert` updates, and `{"column": "_ingested_at"}` if you page with `/list`. These are async; poll `GET /operations/{id}`.
 4. **Query.**
 
-For a namespace created before auto-indexing existed, build the `id` index once with `POST /ns/{ns}/scalar-index -d '{"column": "id"}'` to get the same write-path benefit.
+If you stay on the JSON `/upsert` path (smaller loads, or idempotent updates), size batches up toward `FIRNFLOW_MAX_BODY_BYTES` rather than sending rows a handful at a time, and build indexes after the load rather than during it.
 
 ## Multivector namespaces
 

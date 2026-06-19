@@ -18,6 +18,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use arrow_array::RecordBatchReader;
 use bincode::config;
 use serde::Serialize;
 
@@ -143,6 +144,28 @@ impl NamespaceService {
         self.semantic.invalidate(ns);
         self.metrics.record_write(ns, start.elapsed().as_secs_f64());
         Ok(())
+    }
+
+    /// Bulk-append an Arrow IPC stream insert-only, in a single commit
+    /// (the binary `/import` path). Cache handling matches
+    /// [`upsert`](Self::upsert): the append advances the table version,
+    /// so results cached against the pre-import version become
+    /// unreachable with no explicit bump, and the semantic sidecar is
+    /// cleared eagerly. Returns the number of rows appended.
+    ///
+    /// Records `s3_requests_total{operation="import"}` eagerly and
+    /// `write_duration_seconds` on return.
+    pub async fn import(
+        &self,
+        ns: &NamespaceId,
+        reader: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<usize, FirnflowError> {
+        let start = Instant::now();
+        self.metrics.record_s3_request(ns, "import");
+        let imported = self.manager.import_arrow(ns, reader).await?;
+        self.semantic.invalidate(ns);
+        self.metrics.record_write(ns, start.elapsed().as_secs_f64());
+        Ok(imported)
     }
 
     /// Delete every object under the namespace prefix.

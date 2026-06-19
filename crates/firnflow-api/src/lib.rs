@@ -79,7 +79,15 @@ pub fn router(state: AppState) -> Router {
         .route("/ns/{namespace}", get(handlers::info))
         // Background-operation status. Read-tier: the opaque operation
         // id is the capability, and warmup (read-tier) creates one too.
-        .route("/operations/{operation_id}", get(handlers::get_operation));
+        .route("/operations/{operation_id}", get(handlers::get_operation))
+        // Bulk Arrow import: streams its (binary) body past the global
+        // body limit, so disable `DefaultBodyLimit` on just this route.
+        // The handler enforces `FIRNFLOW_IMPORT_MAX_BYTES` instead.
+        .merge(
+            Router::new()
+                .route("/ns/{namespace}/import", post(handlers::import))
+                .layer(DefaultBodyLimit::disable()),
+        );
     // ServiceBuilder applies layers top-to-bottom: auth first
     // (attaches the Principal extension), principal limiter second
     // (reads it). `axum::Router::layer` then mounts the whole stack

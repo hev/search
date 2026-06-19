@@ -27,6 +27,11 @@ governor.workspace = true
 subtle.workspace = true
 dashmap.workspace = true
 uuid.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+arrow-ipc.workspace = true
+futures.workspace = true
+tempfile = "3"
 firnflow-core = { path = "../firnflow-core" }
 
 [dev-dependencies]

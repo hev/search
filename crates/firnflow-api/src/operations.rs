@@ -45,6 +45,8 @@ pub enum OperationKind {
     ScalarIndex,
     /// Compaction (`POST /ns/{ns}/compact`).
     Compact,
+    /// Bulk Arrow import (`POST /ns/{ns}/import`).
+    Import,
 }
 
 /// Lifecycle state of a tracked operation. See the module docs for why

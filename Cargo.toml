@@ -29,6 +29,9 @@ lance = "=6.0.0"
 # the minor keeps the dependency graph on what upstream tested.
 arrow-array = "58"
 arrow-schema = "58"
+# Arrow IPC stream reader for the binary `/import` bulk-ingest path;
+# pinned to the same arrow-rs minor as the rest of the stack.
+arrow-ipc = "58"
 
 # `object_store` — lance-io 6.0.0 still takes `^0.12.0`. Used by the
 # DELETE path in `NamespaceManager` to list and delete the namespace
