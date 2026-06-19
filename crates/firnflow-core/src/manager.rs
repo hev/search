@@ -1794,14 +1794,22 @@ pub fn validate_arrow_import_schema(
 
     // Reject unknown columns so a misspelled name (or stray data the
     // server would otherwise silently drop) is a clear 400. Only `id`,
-    // one of `vector`/`vectors`, and `text` are read.
+    // one of `vector`/`vectors`, and `text` are read. Arrow permits
+    // duplicate field names and column lookup returns the first match,
+    // so a repeated column would silently shadow data — reject those too.
     const ALLOWED: &[&str] = &["id", "vector", "vectors", "text"];
+    let mut seen = HashSet::new();
     for field in schema.fields() {
-        if !ALLOWED.contains(&field.name().as_str()) {
+        let name = field.name().as_str();
+        if !ALLOWED.contains(&name) {
             return Err(FirnflowError::InvalidRequest(format!(
-                "import: unexpected column `{}`; allowed columns are `id`, \
-                 one of `vector`/`vectors`, and optional `text`",
-                field.name()
+                "import: unexpected column `{name}`; allowed columns are `id`, \
+                 one of `vector`/`vectors`, and optional `text`"
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(FirnflowError::InvalidRequest(format!(
+                "import: duplicate column `{name}`; each column may appear at most once"
             )));
         }
     }
@@ -2399,6 +2407,13 @@ mod tests {
                 Field::new("id", DataType::UInt64, false),
                 Field::new("vector", single_vec.clone(), false),
                 Field::new("vectr", single_vec.clone(), false),
+            ]),
+            // duplicate column name (Arrow allows it; we reject it so the
+            // second does not silently shadow the first)
+            Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new("vector", single_vec.clone(), false),
+                Field::new("vector", single_vec.clone(), false),
             ]),
         ];
         for (i, s) in rejected.iter().enumerate() {
