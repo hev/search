@@ -656,19 +656,34 @@ impl NamespaceManager {
         // logged and the upsert still returns success (the index can
         // be rebuilt later through `create_scalar_index`).
         if is_fresh {
-            if let Err(e) = self.build_id_index(&tbl).await {
-                tracing::warn!(
-                    namespace = %ns,
-                    error = %e,
-                    "auto-build of id index failed on first write; \
-                     rebuild it with POST /ns/{ns}/scalar-index column=id"
-                );
-            } else {
-                // The index build is a Lance commit that advances the
-                // manifest, so drop the pooled handle — the next
-                // operation re-opens at the new version. Matches the
-                // eviction the explicit index builders do.
-                self.evict_handle(ns);
+            match self.build_id_index(&tbl).await {
+                Ok(()) => {
+                    // The index build is a Lance commit, so the handle
+                    // pooled while creating the table now references the
+                    // pre-index view. Drop it and open a fresh one in its
+                    // place: later merge-insert batches then see and use
+                    // the index, and the pool stays warm — an upsert must
+                    // not leave it cold (the explicit index builders evict
+                    // and let the next call re-open lazily; here the next
+                    // call is the warm upsert, so re-pool eagerly).
+                    self.evict_handle(ns);
+                    if let Err(e) = self.get_or_open_table(ns, info.kind, info.dim).await {
+                        tracing::warn!(
+                            namespace = %ns,
+                            error = %e,
+                            "could not re-pool handle after id index build; \
+                             it will reopen on the next operation"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        namespace = %ns,
+                        error = %e,
+                        "auto-build of id index failed on first write; \
+                         rebuild it with POST /ns/{ns}/scalar-index column=id"
+                    );
+                }
             }
         }
         Ok(())
