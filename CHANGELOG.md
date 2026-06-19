@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-06-19
+
 ### Added
 - `POST /ns/{namespace}/scalar-index` takes an optional JSON body to choose which column to index. `{"column": "id"}` builds a BTree on the row id, and a request with no body keeps the previous default of `_ingested_at`. The `id` index is the maintenance path for namespaces created before auto-indexing existed (see Changed), so an operator can add it to an existing namespace without recreating it. An unsupported column is rejected with `400` before any background work starts. Closes #66.
 
@@ -214,7 +216,8 @@ development through phases 1 through 8 before being made public;
   benchmark at dim=1536, 100k rows available at
   `bench/results/cold_vs_warm_aws.md`.
 
-[Unreleased]: https://github.com/gordonmurray/firnflow/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/gordonmurray/firnflow/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/gordonmurray/firnflow/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/gordonmurray/firnflow/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/gordonmurray/firnflow/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/gordonmurray/firnflow/compare/v0.7.1...v0.8.0
