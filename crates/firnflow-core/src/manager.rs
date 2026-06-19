@@ -34,23 +34,25 @@
 //! reads on that same handle.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow_array::builder::{FixedSizeListBuilder, Float32Builder, ListBuilder, StringBuilder};
 use arrow_array::{
-    Array, ArrayRef, FixedSizeListArray, Float32Array, ListArray, RecordBatch, RecordBatchIterator,
-    RecordBatchReader, StringArray, TimestampMicrosecondArray, UInt64Array,
+    new_null_array, Array, ArrayRef, FixedSizeListArray, Float32Array, ListArray, RecordBatch,
+    RecordBatchIterator, RecordBatchReader, StringArray, TimestampMicrosecondArray, UInt64Array,
 };
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef, TimeUnit};
 use dashmap::DashMap;
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::ColumnOrdering;
+use lance::dataset::{WriteMode, WriteParams};
 use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder, FullTextSearchQuery};
 use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::index::{Index, IndexType};
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
-use lancedb::table::OptimizeAction;
+use lancedb::table::{OptimizeAction, WriteOptions};
 use lancedb::DistanceType;
 use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
@@ -700,6 +702,110 @@ impl NamespaceManager {
             .await
             .map_err(|e| FirnflowError::Backend(format!("build id index: {e}")))?;
         Ok(())
+    }
+
+    /// Bulk-append the rows from an Arrow IPC stream, insert-only, in a
+    /// single Lance commit.
+    ///
+    /// This is the binary bulk-ingest path behind `POST /ns/{ns}/import`.
+    /// Unlike [`upsert`](Self::upsert) it does **not** merge by `id`: the
+    /// caller asserts the ids are new, so there is no per-batch match
+    /// scan, and the whole stream is written as one append commit
+    /// (`WriteMode::Append`, `skip_auto_cleanup`) regardless of how many
+    /// Arrow batches it carries — `Table::add` pulls the wrapped reader
+    /// one batch at a time, so peak memory stays at a single batch.
+    ///
+    /// The incoming schema is validated up front
+    /// ([`validate_arrow_import_schema`]); each batch is then validated
+    /// row-by-row (non-null `id`, non-null vector payload, non-empty
+    /// multivector lists) and projected into the canonical table schema
+    /// with a server-set `_ingested_at`. On a fresh namespace the
+    /// stream's kind/dim fix the namespace; on an existing one they must
+    /// match. No `id` index is built (this path never does a merge
+    /// lookup — build indexes after the load, per the large-ingest
+    /// recipe). Returns the number of rows appended.
+    pub async fn import_arrow(
+        &self,
+        ns: &NamespaceId,
+        reader: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<usize, FirnflowError> {
+        let in_schema = reader.schema();
+        let (kind, dim, has_text) = validate_arrow_import_schema(&in_schema)?;
+
+        // Fresh namespace: the stream fixes kind/dim. Existing: it must
+        // match the established shape.
+        let info = match self.resolve_schema_info(ns).await? {
+            Some(info) => {
+                if info.kind != kind || info.dim != dim {
+                    return Err(FirnflowError::InvalidRequest(format!(
+                        "import: stream is {} dim {dim}, but namespace {ns} is {} dim {}",
+                        kind.as_label(),
+                        info.kind.as_label(),
+                        info.dim,
+                    )));
+                }
+                info
+            }
+            None => NamespaceSchemaInfo {
+                dim,
+                kind,
+                has_ingested_at: true,
+            },
+        };
+
+        let tbl = self.get_or_open_table(ns, info.kind, info.dim).await?;
+        let canonical = Self::schema_for_kind(info.kind, info.dim, true);
+
+        // Column positions in the incoming stream (any order).
+        let id_idx = in_schema
+            .index_of("id")
+            .map_err(|e| FirnflowError::InvalidRequest(format!("import: {e}")))?;
+        let vec_name = match info.kind {
+            VectorKind::Single => "vector",
+            VectorKind::Multivector => "vectors",
+        };
+        let vec_idx = in_schema
+            .index_of(vec_name)
+            .map_err(|e| FirnflowError::InvalidRequest(format!("import: {e}")))?;
+        let text_idx = if has_text {
+            in_schema.index_of("text").ok()
+        } else {
+            None
+        };
+
+        let rows = Arc::new(AtomicU64::new(0));
+        let ingest = IngestReader {
+            inner: reader,
+            canonical: canonical.clone(),
+            kind: info.kind,
+            id_idx,
+            vec_idx,
+            text_idx,
+            ts_micros: current_micros(),
+            rows: Arc::clone(&rows),
+        };
+
+        // One append commit for the whole stream. `WriteParams::default()`
+        // is `Create`, so `Append` must be set explicitly;
+        // `skip_auto_cleanup` drops the per-commit old-version cleanup that
+        // adds up under high-frequency ingest (run compaction as explicit
+        // maintenance instead).
+        let write_params = WriteParams {
+            mode: WriteMode::Append,
+            skip_auto_cleanup: true,
+            ..Default::default()
+        };
+        let ingest: Box<dyn RecordBatchReader + Send> = Box::new(ingest);
+        tbl.add(ingest)
+            .write_options(WriteOptions {
+                lance_write_params: Some(write_params),
+            })
+            .execute()
+            .await
+            .map_err(map_import_lance_error)?;
+
+        self.schema_info.insert(ns.clone(), info);
+        Ok(rows.load(Ordering::Relaxed) as usize)
     }
 
     /// Remove every object under a namespace prefix from the
@@ -1553,6 +1659,304 @@ fn current_micros() -> i64 {
 /// both vector fields, has both fields populated, has an empty
 /// inner-vector list on a multivector payload, or has mixed
 /// sub-vector dimensions within a multivector payload.
+/// Extract the dimension of a `FixedSizeList<Float32, dim>` data type,
+/// ignoring child-field naming. Returns `None` for any other type.
+fn fixed_size_float_dim(dt: &DataType) -> Option<usize> {
+    match dt {
+        DataType::FixedSizeList(field, size) if field.data_type() == &DataType::Float32 => {
+            Some(*size as usize)
+        }
+        _ => None,
+    }
+}
+
+/// Extract the inner dimension of a `List<FixedSizeList<Float32, dim>>`
+/// (the multivector payload type). Returns `None` for any other type.
+fn list_of_fixed_size_float_dim(dt: &DataType) -> Option<usize> {
+    match dt {
+        DataType::List(field) => fixed_size_float_dim(field.data_type()),
+        _ => None,
+    }
+}
+
+/// Validate the Arrow schema of a `/import` stream and report the
+/// namespace kind, vector dimension, and whether a `text` column is
+/// present.
+///
+/// The stream must carry `id` (`UInt64`) plus exactly one vector
+/// payload column, mirroring the JSON field names: `vector`
+/// (`FixedSizeList<Float32, dim>`, single-vector) or `vectors`
+/// (`List<FixedSizeList<Float32, dim>>`, multivector). An optional
+/// `text` column must be `Utf8`. The server owns `_ingested_at`, so it
+/// must **not** be supplied. The vector column's element type must
+/// match Firn's canonical shape exactly (child field `item`, `Float32`)
+/// so Lance appends it without a cast.
+///
+/// Returns [`FirnflowError::InvalidRequest`] for any missing, extra, or
+/// mistyped column, letting the API layer answer `400` before it starts
+/// the background import.
+pub fn validate_arrow_import_schema(
+    schema: &Schema,
+) -> Result<(VectorKind, usize, bool), FirnflowError> {
+    match schema.column_with_name("id") {
+        Some((_, f)) if f.data_type() == &DataType::UInt64 => {}
+        Some((_, f)) => {
+            return Err(FirnflowError::InvalidRequest(format!(
+                "import: column `id` must be UInt64, got {:?}",
+                f.data_type()
+            )));
+        }
+        None => {
+            return Err(FirnflowError::InvalidRequest(
+                "import: required column `id` (UInt64) is missing".into(),
+            ));
+        }
+    }
+
+    if schema.column_with_name(INGESTED_AT_COLUMN).is_some() {
+        return Err(FirnflowError::InvalidRequest(format!(
+            "import: column `{INGESTED_AT_COLUMN}` is server-owned and must not be included"
+        )));
+    }
+
+    let has_vector = schema.column_with_name("vector").is_some();
+    let has_vectors = schema.column_with_name("vectors").is_some();
+    let (kind, dim) = match (has_vector, has_vectors) {
+        (true, true) => {
+            return Err(FirnflowError::InvalidRequest(
+                "import: set exactly one of `vector` or `vectors`, not both".into(),
+            ));
+        }
+        (false, false) => {
+            return Err(FirnflowError::InvalidRequest(
+                "import: missing vector payload (column `vector` for single-vector \
+                 or `vectors` for multivector namespaces)"
+                    .into(),
+            ));
+        }
+        (true, false) => {
+            let (_, f) = schema.column_with_name("vector").expect("checked present");
+            let dim = fixed_size_float_dim(f.data_type()).ok_or_else(|| {
+                FirnflowError::InvalidRequest(format!(
+                    "import: column `vector` must be FixedSizeList<Float32, dim>, got {:?}",
+                    f.data_type()
+                ))
+            })?;
+            (VectorKind::Single, dim)
+        }
+        (false, true) => {
+            let (_, f) = schema.column_with_name("vectors").expect("checked present");
+            let dim = list_of_fixed_size_float_dim(f.data_type()).ok_or_else(|| {
+                FirnflowError::InvalidRequest(format!(
+                    "import: column `vectors` must be List<FixedSizeList<Float32, dim>>, got {:?}",
+                    f.data_type()
+                ))
+            })?;
+            (VectorKind::Multivector, dim)
+        }
+    };
+
+    if dim == 0 {
+        return Err(FirnflowError::InvalidRequest(
+            "import: vector dimension must be non-zero".into(),
+        ));
+    }
+
+    // Require the exact canonical element type (child field `item`,
+    // Float32, nullable) so `Table::add` accepts the column without a
+    // cast. The dim probes above are lenient on child naming; this is
+    // the strict gate.
+    let canonical = NamespaceManager::schema_for_kind(kind, dim, false);
+    let canonical_vec = canonical.field(1).data_type();
+    let vec_name = match kind {
+        VectorKind::Single => "vector",
+        VectorKind::Multivector => "vectors",
+    };
+    let (_, f) = schema.column_with_name(vec_name).expect("checked present");
+    if f.data_type() != canonical_vec {
+        return Err(FirnflowError::InvalidRequest(format!(
+            "import: column `{vec_name}` must be {canonical_vec:?} \
+             (Float32 elements, child field `item`), got {:?}",
+            f.data_type()
+        )));
+    }
+
+    let has_text = match schema.column_with_name("text") {
+        Some((_, f)) if f.data_type() == &DataType::Utf8 => true,
+        Some((_, f)) => {
+            return Err(FirnflowError::InvalidRequest(format!(
+                "import: column `text` must be Utf8, got {:?}",
+                f.data_type()
+            )));
+        }
+        None => false,
+    };
+
+    // Reject unknown columns so a misspelled name (or stray data the
+    // server would otherwise silently drop) is a clear 400. Only `id`,
+    // one of `vector`/`vectors`, and `text` are read. Arrow permits
+    // duplicate field names and column lookup returns the first match,
+    // so a repeated column would silently shadow data — reject those too.
+    const ALLOWED: &[&str] = &["id", "vector", "vectors", "text"];
+    let mut seen = HashSet::new();
+    for field in schema.fields() {
+        let name = field.name().as_str();
+        if !ALLOWED.contains(&name) {
+            return Err(FirnflowError::InvalidRequest(format!(
+                "import: unexpected column `{name}`; allowed columns are `id`, \
+                 one of `vector`/`vectors`, and optional `text`"
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(FirnflowError::InvalidRequest(format!(
+                "import: duplicate column `{name}`; each column may appear at most once"
+            )));
+        }
+    }
+
+    Ok((kind, dim, has_text))
+}
+
+/// Classify a `Table::add` failure: an Arrow error means the client's
+/// stream was malformed or a row failed validation (the
+/// [`IngestReader`] surfaces row-level rejections as `ArrowError`), so
+/// it maps to a caller-facing `InvalidRequest`; anything else is a
+/// backend (S3 / commit) failure.
+fn map_import_lance_error(e: lancedb::Error) -> FirnflowError {
+    match e {
+        lancedb::Error::Arrow { .. } => {
+            FirnflowError::InvalidRequest(format!("import: malformed Arrow data: {e}"))
+        }
+        other => FirnflowError::Backend(format!("table.add: {other}")),
+    }
+}
+
+/// Adapts a client `/import` Arrow stream into Firn's canonical table
+/// schema. For each batch it validates the rows, appends a server-set
+/// `_ingested_at`, and emits a batch matching `schema_for_kind`. Handed
+/// to `Table::add`, which pulls one batch at a time, so the whole
+/// stream lands in a single commit with peak memory of one batch.
+struct IngestReader {
+    inner: Box<dyn RecordBatchReader + Send>,
+    canonical: SchemaRef,
+    kind: VectorKind,
+    id_idx: usize,
+    vec_idx: usize,
+    text_idx: Option<usize>,
+    ts_micros: i64,
+    rows: Arc<AtomicU64>,
+}
+
+impl IngestReader {
+    fn project(&self, batch: &RecordBatch) -> Result<RecordBatch, ArrowError> {
+        let n = batch.num_rows();
+
+        let id = batch.column(self.id_idx).clone();
+        if id.null_count() != 0 {
+            return Err(ArrowError::InvalidArgumentError(
+                "import: column `id` contains null values".into(),
+            ));
+        }
+
+        let vector = batch.column(self.vec_idx).clone();
+        if vector.null_count() != 0 {
+            return Err(ArrowError::InvalidArgumentError(
+                "import: vector payload contains null rows".into(),
+            ));
+        }
+
+        // Reject nulls anywhere inside the vector payload, not just at the
+        // top level. A valid Arrow `FixedSizeList<Float32>` can carry a
+        // non-null row with null float children, and a multivector input
+        // can carry null inner sub-vectors or null floats — none of which
+        // the JSON `/upsert` path can produce, so `/import` rejects them
+        // too. (`FixedSizeList` makes the per-vector width structural, so
+        // there is no separate dim check.)
+        match self.kind {
+            VectorKind::Single => {
+                let fsl = vector
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .ok_or_else(|| {
+                        ArrowError::InvalidArgumentError(
+                            "import: `vector` is not a FixedSizeList array".into(),
+                        )
+                    })?;
+                if fsl.values().null_count() != 0 {
+                    return Err(ArrowError::InvalidArgumentError(
+                        "import: `vector` contains null float values".into(),
+                    ));
+                }
+            }
+            VectorKind::Multivector => {
+                let list = vector.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                    ArrowError::InvalidArgumentError("import: `vectors` is not a List array".into())
+                })?;
+                // Each row needs at least one sub-vector (an empty list has
+                // no MaxSim contribution; the JSON path never makes one).
+                let offsets = list.value_offsets();
+                if offsets.windows(2).any(|w| w[1] - w[0] == 0) {
+                    return Err(ArrowError::InvalidArgumentError(
+                        "import: a row has an empty `vectors` list (multivector rows need at \
+                         least one sub-vector)"
+                            .into(),
+                    ));
+                }
+                let inner = list.values();
+                if inner.null_count() != 0 {
+                    return Err(ArrowError::InvalidArgumentError(
+                        "import: `vectors` contains null sub-vectors".into(),
+                    ));
+                }
+                let inner_fsl = inner
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .ok_or_else(|| {
+                        ArrowError::InvalidArgumentError(
+                            "import: `vectors` inner is not a FixedSizeList array".into(),
+                        )
+                    })?;
+                if inner_fsl.values().null_count() != 0 {
+                    return Err(ArrowError::InvalidArgumentError(
+                        "import: `vectors` contains null float values".into(),
+                    ));
+                }
+            }
+        }
+
+        let text: ArrayRef = match self.text_idx {
+            Some(i) => batch.column(i).clone(),
+            None => new_null_array(&DataType::Utf8, n),
+        };
+
+        let ts: ArrayRef = Arc::new(TimestampMicrosecondArray::from_iter_values(
+            std::iter::repeat_n(self.ts_micros, n),
+        ));
+
+        let out = RecordBatch::try_new(self.canonical.clone(), vec![id, vector, text, ts])?;
+        self.rows.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(out)
+    }
+}
+
+impl Iterator for IngestReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.inner.next() {
+            Some(Ok(batch)) => Some(self.project(&batch)),
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        }
+    }
+}
+
+impl RecordBatchReader for IngestReader {
+    fn schema(&self) -> SchemaRef {
+        self.canonical.clone()
+    }
+}
+
 fn inspect_row_payload(row: &UpsertRow) -> Result<(VectorKind, usize), FirnflowError> {
     let single_set = !row.vector.is_empty();
     let multi_set = row.vectors.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
@@ -1924,6 +2328,103 @@ mod tests {
             validate_scalar_index_column("text"),
             Err(FirnflowError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn import_schema_validation() {
+        let single_vec = NamespaceManager::schema_for_kind(VectorKind::Single, 4, false)
+            .field(1)
+            .data_type()
+            .clone();
+        let multi_vec = NamespaceManager::schema_for_kind(VectorKind::Multivector, 4, false)
+            .field(1)
+            .data_type()
+            .clone();
+
+        // Happy: single-vector, no text.
+        let s = Schema::new(vec![
+            Field::new("id", DataType::UInt64, false),
+            Field::new("vector", single_vec.clone(), false),
+        ]);
+        assert_eq!(
+            validate_arrow_import_schema(&s).unwrap(),
+            (VectorKind::Single, 4, false)
+        );
+
+        // Happy: multivector with text.
+        let s = Schema::new(vec![
+            Field::new("id", DataType::UInt64, false),
+            Field::new("vectors", multi_vec.clone(), false),
+            Field::new("text", DataType::Utf8, true),
+        ]);
+        assert_eq!(
+            validate_arrow_import_schema(&s).unwrap(),
+            (VectorKind::Multivector, 4, true)
+        );
+
+        // Each of these must be rejected as InvalidRequest.
+        let bad_float =
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 4);
+        let rejected = [
+            // missing id
+            Schema::new(vec![Field::new("vector", single_vec.clone(), false)]),
+            // wrong id type
+            Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("vector", single_vec.clone(), false),
+            ]),
+            // server-owned _ingested_at supplied
+            Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new("vector", single_vec.clone(), false),
+                Field::new(
+                    INGESTED_AT_COLUMN,
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
+                    false,
+                ),
+            ]),
+            // neither vector nor vectors
+            Schema::new(vec![Field::new("id", DataType::UInt64, false)]),
+            // both vector and vectors
+            Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new("vector", single_vec.clone(), false),
+                Field::new("vectors", multi_vec.clone(), false),
+            ]),
+            // wrong element type (Float64)
+            Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new("vector", bad_float, false),
+            ]),
+            // text wrong type
+            Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new("vector", single_vec.clone(), false),
+                Field::new("text", DataType::Int32, true),
+            ]),
+            // unknown/extra column (e.g. a misspelled name)
+            Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new("vector", single_vec.clone(), false),
+                Field::new("vectr", single_vec.clone(), false),
+            ]),
+            // duplicate column name (Arrow allows it; we reject it so the
+            // second does not silently shadow the first)
+            Schema::new(vec![
+                Field::new("id", DataType::UInt64, false),
+                Field::new("vector", single_vec.clone(), false),
+                Field::new("vector", single_vec.clone(), false),
+            ]),
+        ];
+        for (i, s) in rejected.iter().enumerate() {
+            assert!(
+                matches!(
+                    validate_arrow_import_schema(s),
+                    Err(FirnflowError::InvalidRequest(_))
+                ),
+                "schema #{i} should have been rejected"
+            );
+        }
     }
 
     #[test]

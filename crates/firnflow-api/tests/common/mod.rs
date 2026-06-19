@@ -102,6 +102,8 @@ pub async fn test_state_with_auth(
         auth: Arc::new(auth),
         rate_limit,
         max_body_bytes: 32 * 1024 * 1024,
+        import_max_bytes: 0,
+        import_tmp_dir: tmp.path().to_path_buf(),
     };
     (state, tmp)
 }
@@ -163,6 +165,8 @@ pub async fn test_state_offline_with_auth(
         auth: Arc::new(auth),
         rate_limit,
         max_body_bytes: 32 * 1024 * 1024,
+        import_max_bytes: 0,
+        import_tmp_dir: tmp.path().to_path_buf(),
     };
     (state, tmp)
 }
@@ -187,6 +191,8 @@ pub fn dummy_config() -> AppConfig {
         object_cache_dir: std::env::temp_dir(),
         object_cache_bytes: 0,
         object_cache_max_entry_bytes: 0,
+        import_max_bytes: 0,
+        import_tmp_dir: std::env::temp_dir(),
     }
 }
 

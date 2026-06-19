@@ -2,6 +2,7 @@
 //!
 //! * `GET    /health`
 //! * `POST   /ns/{namespace}/upsert`
+//! * `POST   /ns/{namespace}/import`
 //! * `POST   /ns/{namespace}/query`
 //! * `GET    /ns/{namespace}/list`
 //! * `GET    /ns/{namespace}`
@@ -14,18 +15,24 @@
 //! * `GET    /operations/{operation_id}`
 //! * `GET    /metrics`
 
+use std::io::BufReader;
 use std::sync::Arc;
 
+use arrow_array::RecordBatchReader;
+use arrow_ipc::reader::StreamReader;
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 
 use firnflow_core::{
-    decode_list_cursor, FirnflowError, IndexRequest, ListOrder, ListPage, NamespaceId,
-    NamespaceInfo, QueryRequest, UpsertRow as CoreUpsertRow, LIST_MAX_LIMIT,
+    decode_list_cursor, validate_arrow_import_schema, FirnflowError, IndexRequest, ListOrder,
+    ListPage, NamespaceId, NamespaceInfo, QueryRequest, UpsertRow as CoreUpsertRow, LIST_MAX_LIMIT,
 };
 
 use crate::error::ApiError;
@@ -34,6 +41,10 @@ use crate::state::AppState;
 
 const CACHE_SOURCE_REQUEST_HEADER: &str = "x-firn-debug-cache-source";
 const CACHE_SOURCE_RESPONSE_HEADER: &str = "x-firn-cache-source";
+
+/// Canonical `Content-Type` for an Arrow IPC stream body on `/import`.
+/// `application/octet-stream` is also accepted as a binary fallback.
+const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
 
 /// Body of a successful delete response.
 #[derive(Debug, Serialize)]
@@ -452,6 +463,152 @@ pub async fn create_scalar_index(
             status: OperationStatus::Running,
         }),
     ))
+}
+
+/// JSON error response with an explicit status, matching the
+/// `{ "error": ... }` body shape the rest of the API uses. Used by
+/// [`import`] for the statuses `ApiError` does not model (415, 413).
+fn status_error(status: StatusCode, msg: impl Into<String>) -> Response {
+    (status, Json(serde_json::json!({ "error": msg.into() }))).into_response()
+}
+
+/// Bulk-ingest rows from an Arrow IPC stream (`POST /ns/{ns}/import`).
+///
+/// The binary, columnar bulk-load path: the body is an Arrow IPC stream
+/// (`Content-Type: application/vnd.apache.arrow.stream`), not JSON, so
+/// it avoids JSON's ~3x float inflation and is not bound by
+/// `FIRNFLOW_MAX_BODY_BYTES` (this route disables that limit). The whole
+/// stream is appended in a single Lance commit, insert-only — see
+/// [`firnflow_core::NamespaceManager::import_arrow`] for the schema
+/// contract and semantics; it is **not** idempotent (use `/upsert` for
+/// that). Build indexes after the load (the large-ingest recipe).
+///
+/// Flow: validate `Content-Type` (415 otherwise) → spool the body to a
+/// temp file, enforcing `FIRNFLOW_IMPORT_MAX_BYTES` (413 if exceeded) →
+/// validate the Arrow schema (400 if malformed/wrong) → start an
+/// operation, run the import in the background, return `202` with an
+/// `operation_id`. Poll `GET /operations/{operation_id}`; stream-time
+/// failures (bad rows, truncated stream, storage errors) surface as a
+/// failed operation.
+pub async fn import(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+
+    // Binary transport only. Accept the canonical Arrow stream type or
+    // a generic octet-stream; reject anything else (e.g. JSON).
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(';').next().unwrap_or("").trim().to_string())
+        .unwrap_or_default();
+    if content_type != ARROW_STREAM_CONTENT_TYPE && content_type != "application/octet-stream" {
+        return Ok(status_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            format!("import requires Content-Type: {ARROW_STREAM_CONTENT_TYPE}"),
+        ));
+    }
+
+    // Spool the body to disk so the Lance write/commit can run in the
+    // background after a fast 202, and so memory stays bounded. The
+    // route bypasses the global body limit, so the import-specific byte
+    // cap is the guard against filling the spool disk. Writes go through
+    // `tokio::fs` (the blocking pool) rather than blocking a runtime
+    // worker on disk for the duration of a multi-GB upload.
+    let tmp = tempfile::Builder::new()
+        .prefix("firnflow-import-")
+        .tempfile_in(&state.import_tmp_dir)
+        .map_err(|e| FirnflowError::Backend(format!("import: create temp file: {e}")))?;
+    let mut writer = tokio::fs::File::from_std(
+        tmp.reopen()
+            .map_err(|e| FirnflowError::Backend(format!("import: open spool file: {e}")))?,
+    );
+    let cap = state.import_max_bytes;
+    let mut written: u64 = 0;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|e| FirnflowError::InvalidRequest(format!("import: body read error: {e}")))?;
+        written += chunk.len() as u64;
+        if cap != 0 && written > cap {
+            return Ok(status_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("import body exceeds FIRNFLOW_IMPORT_MAX_BYTES ({cap} bytes)"),
+            ));
+        }
+        writer
+            .write_all(&chunk)
+            .await
+            .map_err(|e| FirnflowError::Backend(format!("import: spool write: {e}")))?;
+    }
+    writer
+        .flush()
+        .await
+        .map_err(|e| FirnflowError::Backend(format!("import: spool flush: {e}")))?;
+    // Drop the async writer's fd before re-reading the file below; the
+    // bytes are already visible to a fresh handle on the same host.
+    drop(writer);
+
+    // Validate the Arrow schema up front so a bad request is a 400
+    // before any background work starts (the schema is the first IPC
+    // message, so this is cheap).
+    let schema = {
+        let file = tmp
+            .reopen()
+            .map_err(|e| FirnflowError::Backend(format!("import: reopen temp: {e}")))?;
+        let reader = StreamReader::try_new(BufReader::new(file), None).map_err(|e| {
+            FirnflowError::InvalidRequest(format!("import: not a valid Arrow IPC stream: {e}"))
+        })?;
+        reader.schema()
+    };
+    validate_arrow_import_schema(&schema).map_err(ApiError::Core)?;
+
+    let operation_id = state
+        .operations
+        .start(OperationKind::Import, ns.to_string());
+    let service = Arc::clone(&state.service);
+    let operations = Arc::clone(&state.operations);
+    let ns_owned = ns.clone();
+    let op_for_task = operation_id.clone();
+    tokio::spawn(async move {
+        // `tmp` is moved in so the spooled file outlives the response and
+        // is removed when the task ends.
+        let reader = match tmp.reopen() {
+            Ok(file) => match StreamReader::try_new(BufReader::new(file), None) {
+                Ok(r) => r,
+                Err(e) => {
+                    operations.fail(&op_for_task, format!("import: Arrow stream: {e}"));
+                    return;
+                }
+            },
+            Err(e) => {
+                operations.fail(&op_for_task, format!("import: reopen temp: {e}"));
+                return;
+            }
+        };
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(reader);
+        match service.import(&ns_owned, reader).await {
+            Ok(_imported) => operations.succeed(&op_for_task),
+            Err(e) => {
+                tracing::error!(namespace = %ns_owned, error = %e, "import failed");
+                operations.fail(&op_for_task, operation_error_message(&e));
+            }
+        }
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(OperationAccepted {
+            operation_id,
+            kind: OperationKind::Import,
+            namespace: ns.to_string(),
+            status: OperationStatus::Running,
+        }),
+    )
+        .into_response())
 }
 
 /// Explicit compaction.

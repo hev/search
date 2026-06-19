@@ -261,6 +261,8 @@ async fn secret_debug_does_not_leak_in_app_config() {
         object_cache_dir: std::env::temp_dir(),
         object_cache_bytes: 0,
         object_cache_max_entry_bytes: 0,
+        import_max_bytes: 0,
+        import_tmp_dir: std::env::temp_dir(),
     };
     let dbg = format!("{:?}", cfg);
     assert!(
@@ -321,6 +323,8 @@ async fn duplicate_keys_fail_startup_before_cache_setup() {
         object_cache_dir: std::env::temp_dir(),
         object_cache_bytes: 0,
         object_cache_max_entry_bytes: 0,
+        import_max_bytes: 0,
+        import_tmp_dir: std::env::temp_dir(),
     };
 
     let err = match build_state(&cfg).await {

@@ -71,6 +71,16 @@ pub struct AppConfig {
     /// stream straight through uncached, bounding the RAM one miss can use.
     /// `FIRNFLOW_OBJECT_CACHE_MAX_ENTRY_BYTES` (default 256 MiB).
     pub object_cache_max_entry_bytes: u64,
+    /// Cap on a single `/import` Arrow body, spooled to disk. The
+    /// endpoint streams its body past the `DefaultBodyLimit`, so this is
+    /// the replacement guard against filling the spool disk; exceeding it
+    /// returns `413`. `FIRNFLOW_IMPORT_MAX_BYTES` (default 8 GiB; `0` ⇒
+    /// unlimited).
+    pub import_max_bytes: u64,
+    /// Directory the `/import` handler spools the request body to before
+    /// reading it as an Arrow stream. `FIRNFLOW_IMPORT_TMP_DIR` (default
+    /// the system temp dir).
+    pub import_tmp_dir: PathBuf,
 }
 
 /// True when the given storage-options key holds credential-bearing
@@ -166,6 +176,15 @@ impl AppConfig {
                 .parse()
                 .context("FIRNFLOW_OBJECT_CACHE_MAX_ENTRY_BYTES")?;
 
+        // Default 8 GiB; `0` disables the cap.
+        let import_max_bytes: u64 = env_or("FIRNFLOW_IMPORT_MAX_BYTES", "8589934592")
+            .parse()
+            .context("FIRNFLOW_IMPORT_MAX_BYTES")?;
+        let import_tmp_dir = match std::env::var("FIRNFLOW_IMPORT_TMP_DIR") {
+            Ok(dir) => PathBuf::from(dir),
+            Err(_) => std::env::temp_dir(),
+        };
+
         let storage_options = build_storage_options_for(storage_root.scheme());
 
         let api_key = optional_secret("FIRNFLOW_API_KEY");
@@ -200,6 +219,8 @@ impl AppConfig {
             object_cache_dir,
             object_cache_bytes,
             object_cache_max_entry_bytes,
+            import_max_bytes,
+            import_tmp_dir,
         })
     }
 }
@@ -495,6 +516,8 @@ mod tests {
             object_cache_dir: std::env::temp_dir(),
             object_cache_bytes: 0,
             object_cache_max_entry_bytes: 0,
+            import_max_bytes: 0,
+            import_tmp_dir: std::env::temp_dir(),
         };
 
         let dbg = format!("{:?}", cfg);
@@ -557,6 +580,8 @@ mod tests {
             object_cache_dir: std::env::temp_dir(),
             object_cache_bytes: 0,
             object_cache_max_entry_bytes: 0,
+            import_max_bytes: 0,
+            import_tmp_dir: std::env::temp_dir(),
         };
 
         let dbg = format!("{:?}", cfg);

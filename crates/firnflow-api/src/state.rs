@@ -1,5 +1,6 @@
 //! Axum application state.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -45,6 +46,13 @@ pub struct AppState {
     /// once at build time and installs a single global
     /// `DefaultBodyLimit` layer; it is not consulted per request.
     pub max_body_bytes: usize,
+    /// Cap on a single `/import` Arrow body (spooled to disk). `0`
+    /// disables the cap; otherwise the handler returns `413` once the
+    /// streamed body exceeds it. The `/import` route bypasses
+    /// `max_body_bytes`, so this is its replacement guard.
+    pub import_max_bytes: u64,
+    /// Directory the `/import` handler spools request bodies to.
+    pub import_tmp_dir: PathBuf,
 }
 
 impl AppState {
@@ -142,6 +150,8 @@ pub async fn build_state(cfg: &AppConfig) -> anyhow::Result<AppState> {
         auth: Arc::new(auth),
         rate_limit: cfg.rate_limit.clone(),
         max_body_bytes: cfg.max_body_bytes,
+        import_max_bytes: cfg.import_max_bytes,
+        import_tmp_dir: cfg.import_tmp_dir.clone(),
     })
 }
 

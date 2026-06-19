@@ -2547,9 +2547,13 @@ name = "firnflow-api"
 version = "0.9.1"
 dependencies = [
  "anyhow",
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
  "axum",
  "dashmap",
  "firnflow-core",
+ "futures",
  "governor",
  "serde",
  "serde_json",

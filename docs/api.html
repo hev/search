@@ -176,6 +176,52 @@
       </div>
     </div>
 
+    <!-- POST /ns/{ns}/import -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/ns/{namespace}/import</span>
+        <span class="endpoint-desc">Bulk-ingest an Arrow IPC stream (binary, insert-only, async)</span>
+      </div>
+      <div class="endpoint-body">
+        <p>The bulk first-load path. The body is an <a href="https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format">Arrow IPC stream</a>, not JSON: binary and columnar, so embeddings avoid JSON's ~3x decimal-text inflation, and the route is not bound by <code>FIRNFLOW_MAX_BODY_BYTES</code> (a whole corpus can stream in one request). The entire stream is appended in a <strong>single Lance commit</strong>, which is what keeps throughput flat on a large load where many small <code>/upsert</code> commits would not.</p>
+        <p><strong>Insert-only.</strong> Rows are appended, not merged: a repeated <code>id</code> creates a second row. Use <code>/import</code> for first-loads or known-new ids, and <code>/upsert</code> for idempotent updates. Build indexes <em>after</em> the load (see the README "Loading data at scale" recipe).</p>
+
+        <h4>Request</h4>
+        <p><code>Content-Type: application/vnd.apache.arrow.stream</code> (<code>application/octet-stream</code> is also accepted). The stream's Arrow schema must carry:</p>
+        <ul>
+          <li><code>id</code> — <code>UInt64</code>, non-null.</li>
+          <li>exactly one of <code>vector</code> (<code>FixedSizeList&lt;Float32, dim&gt;</code>, single-vector) or <code>vectors</code> (<code>List&lt;FixedSizeList&lt;Float32, dim&gt;&gt;</code>, multivector). The <code>FixedSizeList</code> child field must be named <code>item</code> (the default for e.g. PyArrow).</li>
+          <li>optional <code>text</code> — <code>Utf8</code>.</li>
+          <li><code>_ingested_at</code> must <strong>not</strong> be present; the server sets it.</li>
+          <li>any other column is rejected — a misspelled name is a <code>400</code>, not silently dropped. Vector floats must be non-null (no null child values inside a vector or sub-vector), and multivector rows must have at least one sub-vector.</li>
+        </ul>
+        <p>On a fresh namespace the stream fixes the vector kind and dimension; on an existing one they must match. Schema problems are rejected with <code>400</code> before any work starts; row-level problems (null <code>id</code>, empty multivector row) and a truncated/malformed stream surface as a <strong>failed operation</strong> after the <code>202</code>.</p>
+
+        <h4>Response (202)</h4>
+        <pre><code>{
+  "operation_id": "op_018f3a2b-7c4d-7e1f-9abc-1234567890ab",
+  "kind": "import",
+  "namespace": "demo",
+  "status": "running"
+}</code></pre>
+        <p>Poll <code>GET /operations/{operation_id}</code> for completion. Tuning: <code>FIRNFLOW_IMPORT_MAX_BYTES</code> caps a single import body spooled to disk (default 8 GiB; <code>0</code> disables, returns <code>413</code> when exceeded), and <code>FIRNFLOW_IMPORT_TMP_DIR</code> sets the spool directory.</p>
+
+        <h4>Example</h4>
+        <pre><code># write an Arrow IPC stream file (e.g. with pyarrow's RecordBatchStreamWriter), then:
+curl -X POST http://localhost:3000/ns/demo/import \
+     -H 'Content-Type: application/vnd.apache.arrow.stream' \
+     --data-binary @rows.arrows</code></pre>
+
+        <h4>Errors</h4>
+        <ul>
+          <li><code>400</code> — body is not a valid Arrow IPC stream, or the schema is missing/extra/mistyped (see Request)</li>
+          <li><code>413</code> — body exceeds <code>FIRNFLOW_IMPORT_MAX_BYTES</code></li>
+          <li><code>415</code> — wrong <code>Content-Type</code></li>
+        </ul>
+      </div>
+    </div>
+
     <!-- POST /ns/{ns}/query -->
     <div class="endpoint">
       <div class="endpoint-header" aria-expanded="true">
