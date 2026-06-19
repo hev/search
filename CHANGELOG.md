@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-06-19
+
 ### Added
 - `POST /ns/{namespace}/import` bulk-ingests an Arrow IPC stream. It is the binary, columnar path for large first loads: the body is an Arrow IPC stream rather than JSON, so embeddings avoid JSON's ~3x decimal-text inflation, the route is not bound by `FIRNFLOW_MAX_BODY_BYTES` (a whole corpus can stream in one request), and the entire stream is appended in a single Lance commit. That last part is the point: on a large load, the per-batch commit and small-fragment bookkeeping of many small `/upsert` calls is what makes throughput decay as a namespace grows, and a single streamed commit removes it. The stream carries `id` (`UInt64`) plus exactly one of `vector` (`FixedSizeList<Float32, dim>`) or `vectors` (`List<FixedSizeList<Float32, dim>>`) and an optional `text` (`Utf8`); `_ingested_at` is server-set. It is **insert-only** (a repeated `id` makes a second row), so it is for first-loads or known-new ids, not idempotent updates — use `/upsert` for those. The handler validates the schema synchronously (`400`/`413`/`415`) then returns `202` with an `operation_id` and runs the append in the background; poll `GET /operations/{operation_id}`. Recommended large-ingest path: import, then compact, then build indexes, then query (documented in the README). Part of the large-ingest work in #77.
 - Two env vars tune `/import`: `FIRNFLOW_IMPORT_MAX_BYTES` caps a single import body spooled to disk (default 8 GiB; `0` disables the cap, exceeding it returns `413`), and `FIRNFLOW_IMPORT_TMP_DIR` sets the spool directory (default the system temp dir).
@@ -220,7 +222,8 @@ development through phases 1 through 8 before being made public;
   benchmark at dim=1536, 100k rows available at
   `bench/results/cold_vs_warm_aws.md`.
 
-[Unreleased]: https://github.com/gordonmurray/firnflow/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/gordonmurray/firnflow/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/gordonmurray/firnflow/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/gordonmurray/firnflow/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/gordonmurray/firnflow/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/gordonmurray/firnflow/compare/v0.8.0...v0.8.1
