@@ -222,7 +222,7 @@ See how much object-storage traffic you've avoided:
 curl http://localhost:3000/metrics | grep s3_requests
 ```
 
-(The metric is named `firnflow_s3_requests_total` for dashboard continuity but counts requests against whichever backend the deployment is configured for.)
+(The metric is named `firnflow_s3_requests_total` for dashboard continuity but counts requests against whichever backend the deployment is configured for. It is a per-operation count — one tick per query or write, not per low-level GET. For the actual backend read volume, use `firnflow_object_store_requests_total{operation="get"}` and `firnflow_object_store_get_bytes_total`: these count the GETs and bytes that reach object storage, below the object cache, so they work whether the cache is on or off and a cache hit does not count toward them. They are the authoritative S3 read-cost signal.)
 
 ## Authentication
 
@@ -247,7 +247,7 @@ If `FIRNFLOW_ADMIN_API_KEY` is unset, the read/write key authorises admin routes
 | `/health` | `GET` | open | Liveness check |
 | `/metrics` | `GET` | metrics or open | Prometheus exposition format |
 | `/ns/{ns}` | `GET` | read/write | Namespace metadata (row count, fragment count, indexes, table version); 404 if it has no data yet |
-| `/ns/{ns}` | `DELETE` | admin | Removes all data (object storage + cache) for a namespace |
+| `/ns/{ns}` | `DELETE` | admin | Removes all data (object storage + cache) for a namespace; 404 if it has no data (never written or already deleted), so a re-delete is 404, not idempotent |
 | `/ns/{ns}/upsert` | `POST` | read/write | Insert or update vectors and data (latest-write-wins by `id`) |
 | `/ns/{ns}/import` | `POST` | read/write | Bulk-ingest an Arrow IPC stream (binary, insert-only, async 202). For large first loads; bypasses the JSON body limit |
 | `/ns/{ns}/query` | `POST` | read/write | Vector, FTS, or hybrid search |

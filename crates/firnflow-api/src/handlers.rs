@@ -212,6 +212,15 @@ pub async fn delete(
 ) -> Result<Json<DeleteResponse>, ApiError> {
     let ns = NamespaceId::new(namespace)?;
     let objects_deleted = state.service.delete(&ns).await?;
+    // Lazy namespaces create no objects until the first write, so an empty
+    // prefix means "nothing here" — a namespace that never existed (or was
+    // already deleted). Surface that as 404 rather than a misleading 200 with
+    // `objects_deleted: 0`. A genuine backend failure propagates as 5xx above,
+    // so this only fires on a clean empty delete. (A re-delete is therefore 404,
+    // not an idempotent 204.)
+    if objects_deleted == 0 {
+        return Err(ApiError::NotFound(format!("namespace {ns} does not exist")));
+    }
     Ok(Json(DeleteResponse { objects_deleted }))
 }
 
@@ -795,6 +804,18 @@ fn operation_error_message(err: &FirnflowError) -> String {
         FirnflowError::InvalidNamespace(msg) => format!("invalid namespace: {msg}"),
         FirnflowError::InvalidRequest(msg) => format!("invalid request: {msg}"),
         FirnflowError::Unsupported(msg) => format!("unsupported: {msg}"),
+        FirnflowError::StorageRegionRedirect { configured_region } => {
+            // Region is the typed diagnostic field, safe to surface; this is
+            // actionable and carries no raw backend text.
+            let region = configured_region
+                .as_deref()
+                .map(|r| format!(" (configured region: {r})"))
+                .unwrap_or_default();
+            format!(
+                "object storage redirected the request{region}; check that \
+                 FIRNFLOW_S3_REGION/AWS_REGION matches the bucket region"
+            )
+        }
         FirnflowError::Backend(_)
         | FirnflowError::Cache(_)
         | FirnflowError::Io(_)

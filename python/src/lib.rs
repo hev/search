@@ -83,9 +83,12 @@ create_exception!(
 fn to_py_err(err: FirnflowError) -> PyErr {
     let msg = err.to_string();
     match err {
-        FirnflowError::Backend(_) | FirnflowError::Io(_) | FirnflowError::Cache(_) => {
-            StorageError::new_err(msg)
-        }
+        FirnflowError::Backend(_)
+        | FirnflowError::Io(_)
+        | FirnflowError::Cache(_)
+        // The region-redirect message carries only the typed configured-region
+        // field (no raw backend text), so it is safe and actionable to surface.
+        | FirnflowError::StorageRegionRedirect { .. } => StorageError::new_err(msg),
         FirnflowError::InvalidNamespace(_) => TenantError::new_err(msg),
         FirnflowError::InvalidRequest(_) => ValidationError::new_err(msg),
         FirnflowError::Unsupported(_) => UnsupportedError::new_err(msg),

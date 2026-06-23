@@ -92,7 +92,13 @@ pub async fn build_state(cfg: &AppConfig) -> anyhow::Result<AppState> {
         cfg.storage_options.clone(),
         Arc::clone(&metrics),
     );
-    if cfg.object_cache_enabled {
+
+    // Build the byte cache config only when enabled, then *always* install an
+    // instrumented Lance session: the always-on object-store read counters
+    // (firnflow_object_store_requests_total / _get_bytes_total) must work whether
+    // or not the byte cache is on, so S3 read cost is observable in both arms of a
+    // cache on/off comparison. The cache layer is added on top only when enabled.
+    let cache = if cfg.object_cache_enabled {
         std::fs::create_dir_all(&cfg.object_cache_dir).with_context(|| {
             format!(
                 "creating object cache directory {}",
@@ -104,16 +110,21 @@ pub async fn build_state(cfg: &AppConfig) -> anyhow::Result<AppState> {
             cfg.object_cache_bytes,
         );
         oc_cfg.max_entry_bytes = cfg.object_cache_max_entry_bytes;
-        // Hand the registered object-cache counters in so hits/misses/evictions surface at /metrics.
-        let session =
-            firnflow_core::object_cache::build_cached_session(&oc_cfg, metrics.object_cache());
-        manager = manager.with_object_cache_session(session);
         tracing::info!(
             dir = %cfg.object_cache_dir.display(),
             capacity_bytes = cfg.object_cache_bytes,
             "object cache enabled (issue #51): Lance object-store reads served from local NVMe"
         );
-    }
+        // Hand the registered object-cache counters in so hits/misses/evictions surface at /metrics.
+        Some((oc_cfg, metrics.object_cache()))
+    } else {
+        None
+    };
+    let session = firnflow_core::object_cache::build_instrumented_session(
+        metrics.object_store_counters(),
+        cache,
+    );
+    manager = manager.with_session(session);
     let manager = Arc::new(manager);
 
     std::fs::create_dir_all(&cfg.cache_nvme_path).with_context(|| {

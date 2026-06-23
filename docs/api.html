@@ -439,13 +439,24 @@ curl -X POST http://localhost:3000/ns/demo/import \
         <span class="endpoint-desc">Delete a namespace and all its data</span>
       </div>
       <div class="endpoint-body">
-        <p>Removes every object under the namespace's prefix and evicts all cached query results. This is irreversible.</p>
+        <p>Removes every object under the namespace's prefix and evicts all cached query results. This is irreversible. Objects are removed with bounded concurrency, so a large namespace deletes without exhausting a normal client timeout.</p>
+
+        <p>A namespace with no stored objects — one that has never been written, or was already deleted — returns <code>404</code> rather than <code>200</code> with <code>objects_deleted: 0</code> (namespaces are lazy, so an empty prefix means there is nothing to delete). One consequence: a repeated delete returns <code>404</code>, it is not an idempotent success. A genuine storage failure still surfaces as <code>5xx</code>.</p>
 
         <h4>Response (200)</h4>
         <table>
           <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
           <tbody>
-            <tr><td><code>objects_deleted</code></td><td>integer</td><td>Number of objects removed from the backend</td></tr>
+            <tr><td><code>objects_deleted</code></td><td>integer</td><td>Number of objects removed from the backend (always &gt; 0; an empty namespace is a 404)</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Response codes</h4>
+        <table>
+          <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td>200</td><td>Namespace deleted; <code>objects_deleted</code> objects removed</td></tr>
+            <tr><td>404</td><td>Namespace has no data (never written or already deleted)</td></tr>
           </tbody>
         </table>
 

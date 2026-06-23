@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{self, BoxStream, StreamExt};
 use lru::LruCache;
-use prometheus::{IntCounter, Opts, Registry};
+use prometheus::{IntCounter, IntCounterVec, Opts, Registry};
 use tokio::fs;
 
 use object_store::path::Path as OPath;
@@ -131,7 +131,10 @@ impl ObjectCacheMetrics {
             )?,
             s3_bytes: mk(
                 "firnflow_object_cache_s3_bytes_total",
-                "Bytes fetched from object storage by the object cache",
+                "Bytes fetched from object storage by the object cache (cacheable, admitted \
+                 reads only — NOT authoritative for total S3 read cost; use \
+                 firnflow_object_store_get_bytes_total, which counts all backend reads cache \
+                 on or off)",
             )?,
             evictions: mk(
                 "firnflow_object_cache_evictions_total",
@@ -167,6 +170,175 @@ impl ObjectCacheMetrics {
 impl Default for ObjectCacheMetrics {
     fn default() -> Self {
         Self::unregistered()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ObjectStoreCounters — always-on, cache-independent object-store read counters
+// ---------------------------------------------------------------------------
+
+/// Always-on counters for raw object-store reads, independent of the byte cache.
+///
+/// Unlike [`ObjectCacheMetrics`] (which only move when the byte cache is enabled),
+/// these are installed on every read path via [`CountingObjectStore`], so S3 GET
+/// volume and bytes are observable whether the object cache is on **or off**. They
+/// sit *below* the cache, so a cache hit does not increment them — only reads that
+/// actually reach object storage do. This is the authoritative signal for S3 read
+/// cost; the cache-only `firnflow_object_cache_s3_bytes_total` is a subset
+/// (cacheable, admitted reads only) and is not authoritative.
+#[derive(Clone, Debug)]
+pub struct ObjectStoreCounters {
+    /// Object-store read requests by operation (`get` | `head`), counted on success.
+    requests: IntCounterVec,
+    /// Bytes returned by successful GETs (a HEAD has no body, so it adds nothing).
+    get_bytes: IntCounter,
+}
+
+impl ObjectStoreCounters {
+    /// Create the object-store counters and register them with `registry` so they
+    /// surface at `/metrics`.
+    pub fn register(registry: &Registry) -> prometheus::Result<Self> {
+        let requests = IntCounterVec::new(
+            Opts::new(
+                "firnflow_object_store_requests_total",
+                "Object-store read requests issued to object storage, by operation \
+                 (get|head). Counted below the byte cache, so cache hits are excluded. \
+                 Authoritative S3 read-request signal whether the object cache is on or off.",
+            ),
+            &["operation"],
+        )?;
+        registry.register(Box::new(requests.clone()))?;
+        let get_bytes = IntCounter::with_opts(Opts::new(
+            "firnflow_object_store_get_bytes_total",
+            "Bytes returned by successful object-store GETs (below the byte cache; cache \
+             hits excluded). Authoritative S3 read-byte signal, cache on or off.",
+        ))?;
+        registry.register(Box::new(get_bytes.clone()))?;
+        Ok(Self {
+            requests,
+            get_bytes,
+        })
+    }
+
+    /// Standalone, unregistered counters — for tests and back-compat callers.
+    pub fn unregistered() -> Self {
+        let requests = IntCounterVec::new(
+            Opts::new(
+                "firnflow_object_store_requests_total",
+                "object-store requests",
+            ),
+            &["operation"],
+        )
+        .expect("counter opts");
+        let get_bytes = IntCounter::with_opts(Opts::new(
+            "firnflow_object_store_get_bytes_total",
+            "object-store get bytes",
+        ))
+        .expect("counter opts");
+        Self {
+            requests,
+            get_bytes,
+        }
+    }
+
+    /// Record a successful GET of `bytes` bytes.
+    fn record_get(&self, bytes: u64) {
+        self.requests.with_label_values(&["get"]).inc();
+        self.get_bytes.inc_by(bytes);
+    }
+
+    /// Record a successful HEAD (metadata only; no body bytes).
+    fn record_head(&self) {
+        self.requests.with_label_values(&["head"]).inc();
+    }
+
+    /// Return a point-in-time `(get_requests, head_requests, get_bytes)` snapshot.
+    pub fn snapshot(&self) -> (u64, u64, u64) {
+        (
+            self.requests.with_label_values(&["get"]).get(),
+            self.requests.with_label_values(&["head"]).get(),
+            self.get_bytes.get(),
+        )
+    }
+}
+
+impl Default for ObjectStoreCounters {
+    fn default() -> Self {
+        Self::unregistered()
+    }
+}
+
+/// A pass-through [`ObjectStore`] that records every read into [`ObjectStoreCounters`].
+///
+/// Installed unconditionally (below the byte cache) so S3 GET volume + bytes are
+/// observable whether the object cache is enabled or not. Forwards every method to
+/// `inner`; only the read path (`get_opts`) records, and only on success, using the
+/// returned range length so no stream is consumed. A HEAD (object_store implements
+/// `head` via `get_opts { head: true }`) is counted under the `head` operation, never
+/// as a GET, so the GET counters stay a faithful body-read signal.
+pub struct CountingObjectStore {
+    inner: Arc<dyn ObjectStore>,
+    counters: Arc<ObjectStoreCounters>,
+}
+
+impl CountingObjectStore {
+    /// Wrap `inner`, recording successful reads into `counters`.
+    pub fn new(inner: Arc<dyn ObjectStore>, counters: Arc<ObjectStoreCounters>) -> Self {
+        Self { inner, counters }
+    }
+}
+
+impl std::fmt::Debug for CountingObjectStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CountingObjectStore({:?})", self.inner)
+    }
+}
+impl std::fmt::Display for CountingObjectStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CountingObjectStore({})", self.inner)
+    }
+}
+
+#[async_trait]
+impl ObjectStore for CountingObjectStore {
+    async fn get_opts(&self, location: &OPath, options: GetOptions) -> OResult<GetResult> {
+        let is_head = options.head;
+        let res = self.inner.get_opts(location, options).await?;
+        if is_head {
+            self.counters.record_head();
+        } else {
+            // `range` is the byte range actually returned; differencing it needs no
+            // stream consumption, so this stays zero-overhead on the passthrough path.
+            let bytes = res.range.end.saturating_sub(res.range.start);
+            self.counters.record_get(bytes);
+        }
+        Ok(res)
+    }
+
+    async fn put_opts(&self, l: &OPath, p: PutPayload, o: PutOptions) -> OResult<PutResult> {
+        self.inner.put_opts(l, p, o).await
+    }
+    async fn put_multipart_opts(
+        &self,
+        l: &OPath,
+        o: PutMultipartOptions,
+    ) -> OResult<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(l, o).await
+    }
+    async fn delete(&self, l: &OPath) -> OResult<()> {
+        self.inner.delete(l).await
+    }
+    fn list(&self, prefix: Option<&OPath>) -> BoxStream<'static, OResult<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+    async fn list_with_delimiter(&self, prefix: Option<&OPath>) -> OResult<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+    async fn copy(&self, from: &OPath, to: &OPath) -> OResult<()> {
+        self.inner.copy(from, to).await
+    }
+    async fn copy_if_not_exists(&self, from: &OPath, to: &OPath) -> OResult<()> {
+        self.inner.copy_if_not_exists(from, to).await
     }
 }
 
@@ -575,11 +747,18 @@ fn build_result(
 // CachingProvider — wraps a real provider's store with the cache
 // ---------------------------------------------------------------------------
 
+/// Wraps a real provider's store with the always-on read counter and, when a cache
+/// config is present, the byte-range cache on top. Wrap order (innermost-out):
+/// `real store -> CountingObjectStore -> CachingObjectStore`, so a cache hit never
+/// reaches the counter (only real backend reads do) and the byte counters are
+/// accurate whether or not the cache layer is installed.
 #[derive(Debug)]
-struct CachingProvider {
+struct InstrumentedProvider {
     inner: Arc<dyn ObjectStoreProvider>,
-    cfg: ObjectCacheConfig,
-    metrics: Arc<ObjectCacheMetrics>,
+    counters: Arc<ObjectStoreCounters>,
+    /// `Some` enables the byte cache on top of the counter; `None` installs the
+    /// counter alone (cache disabled, but reads still counted).
+    cache: Option<(ObjectCacheConfig, Arc<ObjectCacheMetrics>)>,
 }
 
 fn sanitize(s: &str) -> String {
@@ -589,24 +768,32 @@ fn sanitize(s: &str) -> String {
 }
 
 #[async_trait]
-impl ObjectStoreProvider for CachingProvider {
+impl ObjectStoreProvider for InstrumentedProvider {
     async fn new_store(
         &self,
         base_path: url::Url,
         params: &ObjectStoreParams,
     ) -> LanceResult<LanceObjectStore> {
         let mut store = self.inner.new_store(base_path.clone(), params).await?;
-        let prefix = self
-            .inner
-            .calculate_object_store_prefix(&base_path, params.storage_options())?;
-        let cache = CachingObjectStore::new(
+        let counting: Arc<dyn ObjectStore> = Arc::new(CountingObjectStore::new(
             store.inner.clone(),
-            self.cfg.dir.join(sanitize(&prefix)),
-            self.cfg.capacity_bytes,
-            self.cfg.max_entry_bytes,
-            self.metrics.clone(),
-        );
-        store.inner = Arc::new(cache);
+            self.counters.clone(),
+        ));
+        store.inner = match &self.cache {
+            Some((cfg, metrics)) => {
+                let prefix = self
+                    .inner
+                    .calculate_object_store_prefix(&base_path, params.storage_options())?;
+                Arc::new(CachingObjectStore::new(
+                    counting,
+                    cfg.dir.join(sanitize(&prefix)),
+                    cfg.capacity_bytes,
+                    cfg.max_entry_bytes,
+                    metrics.clone(),
+                ))
+            }
+            None => counting,
+        };
         Ok(store)
     }
 
@@ -629,22 +816,34 @@ impl ObjectStoreProvider for CachingProvider {
 // ---------------------------------------------------------------------------
 
 /// Build a lance [`Session`](lance::session::Session) whose object-store registry wraps cloud
-/// stores with the byte-range cache, recording into `metrics`. Pass the returned session to
-/// `lancedb::connect(..).session(session)`. Hand in `CoreMetrics::object_cache()` so the counters
-/// surface at `/metrics`, or [`ObjectCacheMetrics::unregistered`] when you don't need them scraped.
-pub fn build_cached_session(
-    cfg: &ObjectCacheConfig,
-    metrics: Arc<ObjectCacheMetrics>,
+/// stores with an always-on read counter and, optionally, the byte-range cache on top.
+///
+/// `counters` is installed unconditionally so backend GET volume + bytes surface at `/metrics`
+/// whether or not the cache is enabled (the cache-off observability gap). `cache` adds the
+/// byte-range cache on top when `Some`; pass `None` for counters-only (cache disabled). Pass the
+/// returned session to `lancedb::connect(..).session(session)`.
+///
+/// Hand in `CoreMetrics::object_store_counters()` / `CoreMetrics::object_cache()` so the counters
+/// surface at `/metrics`, or the `unregistered()` constructors when you don't need them scraped.
+pub fn build_instrumented_session(
+    counters: Arc<ObjectStoreCounters>,
+    cache: Option<(ObjectCacheConfig, Arc<ObjectCacheMetrics>)>,
 ) -> Arc<lance::session::Session> {
+    // Wrap the cache's configured schemes when caching, else the default cloud set, so the
+    // counter is installed for the same cloud stores either way.
+    let schemes = cache
+        .as_ref()
+        .map(|(cfg, _)| cfg.schemes.clone())
+        .unwrap_or_else(|| vec!["s3".into(), "s3+ddb".into(), "gs".into()]);
     let registry = ObjectStoreRegistry::default();
-    for scheme in &cfg.schemes {
+    for scheme in &schemes {
         if let Some(inner) = registry.get_provider(scheme) {
             registry.insert(
                 scheme,
-                Arc::new(CachingProvider {
+                Arc::new(InstrumentedProvider {
                     inner,
-                    cfg: cfg.clone(),
-                    metrics: metrics.clone(),
+                    counters: counters.clone(),
+                    cache: cache.clone(),
                 }),
             );
         }
@@ -655,6 +854,19 @@ pub fn build_cached_session(
         Arc::new(registry),
     );
     Arc::new(session)
+}
+
+/// Build a session with the byte-range cache enabled (back-compat shim over
+/// [`build_instrumented_session`]). The always-on read counter is also installed, with
+/// unregistered counters, so behaviour is unchanged for callers that only want the cache.
+pub fn build_cached_session(
+    cfg: &ObjectCacheConfig,
+    metrics: Arc<ObjectCacheMetrics>,
+) -> Arc<lance::session::Session> {
+    build_instrumented_session(
+        Arc::new(ObjectStoreCounters::unregistered()),
+        Some((cfg.clone(), metrics)),
+    )
 }
 
 #[cfg(test)]
@@ -1108,6 +1320,191 @@ mod tests {
         assert_eq!(
             inner_gets, 2,
             "both versioned reads passed through to the inner store"
+        );
+    }
+
+    // -- object-store read counters (always-on, cache-independent) -----------
+
+    /// A counting store wraps a backend directly (cache OFF regime): a GET bumps
+    /// the get request + byte counters; a HEAD bumps only the head request and
+    /// adds no bytes, so the GET counters stay a faithful body-read signal.
+    #[tokio::test]
+    async fn counting_store_records_get_and_head_separately() {
+        let inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let loc = OPath::from("ns/data/abc.lance");
+        inner
+            .put(&loc, PutPayload::from(vec![5u8; 4096]))
+            .await
+            .unwrap();
+        let counters = Arc::new(ObjectStoreCounters::unregistered());
+        let c = CountingObjectStore::new(inner, counters.clone());
+
+        let _ = c
+            .get_opts(&loc, GetOptions::default())
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(
+            counters.snapshot(),
+            (1, 0, 4096),
+            "a GET counts one get request and its bytes, no head"
+        );
+
+        // A HEAD (object_store routes head() through get_opts { head: true }).
+        let head = GetOptions {
+            head: true,
+            ..Default::default()
+        };
+        let _ = c.get_opts(&loc, head).await.unwrap();
+        assert_eq!(
+            counters.snapshot(),
+            (1, 1, 4096),
+            "HEAD counts as head, not get, and adds no bytes"
+        );
+    }
+
+    /// With the counter installed *below* the byte cache (the production wrap
+    /// order), only reads that actually reach the backend are counted: a miss
+    /// counts, the subsequent hit does not.
+    #[tokio::test]
+    async fn counting_below_cache_counts_misses_not_hits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let loc = OPath::from("ns/data/abc.lance");
+        inner
+            .put(&loc, PutPayload::from(vec![7u8; 4096]))
+            .await
+            .unwrap();
+        let counters = Arc::new(ObjectStoreCounters::unregistered());
+        let counting: Arc<dyn ObjectStore> =
+            Arc::new(CountingObjectStore::new(inner, counters.clone()));
+        let cache_metrics = Arc::new(ObjectCacheMetrics::default());
+        let cache = CachingObjectStore::new(
+            counting,
+            tmp.path().to_path_buf(),
+            64 * 1024 * 1024,
+            u64::MAX,
+            cache_metrics.clone(),
+        );
+
+        let opts = GetOptions {
+            range: Some(GetRange::Bounded(0..4096)),
+            ..Default::default()
+        };
+        let _ = cache
+            .get_opts(&loc, opts.clone())
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let _ = cache
+            .get_opts(&loc, opts)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            counters.snapshot(),
+            (1, 0, 4096),
+            "only the miss reached the backend; the hit was served from disk"
+        );
+        let (_, hits, misses, _, _) = cache_metrics.snapshot();
+        assert_eq!((hits, misses), (1, 1), "cache saw one miss then one hit");
+    }
+
+    /// An over-limit read streams through the cache uncached, but it still hits
+    /// the backend — so the object-store counters and the cache's `inner_gets`
+    /// both move, while the cache's hit/miss *admission* counters do not.
+    #[tokio::test]
+    async fn over_limit_passthrough_counts_object_store_not_cache_admission() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let loc = OPath::from("ns/data/big.lance");
+        inner
+            .put(&loc, PutPayload::from(vec![1u8; 200_000]))
+            .await
+            .unwrap();
+        let counters = Arc::new(ObjectStoreCounters::unregistered());
+        let counting: Arc<dyn ObjectStore> =
+            Arc::new(CountingObjectStore::new(inner, counters.clone()));
+        let cache_metrics = Arc::new(ObjectCacheMetrics::default());
+        // Tiny per-entry limit: a 200 KB whole-object read exceeds it and streams through.
+        let cache = CachingObjectStore::new(
+            counting,
+            tmp.path().to_path_buf(),
+            64 * 1024 * 1024,
+            1024,
+            cache_metrics.clone(),
+        );
+
+        for _ in 0..2 {
+            let _ = cache
+                .get_opts(&loc, GetOptions::default())
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            counters.snapshot(),
+            (2, 0, 400_000),
+            "both over-limit reads hit the backend and were counted"
+        );
+        let (inner_gets, hits, misses, _, _) = cache_metrics.snapshot();
+        assert_eq!(
+            inner_gets, 2,
+            "cache forwarded both reads to its inner store"
+        );
+        assert_eq!(
+            (hits, misses),
+            (0, 0),
+            "over-limit reads are never admitted, so never counted as hit/miss"
+        );
+    }
+
+    /// The object-store counters register with a real registry and surface in the
+    /// `/metrics` render — the cache-disabled observability path.
+    #[tokio::test]
+    async fn object_store_counters_register_and_render() {
+        use prometheus::{Encoder, TextEncoder};
+
+        let inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let loc = OPath::from("ns/data/abc.lance");
+        inner
+            .put(&loc, PutPayload::from(vec![3u8; 4096]))
+            .await
+            .unwrap();
+        let registry = Registry::new();
+        let counters = Arc::new(ObjectStoreCounters::register(&registry).unwrap());
+        let c = CountingObjectStore::new(inner, counters);
+
+        let _ = c
+            .get_opts(&loc, GetOptions::default())
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+
+        let mut buf = Vec::new();
+        TextEncoder::new()
+            .encode(&registry.gather(), &mut buf)
+            .unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(
+            text.contains("firnflow_object_store_requests_total{operation=\"get\"} 1"),
+            "get request counter not exposed:\n{text}"
+        );
+        assert!(
+            text.contains("firnflow_object_store_get_bytes_total 4096"),
+            "get bytes counter not exposed:\n{text}"
         );
     }
 }

@@ -134,11 +134,34 @@ async fn local_fs_delete_removes_namespace_objects() {
     assert!(dir.path().join("embedded-delete").is_dir());
 
     // Delete drops into the local object store, lists the namespace
-    // prefix, and removes each object. At least the manifest + data
-    // files should come back in the count.
+    // prefix, and removes each object (now via bounded-concurrency
+    // `delete_stream`). At least the manifest + data files should come
+    // back in the count.
     let deleted = manager.delete(&ns).await.expect("local delete");
     assert!(
         deleted > 0,
         "delete should remove at least one object, got {deleted}"
     );
+
+    // The on-disk namespace directory is gone, and the schema/handle
+    // were evicted — a re-delete now lists an empty prefix and returns
+    // 0 (the signal the API layer maps to 404). This proves delete is
+    // not silently idempotent at the object layer: nothing left to remove.
+    let again = manager
+        .delete(&ns)
+        .await
+        .expect("re-delete empty namespace");
+    assert_eq!(
+        again, 0,
+        "re-deleting an already-empty namespace removes nothing"
+    );
+
+    // And the namespace can be re-created cleanly after delete (handle +
+    // schema eviction let a fresh upsert re-establish the table).
+    let rows: Vec<UpsertRow> = vec![(7u64, unit_vector(1)).into()];
+    manager
+        .upsert(&ns, rows)
+        .await
+        .expect("re-upsert after delete");
+    assert!(dir.path().join("embedded-delete").is_dir());
 }

@@ -20,6 +20,8 @@
 //! * `firnflow_object_cache_inner_gets_total`
 //! * `firnflow_object_cache_s3_bytes_total`
 //! * `firnflow_object_cache_evictions_total`
+//! * `firnflow_object_store_requests_total{operation}`
+//! * `firnflow_object_store_get_bytes_total`
 //!
 //! Constructed once at process start (in
 //! `firnflow-api::state::build_state`), wrapped in `Arc`, and
@@ -41,7 +43,7 @@ use prometheus::{
     Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, Opts, Registry, TextEncoder,
 };
 
-use crate::object_cache::ObjectCacheMetrics;
+use crate::object_cache::{ObjectCacheMetrics, ObjectStoreCounters};
 use crate::{FirnflowError, NamespaceId};
 
 /// Process-wide metrics registry and typed handles.
@@ -65,6 +67,7 @@ pub struct CoreMetrics {
     cached_handles: IntGauge,
     auth_rejections: IntCounterVec,
     object_cache: Arc<ObjectCacheMetrics>,
+    object_store_counters: Arc<ObjectStoreCounters>,
     seen_namespaces: DashSet<NamespaceId>,
 }
 
@@ -271,6 +274,12 @@ impl CoreMetrics {
         // abstraction in the object-store layer.
         let object_cache = Arc::new(ObjectCacheMetrics::register(&registry).map_err(metrics_err)?);
 
+        // Always-on object-store read counters (work whether or not the byte cache is
+        // enabled), registered into the same registry. Global, like the object-cache
+        // counters: they sit below the namespace abstraction in the object-store layer.
+        let object_store_counters =
+            Arc::new(ObjectStoreCounters::register(&registry).map_err(metrics_err)?);
+
         Ok(Self {
             registry,
             cache_hits,
@@ -287,6 +296,7 @@ impl CoreMetrics {
             cached_handles,
             auth_rejections,
             object_cache,
+            object_store_counters,
             seen_namespaces: DashSet::new(),
         })
     }
@@ -301,6 +311,15 @@ impl CoreMetrics {
     /// reflected in this registry's `/metrics` render.
     pub fn object_cache(&self) -> Arc<ObjectCacheMetrics> {
         self.object_cache.clone()
+    }
+
+    /// Shared always-on object-store read-counter handle, to hand to
+    /// `object_cache::build_instrumented_session`. Increments on it are
+    /// reflected in this registry's `/metrics` render. These count backend
+    /// reads whether or not the byte cache is enabled, so they are the
+    /// authoritative S3 read-cost signal.
+    pub fn object_store_counters(&self) -> Arc<ObjectStoreCounters> {
+        self.object_store_counters.clone()
     }
 
     /// Serialise the current metric state as a Prometheus text

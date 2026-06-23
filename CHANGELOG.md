@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Two always-on object-store read counters expose S3 read cost whether or not the object cache is enabled: `firnflow_object_store_requests_total{operation}` (backend `get`/`head` requests issued to object storage) and `firnflow_object_store_get_bytes_total` (bytes returned by those GETs). They sit *below* the object cache, so a cache hit does not count — only reads that actually reach object storage do. Until now the only read-cost signal was the `firnflow_object_cache_*` counters, which move only when the cache is on, leaving the cache-off baseline invisible to Firn's own metrics; these close that gap and are the authoritative S3 read-cost signal in both arms of a cache on/off comparison. They are installed unconditionally (the instrumented Lance session is now always wired up), so they work with the object cache off, on, or absent. Global, like the other object-store-layer counters. `firnflow_object_cache_s3_bytes_total` stays for continuity but counts only cacheable, admitted reads and is no longer the figure to trust for total read cost.
+
+### Changed
+- `DELETE /ns/{namespace}` on a namespace with no stored objects — one that was never written, or was already deleted — now returns `404 Not Found` instead of `200` with `objects_deleted: 0`. Namespaces are lazy (nothing is written until the first upsert), so an empty prefix is the honest signal that there is nothing to delete. A genuine storage failure still surfaces as `5xx`. One consequence: a repeated delete is now `404`, not an idempotent success.
+- `DELETE /ns/{namespace}` removes the namespace's objects with bounded concurrency rather than one at a time. A namespace with many fragments (for example one built up by many small `/upsert` batches before a compaction) could take long enough to delete serially that a client's HTTP timeout fired mid-delete; deleting concurrently keeps a large delete within a normal client timeout, and the object list streams through rather than being collected up front so memory stays bounded.
+
+### Fixed
+- A region mismatch against S3 now returns an actionable error instead of an opaque `500`. Object storage answers a wrong-region request with a bare redirect ("redirect without LOCATION"), which previously surfaced as a generic internal error; Firn now detects that shape and responds with a message that names the configured region and points at `FIRNFLOW_S3_REGION` / `AWS_REGION`, so the fix is obvious. The raw backend error text is still never echoed to the client.
+
 ## [0.9.2] - 2026-06-19
 
 ### Added

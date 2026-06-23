@@ -207,10 +207,12 @@ pub struct NamespaceManager {
     handles: DashMap<NamespaceId, NamespaceHandle>,
     metrics: Arc<CoreMetrics>,
     /// Optional lance [`Session`] whose object-store registry wraps cloud
-    /// stores with the local-NVMe byte-range cache (issue #51). When set, it is
-    /// passed to every `lancedb::connect()` so Lance reads are served from the
-    /// cache. `None` disables the object cache (default).
-    object_cache_session: Option<Arc<lance::session::Session>>,
+    /// stores with firnflow's instrumentation: an always-on read counter, plus
+    /// the local-NVMe byte-range cache (issue #51) when enabled. When set, it is
+    /// passed to every `lancedb::connect()`. In production this is always set (so
+    /// the read counters work cache on or off); `None` leaves Lance on its
+    /// default object stores (the bare-manager default, used by some tests).
+    session: Option<Arc<lance::session::Session>>,
 }
 
 impl NamespaceManager {
@@ -244,18 +246,25 @@ impl NamespaceManager {
             schema_info: DashMap::new(),
             handles: DashMap::new(),
             metrics,
-            object_cache_session: None,
+            session: None,
         }
     }
 
-    /// Enable the local-NVMe object cache (issue #51) by supplying a lance
-    /// [`Session`] whose object-store registry wraps cloud reads with the
-    /// byte-range cache (build one via
-    /// [`crate::object_cache::build_cached_session`]). Every subsequent
-    /// `lancedb::connect()` routes its object-store reads through the cache.
-    pub fn with_object_cache_session(mut self, session: Arc<lance::session::Session>) -> Self {
-        self.object_cache_session = Some(session);
+    /// Install the lance [`Session`] whose object-store registry wraps cloud reads
+    /// with firnflow's instrumentation — the always-on read counter and, when
+    /// enabled, the byte-range cache (issue #51). Build one via
+    /// [`crate::object_cache::build_instrumented_session`]. Every subsequent
+    /// `lancedb::connect()` then routes its object-store reads through it.
+    pub fn with_session(mut self, session: Arc<lance::session::Session>) -> Self {
+        self.session = Some(session);
         self
+    }
+
+    /// Back-compat alias for [`Self::with_session`]: enable the local-NVMe object
+    /// cache (issue #51) by supplying a session built via
+    /// [`crate::object_cache::build_cached_session`].
+    pub fn with_object_cache_session(self, session: Arc<lance::session::Session>) -> Self {
+        self.with_session(session)
     }
 
     /// The configured storage root. Exposed for diagnostics and
@@ -413,16 +422,29 @@ impl NamespaceManager {
     async fn connect(&self, ns: &NamespaceId) -> Result<lancedb::Connection, FirnflowError> {
         let mut builder =
             lancedb::connect(&self.uri(ns)).storage_options(self.storage_options.clone());
-        if let Some(session) = &self.object_cache_session {
-            // Route Lance object-store reads through the local-NVMe byte-range
-            // cache (issue #51). Sharing one session across connections reuses
-            // the wrapped stores and their cache.
+        if let Some(session) = &self.session {
+            // Route Lance object-store reads through firnflow's instrumented
+            // stores (read counter + byte cache). Sharing one session across
+            // connections reuses the wrapped stores and their cache.
             builder = builder.session(session.clone());
         }
         builder
             .execute()
             .await
-            .map_err(|e| FirnflowError::Backend(format!("lancedb connect: {e}")))
+            .map_err(|e| self.storage_err("lancedb connect", e))
+    }
+
+    /// Map a storage-backend error into a [`FirnflowError`], upgrading an S3
+    /// region-redirect ("redirect without LOCATION" / `BareRedirect`) into the
+    /// typed [`FirnflowError::StorageRegionRedirect`] so the API layer can name
+    /// the misconfigured region without echoing raw backend text. Everything
+    /// else stays a scrubbed [`FirnflowError::Backend`].
+    fn storage_err(&self, context: &str, e: impl std::fmt::Display) -> FirnflowError {
+        classify_storage_error(
+            context,
+            &e.to_string(),
+            self.storage_options.get("aws_region").map(String::as_str),
+        )
     }
 
     /// Insert a freshly opened `NamespaceHandle` into the pool and
@@ -488,7 +510,7 @@ impl NamespaceManager {
                 conn.create_table(TABLE_NAME, reader)
                     .execute()
                     .await
-                    .map_err(|e| FirnflowError::Backend(format!("create_table: {e}")))?
+                    .map_err(|e| self.storage_err("create_table", e))?
             }
         };
 
@@ -525,7 +547,7 @@ impl NamespaceManager {
             // propagate as backend errors, not be misreported as a
             // missing namespace (the `info` endpoint maps `None` to 404).
             Err(lancedb::Error::TableNotFound { .. }) => Ok(None),
-            Err(e) => Err(FirnflowError::Backend(format!("open table {ns}: {e}"))),
+            Err(e) => Err(self.storage_err(&format!("open table {ns}"), e)),
         }
     }
 
@@ -824,16 +846,21 @@ impl NamespaceManager {
         let store = self.build_object_store()?;
         let prefix = self.namespace_object_path(ns);
 
-        let mut list_stream = store.list(Some(&prefix));
+        // Feed the prefix listing straight into `delete_stream`, which deletes
+        // with bounded internal concurrency. This both parallelises the deletes
+        // (a large namespace's serial delete loop could exceed a client's HTTP
+        // timeout — see the bench notes) and keeps memory bounded: the keys
+        // stream through rather than collecting into a Vec. A namespace that
+        // never existed lists empty, so `count` stays 0 — the API layer maps
+        // that to 404 (a re-delete is therefore 404, not idempotent 204).
+        let locations = store.list(Some(&prefix)).map_ok(|m| m.location).boxed();
+        let mut deleted = store.delete_stream(locations);
         let mut count: usize = 0;
-        while let Some(result) = list_stream.next().await {
-            let meta = result.map_err(|e| FirnflowError::Backend(format!("list {ns}: {e}")))?;
-            store
-                .delete(&meta.location)
-                .await
-                .map_err(|e| FirnflowError::Backend(format!("delete {}: {e}", meta.location)))?;
+        while let Some(result) = deleted.next().await {
+            result.map_err(|e| self.storage_err("delete namespace", e))?;
             count += 1;
         }
+        drop(deleted);
 
         // Evict cached schema info + pooled handle so a fresh
         // upsert can pick a new dim.
@@ -1522,6 +1549,30 @@ impl NamespaceManager {
             has_scalar_index,
             table_version: manifest.version,
         }))
+    }
+}
+
+/// Classify a storage-backend error string into a [`FirnflowError`].
+///
+/// An S3 region mismatch surfaces from `object_store` as an opaque redirect
+/// ("Received redirect without LOCATION…" / a `BareRedirect`) — fatal but with a
+/// useless message. We detect that shape and return the typed
+/// [`FirnflowError::StorageRegionRedirect`] carrying the configured region, so the
+/// API layer can emit an actionable hint that names the region **without** leaking
+/// raw backend text. Any other error stays a scrubbed [`FirnflowError::Backend`]
+/// with `context` for the logs.
+fn classify_storage_error(
+    context: &str,
+    message: &str,
+    configured_region: Option<&str>,
+) -> FirnflowError {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("redirect without location") || lower.contains("bareredirect") {
+        FirnflowError::StorageRegionRedirect {
+            configured_region: configured_region.map(str::to_string),
+        }
+    } else {
+        FirnflowError::Backend(format!("{context}: {message}"))
     }
 }
 
@@ -2286,6 +2337,43 @@ fn batches_to_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_storage_error_detects_region_redirect() {
+        // The opaque object_store redirect shape (any casing) becomes the typed
+        // region variant carrying the configured region.
+        for msg in [
+            "Received redirect without LOCATION, this normally indicates an incorrectly configured region",
+            "Generic S3 error: BareRedirect",
+        ] {
+            match classify_storage_error("ctx", msg, Some("us-east-1")) {
+                FirnflowError::StorageRegionRedirect { configured_region } => {
+                    assert_eq!(configured_region.as_deref(), Some("us-east-1"));
+                }
+                other => panic!("expected StorageRegionRedirect, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn classify_storage_error_passes_other_errors_through() {
+        // An unrelated backend error stays a scrubbed Backend with its context,
+        // and an unknown region is carried as None on a real redirect.
+        match classify_storage_error(
+            "create_table",
+            "connection reset by peer",
+            Some("eu-west-1"),
+        ) {
+            FirnflowError::Backend(m) => assert!(m.contains("create_table") && m.contains("reset")),
+            other => panic!("expected Backend, got {other:?}"),
+        }
+        match classify_storage_error("ctx", "bareredirect", None) {
+            FirnflowError::StorageRegionRedirect { configured_region } => {
+                assert!(configured_region.is_none())
+            }
+            other => panic!("expected StorageRegionRedirect, got {other:?}"),
+        }
+    }
 
     #[test]
     fn cursor_round_trip() {

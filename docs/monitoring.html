@@ -193,13 +193,35 @@ scrape_configs:
           <td><code>firnflow_object_cache_s3_bytes_total</code></td>
           <td>Counter</td>
           <td><em>none</em></td>
-          <td>Total bytes fetched from object storage by the cache on misses. A proxy for egress and request-size cost avoided on subsequent hits.</td>
+          <td>Bytes fetched from object storage by the cache on <em>cacheable, admitted</em> misses only. Kept for continuity, but it is <strong>not</strong> the figure for total read cost (it omits uncacheable and over-limit passthrough reads, and is zero when the cache is off) — use <code>firnflow_object_store_get_bytes_total</code> below for that.</td>
         </tr>
         <tr>
           <td><code>firnflow_object_cache_evictions_total</code></td>
           <td>Counter</td>
           <td><em>none</em></td>
           <td>Entries evicted from the local cache to stay within <code>FIRNFLOW_OBJECT_CACHE_BYTES</code>. A high rate relative to hits suggests the byte cap is too small for the working set.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Object-store read counters</h3>
+    <p>
+      These count reads that actually reach object storage, <em>below</em> the object cache, so they work whether the cache is on, off, or absent and a cache hit does not count toward them. They are the authoritative signal for S3 read cost — unlike <code>firnflow_s3_requests_total</code> (one tick per query/write operation) and the <code>firnflow_object_cache_*</code> counters (which move only when the cache is enabled).
+    </p>
+    <table>
+      <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>firnflow_object_store_requests_total</code></td>
+          <td>Counter</td>
+          <td><code>operation</code></td>
+          <td>Backend read requests issued to object storage. <code>operation</code> is <code>get</code> (a body read) or <code>head</code> (a metadata read). Counted on success, below the byte cache, so cache hits are excluded.</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_object_store_get_bytes_total</code></td>
+          <td>Counter</td>
+          <td><em>none</em></td>
+          <td>Bytes returned by successful backend GETs (HEAD has no body, so it adds nothing). The authoritative S3 read-byte signal, cache on or off; differences between this and <code>firnflow_object_cache_s3_bytes_total</code> are the uncacheable and over-limit reads the cache never holds.</td>
         </tr>
       </tbody>
     </table>

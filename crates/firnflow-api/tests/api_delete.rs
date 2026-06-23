@@ -103,3 +103,25 @@ async fn delete_removes_namespace_and_invalidates_cache() {
         "post-delete query must see an empty namespace — no stale cache, no leftover S3 state"
     );
 }
+
+/// Deleting a namespace that was never written returns 404, not a
+/// misleading 200-with-`objects_deleted: 0`. The prefix lists empty, so
+/// the manager removes nothing and the handler maps that to Not Found.
+#[tokio::test]
+#[ignore]
+async fn delete_missing_namespace_returns_404() {
+    let (app, _tmp) = build_app().await;
+    let ns = unique_namespace("delete-missing");
+
+    let request = Request::builder()
+        .method("DELETE")
+        .uri(format!("/ns/{ns}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "deleting a never-written namespace should be 404"
+    );
+}

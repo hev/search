@@ -13,6 +13,19 @@ pub enum FirnflowError {
     #[error("storage backend error: {0}")]
     Backend(String),
 
+    /// Object storage redirected the request, which almost always
+    /// means the configured region does not match the bucket's
+    /// region. Carried as its own typed variant (rather than a
+    /// `Backend(String)`) so the API layer can surface an actionable
+    /// hint that names the configured region **without** echoing raw
+    /// backend error text. `configured_region` is the S3 region
+    /// firnflow resolved at startup, when known.
+    #[error("object storage redirected the request; configured region {configured_region:?} likely does not match the bucket's region")]
+    StorageRegionRedirect {
+        /// The S3 region firnflow was configured with, if known.
+        configured_region: Option<String>,
+    },
+
     /// An I/O error (disk, network, filesystem, etc.).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
