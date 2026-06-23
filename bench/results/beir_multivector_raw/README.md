@@ -34,10 +34,12 @@ counters_before / counters_after / counters_delta: {
 }
 ```
 
-Note these pre-date the low-level `firnflow_object_store_requests_total` /
-`firnflow_object_store_get_bytes_total` counters, so the cache-*off* cells have
-no backend byte figure of their own — that gap is exactly what those counters
-were added to close, and the next (NQ) run captures them.
+Note the fiqa A/B cells pre-date the low-level
+`firnflow_object_store_requests_total` / `firnflow_object_store_get_bytes_total`
+counters, so the cache-*off* cells there have no backend byte figure of their own
+— that gap is exactly what those counters were added to close. The NQ cache A/B
+(`nq_cache_ab/`) was run with the instrumented build, so its cells carry the
+always-on backend counters and have a true cache-*off* byte figure.
 
 ## Map: report table -> files
 
@@ -108,10 +110,48 @@ result.
 `sub{32,64}_{4,8}bit.json` = `num_sub_vectors` x `num_bits`. ndcg@10: 32/8 0.4212,
 64/8 0.4106, 64/4 0.4129, 32/4 0.3922.
 
-### Caveats — exact vs IVF_PQ (fiqa) -> `../fiqa_exact_vs_indexed/`
+### §2 Object cache at 1M scale (NQ) -> `nq_cache_ab/`
 
-The exact-vs-indexed measurement that the report leans on for the index-recall
-conclusion is committed separately at
-[`../fiqa_exact_vs_indexed/`](../fiqa_exact_vs_indexed/): `fiqa_brute.json`
-(exact MaxSim, ndcg@10 0.5264) vs `fiqa_indexed.json` (IVF_PQ 64/8, 0.4084),
-both the full 648-query set on `0.9.2`.
+The cache A/B repeated on `beir-nq` (1,000,000 multivector documents, single
+fragment, IVF_PQ `num_sub_vectors=64`/`num_bits=8`, `nprobes=20`, `k=100`,
+concurrency 32, 500 measured queries per cell). Run on the instrumented build, so
+every cell carries the always-on backend counters
+(`firnflow_object_store_requests_total` / `_get_bytes_total`) — which is what
+gives the cache-*off* cells a real backend byte figure that the fiqa A/B could not
+produce.
+
+| Report cell | measured file | split-A warming file |
+|---|---|---|
+| cold-off | `nq_cache_ab/cold-off.json` | — |
+| cold-on | `nq_cache_ab/cold-on.json` | — |
+| warm-off | `nq_cache_ab/warm-off.json` | `warm-off-populate.json` |
+| warm-on | `nq_cache_ab/warm-on.json` | `warm-on-populate.json` |
+
+Headline: for the same 500 queries, cache-off (`warm-off`) reads **361 GB** from
+S3 vs cache-on warm (`warm-on`) **2.79 GB** — a ~130x byte reduction, read
+directly off `firnflow_object_store_get_bytes_total` on both arms. Latency is flat
+(~46-48 s p50) across all four cells; `firnflow_cache_hits_total` (the
+result-cache guardrail) is 0 in every cell. `uncontended-probe.json` is a 10-query
+probe on an already-warmed process at concurrency 32 (so no queueing): it records
+the ~14.5 s *single-query* latency that the ~46 s saturated cells sit on top of —
+supplementary, not a headline cell.
+
+### Caveats — exact vs IVF_PQ across corpus sizes -> `../fiqa_exact_vs_indexed/` + `exact_vs_indexed_variance/`
+
+The exact-vs-indexed measurement behind the index-recall conclusion spans three
+corpus sizes. fiqa is committed separately at
+[`../fiqa_exact_vs_indexed/`](../fiqa_exact_vs_indexed/): `fiqa_brute.json` (exact
+MaxSim, ndcg@10 0.5264) vs `fiqa_indexed.json` (IVF_PQ 64/8, 0.4084), full
+648-query set. The two smaller corpora are in `exact_vs_indexed_variance/`, same
+`nprobes=20` / `k=100` / `0.9.2` / real S3 setup:
+
+| dataset | docs | exact (file) | indexed (file) | indexed ndcg@10 |
+|---|---:|---|---|---:|
+| arguana | 8.7k | `arguana_exact.json` 0.5095 | `arguana_indexed_run{1,2,3}.json` | 0.5413 / 0.5381 / 0.5417 |
+| scidocs | 25k | `scidocs_exact.json` 0.2180 | `scidocs_indexed_run1.json` | 0.2107 |
+| fiqa | 57k | `../fiqa_exact_vs_indexed/fiqa_brute.json` 0.5264 | `../fiqa_exact_vs_indexed/fiqa_indexed.json` | 0.4084 |
+
+arguana carries three index rebuilds to show the run-to-run jitter (~0.004) is far
+smaller than the exact-vs-indexed gap. The trend: indexed matches (even slightly
+exceeds) exact at 8.7k, is within ~3% at 25k, and falls ~22% at 57k — the loss
+scales with corpus/index size, it is not a per-dataset effect.
