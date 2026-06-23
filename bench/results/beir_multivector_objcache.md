@@ -25,9 +25,10 @@ cost and latency.
 
 ## Setup
 
-- **Model / encoding:** LateOn (ColBERT-style late interaction), 128-dim
-  per-token vectors, via PyLate. One vector per token, so the per-document vector
-  count varies by dataset (dataset means range ~16 to ~237; see §1/§2).
+- **Model / encoding:** `lightonai/LateOn` (ColBERT-style late interaction),
+  128-dim per-token vectors, via PyLate `1.6.0` (sentence-transformers `5.3.0`),
+  encoder document length `300` tokens. One vector per token, so the per-document
+  vector count varies by dataset (dataset means range ~16 to ~237; see §1/§2).
 - **Engine:** Firn `0.9.2`. Storage on **real AWS S3** in `eu-west-1` (not
   loopback MinIO). All eight quality datasets were loaded and scored on this one
   version via `/import`, so the quality table is single-version and internally
@@ -35,11 +36,17 @@ cost and latency.
   datasets were re-run on `0.9.2` to remove that confound — see Caveats.)
 - **Index / query:** IVF_PQ vector index, `num_sub_vectors=64`, `num_bits=8`
   (default), queried at `nprobes=20`, `k=100`. Late-interaction (MaxSim) scoring.
-- **Object cache:** read-through byte-range cache on local NVMe, 100 GiB budget,
-  enabled with `FIRNFLOW_OBJECT_CACHE_ENABLED=true`.
-- **Host:** all numbers reported here were measured on a single 32-vCPU box
-  (g4dn.8xlarge, 1×T4) in `eu-west-1`. Quality is host-independent; latency/QPS
-  are CPU-bound, so treat the absolute QPS as host-specific (see Caveats).
+- **Object cache:** read-through byte-range cache on local NVMe
+  (`FIRNFLOW_OBJECT_CACHE_DIR=/object-cache`), enabled with
+  `FIRNFLOW_OBJECT_CACHE_ENABLED=true`, a 100 GiB byte budget
+  (`FIRNFLOW_OBJECT_CACHE_BYTES=107374182400`), and the per-entry cap left at its
+  256 MiB default (`FIRNFLOW_OBJECT_CACHE_MAX_ENTRY_BYTES`). The `/import` path ran
+  with `FIRNFLOW_IMPORT_MAX_BYTES=0` (no cap) and `FIRNFLOW_MAX_BODY_BYTES` at
+  32 MiB.
+- **Host:** all numbers reported here were measured on a single box
+  (g4dn.8xlarge: 32 vCPU, 128 GiB RAM, 1×T4 GPU) in `eu-west-1`, reading from an
+  S3 bucket in the same region. Quality is host-independent; latency/QPS are
+  CPU-bound, so treat the absolute QPS as host-specific (see Caveats).
 - **Instrumentation:** the cache numbers come in two batches. The fiqa cache A/B
   (§2) was measured on released `0.9.2`, whose object-cache counters only exist
   when the cache is on. The 1M-document NQ A/B (§2) was measured on an
@@ -76,9 +83,15 @@ different axes here:
 ## 1. Retrieval quality (eight BEIR datasets)
 
 All eight datasets were loaded and scored on a single Firn version (`0.9.2`) via
-`/import`, so the table is internally consistent. The `vec/doc` column is the mean
-per-document vector count (one vector per token); it is the main driver of query
-*latency* (§2), but, as it turns out, not of the quality differences (see Caveats).
+`/import`, so the table is internally consistent. Each row is scored over the
+**full official BEIR query set** for that dataset (the `queries` column below — not
+the split-B subset used for the latency A/B in §2). These quality numbers are
+independent of the object cache: it is a byte-range cache *below* the query path,
+so it changes only how bytes are fetched, never the result set — quality is
+identical with the cache on or off, which is why §2 measures only latency and S3
+bytes per cache cell, not quality. The `vec/doc` column is the mean per-document
+vector count (one vector per token); it is the main driver of query *latency* (§2),
+but, as it turns out, not of the quality differences (see Caveats).
 
 | Dataset | docs | queries | vec/doc | ndcg@10 | ndcg@100 | recall@10 | recall@100 | map |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -487,6 +500,19 @@ lists each prefix with its document count, mean document length, and byte size.
   generated from the prefix on request.
 
 scifact (the small control set) was not uploaded; re-encoding it is cheap.
+
+## Next steps
+
+- **Wider quality coverage.** The eight datasets here plus the 1M-document NQ
+  fixture prove the path at scale; extending the quality sweep to the remaining
+  larger BEIR tasks (e.g. HotpotQA) would round out the picture, and the committed
+  embeddings make each addition a load-and-score rather than a re-encode.
+- **A late-interaction tuning page** mirroring this report on the docs site, written
+  for discovery rather than audit, so the practical guidance in §4 is easy to find.
+- **Independent comparison.** The embeddings, raw JSON, and config are all committed
+  or available on request, so these numbers can be reproduced and checked against
+  published PLAID / PyLate baselines on the same datasets. Comparisons and
+  contributions are welcome.
 
 ## Provenance
 
