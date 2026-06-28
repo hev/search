@@ -7,4 +7,4 @@ open_clip_torch
 scikit-image
 pillow
 boto3
-firn  # from the local wheel in ../target/wheels
+hevsearch  # from the local wheel in ../target/wheels

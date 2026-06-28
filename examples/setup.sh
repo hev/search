@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create a virtualenv with the local firn wheel plus the dependencies the
+# Create a virtualenv with the local hevsearch wheel plus the dependencies the
 # examples use (OpenCLIP on CPU torch, scikit-image, boto3).
 set -Eeuo pipefail
 
@@ -7,8 +7,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHEELS="${HERE}/../target/wheels"
 cd "${HERE}"
 
-if [ ! -d "${WHEELS}" ] || ! ls "${WHEELS}"/firn-*.whl >/dev/null 2>&1; then
-    echo "No firn wheel in ${WHEELS}. Build it first:" >&2
+if [ ! -d "${WHEELS}" ] || ! ls "${WHEELS}"/hevsearch-*.whl >/dev/null 2>&1; then
+    echo "No hevsearch wheel in ${WHEELS}. Build it first:" >&2
     echo "  (cd .. && ./scripts/maturin build -m python/Cargo.toml -o target/wheels)" >&2
     exit 1
 fi
@@ -22,5 +22,5 @@ pip install --upgrade pip
 # exist"). No CUDA, so the download stays a few hundred MB.
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install open_clip_torch scikit-image pillow boto3
-pip install --force-reinstall --find-links "${WHEELS}" firn
+pip install --force-reinstall --find-links "${WHEELS}" hevsearch
 echo "setup complete — run an example:  ./run.sh quickstart   |   ./run.sh clip"

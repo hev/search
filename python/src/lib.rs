@@ -1,5 +1,5 @@
-//! PyO3 bindings exposing the firnflow engine as the `firn` Python
-//! package (the native `firn._native` module).
+//! PyO3 bindings exposing the hevsearch engine as the `hevsearch` Python
+//! package (the native `hevsearch._native` module).
 //!
 //! `connect()` builds a [`NamespaceService`] over a local-filesystem or
 //! object-storage root with its own foyer result cache, and the
@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use firnflow_core::cache::NamespaceCache;
-use firnflow_core::{
-    CoreMetrics, FacetRequest, FirnflowError, NamespaceId, NamespaceManager, NamespaceService,
+use hevsearch_core::cache::NamespaceCache;
+use hevsearch_core::{
+    CoreMetrics, FacetRequest, HevSearchError as CoreError, NamespaceId, NamespaceManager, NamespaceService,
     QueryRequest, QueryResult, StorageRoot, UpsertRow,
 };
 use pyo3::conversion::IntoPyObjectExt;
@@ -43,54 +43,54 @@ fn runtime() -> &'static Runtime {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .expect("failed to build the firn tokio runtime")
+            .expect("failed to build the hevsearch tokio runtime")
     })
 }
 
 create_exception!(
     _native,
-    FirnError,
+    HevSearchError,
     PyException,
-    "Base class for all firn errors."
+    "Base class for all hevsearch errors."
 );
 create_exception!(
     _native,
     StorageError,
-    FirnError,
+    HevSearchError,
     "Object store, Lance, cache, or disk failure."
 );
 create_exception!(
     _native,
     TenantError,
-    FirnError,
+    HevSearchError,
     "Invalid tenant or collection name."
 );
 create_exception!(
     _native,
     ValidationError,
-    FirnError,
+    HevSearchError,
     "Invalid request payload or arguments."
 );
 create_exception!(
     _native,
     UnsupportedError,
-    FirnError,
+    HevSearchError,
     "Feature not available in this build."
 );
 
 /// Map an engine error onto the Python exception hierarchy. The
 /// original engine message is preserved so the Python traceback is
 /// actionable.
-fn to_py_err(err: FirnflowError) -> PyErr {
+fn to_py_err(err: CoreError) -> PyErr {
     let msg = err.to_string();
     match err {
-        FirnflowError::Backend(_) | FirnflowError::Io(_) | FirnflowError::Cache(_) => {
+        CoreError::Backend(_) | CoreError::Io(_) | CoreError::Cache(_) => {
             StorageError::new_err(msg)
         }
-        FirnflowError::InvalidNamespace(_) => TenantError::new_err(msg),
-        FirnflowError::InvalidRequest(_) => ValidationError::new_err(msg),
-        FirnflowError::Unsupported(_) => UnsupportedError::new_err(msg),
-        FirnflowError::Metrics(_) => FirnError::new_err(msg),
+        CoreError::InvalidNamespace(_) => TenantError::new_err(msg),
+        CoreError::InvalidRequest(_) => ValidationError::new_err(msg),
+        CoreError::Unsupported(_) => UnsupportedError::new_err(msg),
+        CoreError::Metrics(_) => HevSearchError::new_err(msg),
     }
 }
 
@@ -171,8 +171,8 @@ impl Lifecycle {
     /// `close()` is not running concurrently.
     fn run<T>(
         &self,
-        f: impl FnOnce() -> Result<T, FirnflowError>,
-    ) -> Result<Option<T>, FirnflowError> {
+        f: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<Option<T>, CoreError> {
         let _r = self.gate.read().unwrap_or_else(|p| p.into_inner());
         if self.closed.load(Ordering::Acquire) {
             return Ok(None);
@@ -181,9 +181,9 @@ impl Lifecycle {
     }
 }
 
-/// The base `FirnError` raised on use-after-close.
+/// The base `HevSearchError` raised on use-after-close.
 fn closed_py_err() -> PyErr {
-    FirnError::new_err("client is closed; open a new one with firn.connect()")
+    HevSearchError::new_err("client is closed; open a new one with hevsearch.connect()")
 }
 
 /// Validate one part of a namespace name (a collection or tenant) under
@@ -287,7 +287,7 @@ fn parse_documents(documents: &Bound<'_, PyList>) -> PyResult<Vec<UpsertRow>> {
             (true, false) => {
                 return Err(ValidationError::new_err(
                     "document must include a 'vector' (list[float]) or 'vectors' \
-                     (list[list[float]]); firn stores vectors with optional 'text'",
+                     (list[list[float]]); hevsearch stores vectors with optional 'text'",
                 ))
             }
             _ => {}
@@ -342,7 +342,7 @@ fn ensure_fts_built(
     service: &Arc<NamespaceService>,
     fts: &FtsState,
     ns: &NamespaceId,
-) -> Result<(), FirnflowError> {
+) -> Result<(), CoreError> {
     if fts.lock().unwrap().contains(ns.as_str()) {
         return Ok(());
     }
@@ -353,7 +353,7 @@ fn ensure_fts_built(
         }
         // No rows upserted yet: nothing to index. The query returns no
         // hits. Any other failure is a real error.
-        Err(FirnflowError::InvalidRequest(_)) => Ok(()),
+        Err(CoreError::InvalidRequest(_)) => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -649,7 +649,7 @@ impl Collection {
     }
 }
 
-/// An embedded firn client over a local or object-storage root. Proxies
+/// An embedded hevsearch client over a local or object-storage root. Proxies
 /// the data plane to a default collection and hands out named ones.
 #[pyclass]
 struct Client {
@@ -786,7 +786,7 @@ impl Client {
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let lifecycle = self.lifecycle.clone();
         let cache = self.cache.clone();
-        py.allow_threads(move || -> Result<(), FirnflowError> {
+        py.allow_threads(move || -> Result<(), CoreError> {
             // Wait for in-flight operations (the write guard), then close
             // the cache, and mark closed only on success so a failed
             // close stays retryable. A second close is a no-op.
@@ -846,7 +846,7 @@ fn embedded_cache_dir(root: &StorageRoot) -> PyResult<PathBuf> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hash::hash(&root.as_uri(), &mut hasher);
     let dir = base
-        .join("firn")
+        .join("hevsearch")
         .join(format!("{:016x}", std::hash::Hasher::finish(&hasher)));
     std::fs::create_dir_all(&dir)
         .map_err(|e| StorageError::new_err(format!("create cache dir {}: {e}", dir.display())))?;
@@ -890,31 +890,31 @@ fn object_storage_options(
 }
 
 /// Storage URL configured through the environment, in precedence order:
-/// `FIRN_STORAGE_URL`, then the server's `FIRNFLOW_STORAGE_URI`, then a
-/// bare `FIRNFLOW_S3_BUCKET` (mapped to `s3://bucket`).
+/// `FIRN_STORAGE_URL`, then the server's `HEVSEARCH_STORAGE_URI`, then a
+/// bare `HEVSEARCH_S3_BUCKET` (mapped to `s3://bucket`).
 fn env_storage_url() -> Option<String> {
-    for var in ["FIRN_STORAGE_URL", "FIRNFLOW_STORAGE_URI"] {
+    for var in ["FIRN_STORAGE_URL", "HEVSEARCH_STORAGE_URI"] {
         if let Ok(v) = std::env::var(var) {
             if !v.trim().is_empty() {
                 return Some(v);
             }
         }
     }
-    std::env::var("FIRNFLOW_S3_BUCKET")
+    std::env::var("HEVSEARCH_S3_BUCKET")
         .ok()
         .filter(|b| !b.trim().is_empty())
         .map(|b| format!("s3://{b}"))
 }
 
-/// Open a firn client.
+/// Open a hevsearch client.
 ///
 /// Storage is resolved in this order (the first that applies wins):
 /// 1. `storage_url` keyword (e.g. `s3://bucket[/prefix]`, `gs://bucket`).
 /// 2. `path` keyword — a local directory.
-/// 3. environment — `FIRN_STORAGE_URL`, then `FIRNFLOW_STORAGE_URI`,
-///    then `FIRNFLOW_S3_BUCKET`. S3 credentials come from the explicit
+/// 3. environment — `FIRN_STORAGE_URL`, then `HEVSEARCH_STORAGE_URI`,
+///    then `HEVSEARCH_S3_BUCKET`. S3 credentials come from the explicit
 ///    keyword arguments or the standard `AWS_*` environment.
-/// 4. local default — `./firn_data` in the current working directory.
+/// 4. local default — `./hevsearch_data` in the current working directory.
 ///
 /// The directory or object-store prefix is created on first write.
 #[pyfunction]
@@ -950,7 +950,7 @@ fn connect(
         )
     } else {
         (
-            StorageRoot::local("./firn_data").map_err(to_py_err)?,
+            StorageRoot::local("./hevsearch_data").map_err(to_py_err)?,
             HashMap::new(),
         )
     };
@@ -988,7 +988,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Client>()?;
     m.add_class::<Collection>()?;
     m.add_class::<Hit>()?;
-    m.add("FirnError", m.py().get_type::<FirnError>())?;
+    m.add("HevSearchError", m.py().get_type::<HevSearchError>())?;
     m.add("StorageError", m.py().get_type::<StorageError>())?;
     m.add("TenantError", m.py().get_type::<TenantError>())?;
     m.add("ValidationError", m.py().get_type::<ValidationError>())?;

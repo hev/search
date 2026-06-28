@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Monitoring - Firn</title>
-  <meta name="description" content="Prometheus metrics exposed by Firn, PromQL examples, alerting rules, and Grafana dashboard guidance.">
+  <title>Monitoring - hev search</title>
+  <meta name="description" content="Prometheus metrics exposed by hev search, PromQL examples, alerting rules, and Grafana dashboard guidance.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
   <button class="menu-toggle" aria-label="Toggle sidebar">
     <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
   </button>
-  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <a href="index.html" class="logo">hev<span>search</span></a>
   <nav>
     <a href="quickstart.html">Quickstart</a>
     <a href="api.html">API</a>
@@ -21,7 +21,7 @@
     <a href="architecture.html">Architecture</a>
     <a href="deployment.html">Deploy</a>
     <a href="monitoring.html" class="active">Monitoring</a>
-    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+    <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
   </nav>
 </header>
 
@@ -34,7 +34,7 @@
       <a href="deployment.html">Deployment</a>
     </div>
     <div class="sidebar-section">
-      <h4>Using Firn</h4>
+      <h4>Using hev search</h4>
       <a href="api.html">API reference</a>
       <a href="monitoring.html" class="active">Monitoring</a>
     </div>
@@ -46,24 +46,24 @@
 
   <main class="content">
     <h1>Monitoring</h1>
-    <p class="subtitle">Firn exposes Prometheus metrics at <code>GET /metrics</code> that give full visibility into cache effectiveness and object-storage cost savings.</p>
+    <p class="subtitle">hev search exposes Prometheus metrics at <code>GET /metrics</code> that give full visibility into cache effectiveness and object-storage cost savings.</p>
 
     <h2>Scrape configuration</h2>
-    <p>Add Firn to your Prometheus scrape targets:</p>
+    <p>Add hev search to your Prometheus scrape targets:</p>
     <pre><code># prometheus.yml
 scrape_configs:
-  - job_name: firn
+  - job_name: hevsearch
     scrape_interval: 15s
     static_configs:
-      - targets: ['firn:3000']</code></pre>
+      - targets: ['hevsearch:3000']</code></pre>
     <p>The endpoint returns metrics in Prometheus text exposition format (<code>text/plain; version=0.0.4</code>).</p>
 
-    <p>If <code>FIRNFLOW_METRICS_TOKEN</code> is configured, <code>/metrics</code> requires <code>Authorization: Bearer &lt;token&gt;</code>. Same Bearer parser as the data plane, so Prometheus's <code>bearer_token_file</code> scrape config works directly:</p>
+    <p>If <code>HEVSEARCH_METRICS_TOKEN</code> is configured, <code>/metrics</code> requires <code>Authorization: Bearer &lt;token&gt;</code>. Same Bearer parser as the data plane, so Prometheus's <code>bearer_token_file</code> scrape config works directly:</p>
     <pre><code>scrape_configs:
-  - job_name: firn
-    bearer_token_file: /etc/prometheus/firn-metrics-token
+  - job_name: hevsearch
+    bearer_token_file: /etc/prometheus/hevsearch-metrics-token
     static_configs:
-      - targets: ['firn:3000']</code></pre>
+      - targets: ['hevsearch:3000']</code></pre>
     <p>Leaving the token unset (the default) keeps <code>/metrics</code> open, which matches the typical "scrape from a private subnet" pattern.</p>
 
     <h2>Metric reference</h2>
@@ -73,31 +73,31 @@ scrape_configs:
       <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>firnflow_cache_hits_total</code></td>
+          <td><code>hevsearch_cache_hits_total</code></td>
           <td>Counter</td>
           <td><code>namespace</code></td>
           <td>Total cache hits. A hit serves the result from RAM or NVMe without re-running the search. Once a namespace's handle is warm a hit makes no object-storage access; the first query to a namespace in a process reads its manifest once (to form the version-based cache key) even when it then hits the cache.</td>
         </tr>
         <tr>
-          <td><code>firnflow_cache_misses_total</code></td>
+          <td><code>hevsearch_cache_misses_total</code></td>
           <td>Counter</td>
           <td><code>namespace</code></td>
           <td>Total exact-cache misses. Without semantic caching, each miss reaches the configured backend via LanceDB. With <code>semantic_cache.enabled: true</code>, a semantic-cache hit can still avoid the backend after this counter increments.</td>
         </tr>
         <tr>
-          <td><code>firnflow_semantic_cache_hits_total</code></td>
+          <td><code>hevsearch_semantic_cache_hits_total</code></td>
           <td>Counter</td>
           <td><code>namespace</code></td>
           <td>Opt-in semantic-cache hits. Each hit reused a previous near-duplicate single-vector query's top-k result after the exact cache missed.</td>
         </tr>
         <tr>
-          <td><code>firnflow_semantic_cache_misses_total</code></td>
+          <td><code>hevsearch_semantic_cache_misses_total</code></td>
           <td>Counter</td>
           <td><code>namespace</code></td>
           <td>Eligible semantic-cache lookups where the sidecar had entries, but no cached query cleared the request's <code>min_similarity</code> threshold with matching <code>k</code>, <code>nprobes</code>, and <code>include_vector</code>.</td>
         </tr>
         <tr>
-          <td><code>firnflow_semantic_cache_rejections_total</code></td>
+          <td><code>hevsearch_semantic_cache_rejections_total</code></td>
           <td>Counter</td>
           <td><code>namespace</code>, <code>reason</code></td>
           <td>Semantic-cache lookups rejected before a similarity scan. Reasons are bounded to <code>unsupported_query_shape</code> and <code>empty_index</code>.</td>
@@ -110,25 +110,25 @@ scrape_configs:
       <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>firnflow_query_duration_seconds</code></td>
+          <td><code>hevsearch_query_duration_seconds</code></td>
           <td>Histogram</td>
           <td><code>namespace</code>, <code>query_type</code></td>
           <td>End-to-end query latency through the cache-aside path, including serialisation. The <code>query_type</code> label is <code>vector</code>, <code>multivector</code>, <code>fts</code>, or <code>hybrid</code>.</td>
         </tr>
         <tr>
-          <td><code>firnflow_write_duration_seconds</code></td>
+          <td><code>hevsearch_write_duration_seconds</code></td>
           <td>Histogram</td>
           <td><code>namespace</code></td>
           <td>Upsert or delete latency, including cache invalidation time.</td>
         </tr>
         <tr>
-          <td><code>firnflow_index_build_duration_seconds</code></td>
+          <td><code>hevsearch_index_build_duration_seconds</code></td>
           <td>Histogram</td>
           <td><code>namespace</code>, <code>kind</code></td>
           <td>Time to build a vector or FTS index. Buckets go up to 600 seconds. The <code>kind</code> label is <code>ivf_pq</code> or <code>fts</code>.</td>
         </tr>
         <tr>
-          <td><code>firnflow_compaction_duration_seconds</code></td>
+          <td><code>hevsearch_compaction_duration_seconds</code></td>
           <td>Histogram</td>
           <td><code>namespace</code></td>
           <td>Time to compact data files. Buckets go up to 600 seconds.</td>
@@ -141,29 +141,29 @@ scrape_configs:
       <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>firnflow_s3_requests_total</code></td>
+          <td><code>hevsearch_s3_requests_total</code></td>
           <td>Counter</td>
           <td><code>namespace</code>, <code>operation</code></td>
-          <td>Number of Firn-initiated operations that hit the configured object-storage backend. Operations include <code>query</code>, <code>upsert</code>, and <code>delete</code>. This is the primary signal for whether the cache is saving you backend request costs. The metric name predates native GCS support and counts requests against any backend (S3-family or native GCS); it is kept as <code>s3_requests_total</code> for dashboard continuity.</td>
+          <td>Number of hev search-initiated operations that hit the configured object-storage backend. Operations include <code>query</code>, <code>upsert</code>, and <code>delete</code>. This is the primary signal for whether the cache is saving you backend request costs. The metric name predates native GCS support and counts requests against any backend (S3-family or native GCS); it is kept as <code>s3_requests_total</code> for dashboard continuity.</td>
         </tr>
         <tr>
-          <td><code>firnflow_active_namespaces</code></td>
+          <td><code>hevsearch_active_namespaces</code></td>
           <td>Gauge</td>
           <td><em>none</em></td>
           <td>Number of distinct namespaces that have been accessed since startup.</td>
         </tr>
         <tr>
-          <td><code>firnflow_cached_handles</code></td>
+          <td><code>hevsearch_cached_handles</code></td>
           <td>Gauge</td>
           <td><em>none</em></td>
-          <td>Number of namespaces holding a warm <code>lancedb::Connection</code> and <code>Table</code> handle in the in-process pool. The delta against <code>firnflow_active_namespaces</code> is the number of active namespaces that will pay the cold-open cost on their next request.</td>
+          <td>Number of namespaces holding a warm <code>lancedb::Connection</code> and <code>Table</code> handle in the in-process pool. The delta against <code>hevsearch_active_namespaces</code> is the number of active namespaces that will pay the cold-open cost on their next request.</td>
         </tr>
       </tbody>
     </table>
 
     <div class="callout callout-info">
       <div class="callout-title">The key metric</div>
-      <code>firnflow_s3_requests_total</code> is the metric that proves backend work happened. For exact-cache-only traffic, compare <code>s3_requests_total{operation="query"}</code> against <code>cache_misses_total</code>; they should be equal. For semantic-cache traffic, semantic hits make <code>s3_requests_total{operation="query"}</code> lower than exact-cache misses. (The metric name is historical and kept stable for dashboard continuity; it counts requests against any configured backend.)
+      <code>hevsearch_s3_requests_total</code> is the metric that proves backend work happened. For exact-cache-only traffic, compare <code>s3_requests_total{operation="query"}</code> against <code>cache_misses_total</code>; they should be equal. For semantic-cache traffic, semantic hits make <code>s3_requests_total{operation="query"}</code> lower than exact-cache misses. (The metric name is historical and kept stable for dashboard continuity; it counts requests against any configured backend.)
     </div>
 
     <h3>Object cache metrics</h3>
@@ -172,34 +172,34 @@ scrape_configs:
       <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>firnflow_object_cache_hits_total</code></td>
+          <td><code>hevsearch_object_cache_hits_total</code></td>
           <td>Counter</td>
           <td><em>none</em></td>
           <td>Byte-range reads served from the local object cache without an object-storage round-trip. The primary effectiveness signal for cold and novel queries.</td>
         </tr>
         <tr>
-          <td><code>firnflow_object_cache_misses_total</code></td>
+          <td><code>hevsearch_object_cache_misses_total</code></td>
           <td>Counter</td>
           <td><em>none</em></td>
           <td>Cacheable reads that missed, were fetched from object storage, and were then written to the local cache.</td>
         </tr>
         <tr>
-          <td><code>firnflow_object_cache_inner_gets_total</code></td>
+          <td><code>hevsearch_object_cache_inner_gets_total</code></td>
           <td>Counter</td>
           <td><em>none</em></td>
           <td>Reads forwarded to object storage: misses plus uncacheable passthroughs (manifests, version pointers, and HEAD / conditional / versioned reads, which are never cached).</td>
         </tr>
         <tr>
-          <td><code>firnflow_object_cache_s3_bytes_total</code></td>
+          <td><code>hevsearch_object_cache_s3_bytes_total</code></td>
           <td>Counter</td>
           <td><em>none</em></td>
           <td>Total bytes fetched from object storage by the cache on misses. A proxy for egress and request-size cost avoided on subsequent hits.</td>
         </tr>
         <tr>
-          <td><code>firnflow_object_cache_evictions_total</code></td>
+          <td><code>hevsearch_object_cache_evictions_total</code></td>
           <td>Counter</td>
           <td><em>none</em></td>
-          <td>Entries evicted from the local cache to stay within <code>FIRNFLOW_OBJECT_CACHE_BYTES</code>. A high rate relative to hits suggests the byte cap is too small for the working set.</td>
+          <td>Entries evicted from the local cache to stay within <code>HEVSEARCH_OBJECT_CACHE_BYTES</code>. A high rate relative to hits suggests the byte cap is too small for the working set.</td>
         </tr>
       </tbody>
     </table>
@@ -209,7 +209,7 @@ scrape_configs:
       <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>firnflow_auth_rejections_total</code></td>
+          <td><code>hevsearch_auth_rejections_total</code></td>
           <td>Counter</td>
           <td><code>reason</code></td>
           <td>
@@ -230,74 +230,74 @@ scrape_configs:
 
     <h3>Cache hit rate (per namespace)</h3>
     <p>The fraction of queries served from cache without touching the backend:</p>
-    <pre><code>firnflow_cache_hits_total{namespace="production"}
+    <pre><code>hevsearch_cache_hits_total{namespace="production"}
 /
-(firnflow_cache_hits_total{namespace="production"} + firnflow_cache_misses_total{namespace="production"})</code></pre>
+(hevsearch_cache_hits_total{namespace="production"} + hevsearch_cache_misses_total{namespace="production"})</code></pre>
 
     <h3>Cache hit rate (global, over 5 minutes)</h3>
-    <pre><code>sum(rate(firnflow_cache_hits_total[5m]))
+    <pre><code>sum(rate(hevsearch_cache_hits_total[5m]))
 /
-(sum(rate(firnflow_cache_hits_total[5m])) + sum(rate(firnflow_cache_misses_total[5m])))</code></pre>
+(sum(rate(hevsearch_cache_hits_total[5m])) + sum(rate(hevsearch_cache_misses_total[5m])))</code></pre>
 
     <h3>Query latency p50 / p99</h3>
     <pre><code># p50
-histogram_quantile(0.50, rate(firnflow_query_duration_seconds_bucket[5m]))
+histogram_quantile(0.50, rate(hevsearch_query_duration_seconds_bucket[5m]))
 
 # p99
-histogram_quantile(0.99, rate(firnflow_query_duration_seconds_bucket[5m]))</code></pre>
+histogram_quantile(0.99, rate(hevsearch_query_duration_seconds_bucket[5m]))</code></pre>
 
     <h3>Object-storage request rate (per namespace)</h3>
-    <pre><code>rate(firnflow_s3_requests_total{namespace="production"}[5m])</code></pre>
+    <pre><code>rate(hevsearch_s3_requests_total{namespace="production"}[5m])</code></pre>
 
     <h3>Object-storage requests saved (total avoided queries)</h3>
-    <pre><code>sum(firnflow_cache_hits_total) + sum(firnflow_semantic_cache_hits_total)</code></pre>
+    <pre><code>sum(hevsearch_cache_hits_total) + sum(hevsearch_semantic_cache_hits_total)</code></pre>
 
     <h3>Object-cache hit rate</h3>
     <p>The fraction of cacheable byte-range reads served from the local object cache:</p>
-    <pre><code>sum(rate(firnflow_object_cache_hits_total[5m]))
+    <pre><code>sum(rate(hevsearch_object_cache_hits_total[5m]))
 /
-(sum(rate(firnflow_object_cache_hits_total[5m])) + sum(rate(firnflow_object_cache_misses_total[5m])))</code></pre>
+(sum(rate(hevsearch_object_cache_hits_total[5m])) + sum(rate(hevsearch_object_cache_misses_total[5m])))</code></pre>
 
     <h3>Object-storage bytes fetched by the object cache</h3>
-    <pre><code>rate(firnflow_object_cache_s3_bytes_total[5m])</code></pre>
+    <pre><code>rate(hevsearch_object_cache_s3_bytes_total[5m])</code></pre>
     <p>Each exact-cache hit and semantic-cache hit is one object-storage query that did not happen. Semantic-cache hits are approximate result reuse, so track them separately when correctness calibration matters.</p>
 
     <h3>Semantic-cache hit rate (eligible lookups)</h3>
-    <pre><code>sum(rate(firnflow_semantic_cache_hits_total[5m]))
+    <pre><code>sum(rate(hevsearch_semantic_cache_hits_total[5m]))
 /
-(sum(rate(firnflow_semantic_cache_hits_total[5m])) + sum(rate(firnflow_semantic_cache_misses_total[5m])))</code></pre>
+(sum(rate(hevsearch_semantic_cache_hits_total[5m])) + sum(rate(hevsearch_semantic_cache_misses_total[5m])))</code></pre>
 
     <h3>Semantic-cache rejections by reason</h3>
-    <pre><code>sum by (reason) (rate(firnflow_semantic_cache_rejections_total[5m]))</code></pre>
+    <pre><code>sum by (reason) (rate(hevsearch_semantic_cache_rejections_total[5m]))</code></pre>
 
     <h3>Write throughput</h3>
-    <pre><code>rate(firnflow_s3_requests_total{operation="upsert"}[5m])</code></pre>
+    <pre><code>rate(hevsearch_s3_requests_total{operation="upsert"}[5m])</code></pre>
 
     <h3>Namespaces paying cold-open cost</h3>
     <p>Active namespaces without a pooled connection handle. The first request to any of these will re-run credential resolution and re-read the Lance table manifest:</p>
-    <pre><code>firnflow_active_namespaces - firnflow_cached_handles</code></pre>
+    <pre><code>hevsearch_active_namespaces - hevsearch_cached_handles</code></pre>
 
     <h2>Alerting rules</h2>
     <p>Suggested Prometheus alerting rules for production deployments:</p>
 
     <pre><code># alerts.yml
 groups:
-  - name: firn
+  - name: hevsearch
     rules:
 
       # Cache hit rate dropping below 80% over 15 minutes
       - alert: FirnLowCacheHitRate
         expr: |
-          sum(rate(firnflow_cache_hits_total[15m]))
+          sum(rate(hevsearch_cache_hits_total[15m]))
           /
-          (sum(rate(firnflow_cache_hits_total[15m]))
-           + sum(rate(firnflow_cache_misses_total[15m])))
+          (sum(rate(hevsearch_cache_hits_total[15m]))
+           + sum(rate(hevsearch_cache_misses_total[15m])))
           < 0.80
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Firn cache hit rate is below 80%"
+          summary: "hev search cache hit rate is below 80%"
           description: >
             The cache hit rate has been below 80% for 10 minutes.
             This may indicate the working set exceeds cache capacity
@@ -307,13 +307,13 @@ groups:
       - alert: FirnHighQueryLatency
         expr: |
           histogram_quantile(0.99,
-            rate(firnflow_query_duration_seconds_bucket[5m])
+            rate(hevsearch_query_duration_seconds_bucket[5m])
           ) > 1.0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Firn query latency p99 above 1 second"
+          summary: "hev search query latency p99 above 1 second"
           description: >
             High query latency suggests frequent cache misses
             hitting the object-storage backend. Consider increasing cache
@@ -324,19 +324,19 @@ groups:
       # continuity; the metric is backend-agnostic.
       - alert: FirnHighS3RequestRate
         expr: |
-          sum(rate(firnflow_s3_requests_total{operation="query"}[5m])) > 10
+          sum(rate(hevsearch_s3_requests_total{operation="query"}[5m])) > 10
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Firn object-storage query request rate above 10/s"
+          summary: "hev search object-storage query request rate above 10/s"
           description: >
             The cache is not absorbing enough queries. This increases
             object-storage costs and latency. Check if the working set
             has changed or if write-heavy invalidation is the cause.</code></pre>
 
     <h2>Grafana dashboard</h2>
-    <p>A minimal Grafana dashboard for Firn should include these panels:</p>
+    <p>A minimal Grafana dashboard for hev search should include these panels:</p>
 
     <table>
       <thead><tr><th>Panel</th><th>Type</th><th>PromQL</th></tr></thead>
@@ -364,12 +364,12 @@ groups:
         <tr>
           <td>Active namespaces</td>
           <td>Stat</td>
-          <td><code>firnflow_active_namespaces</code></td>
+          <td><code>hevsearch_active_namespaces</code></td>
         </tr>
         <tr>
           <td>Pooled connection handles</td>
           <td>Stat</td>
-          <td><code>firnflow_cached_handles</code></td>
+          <td><code>hevsearch_cached_handles</code></td>
         </tr>
         <tr>
           <td>Write latency (p50, p99)</td>
@@ -396,7 +396,7 @@ groups:
 
     <h3>Warning signals</h3>
     <ul>
-      <li><strong>Falling cache hit rate:</strong> the working set may exceed cache capacity. Increase <code>FIRNFLOW_CACHE_MEMORY_BYTES</code> or <code>FIRNFLOW_CACHE_NVME_BYTES</code>.</li>
+      <li><strong>Falling cache hit rate:</strong> the working set may exceed cache capacity. Increase <code>HEVSEARCH_CACHE_MEMORY_BYTES</code> or <code>HEVSEARCH_CACHE_NVME_BYTES</code>.</li>
       <li><strong>High <code>s3_requests_total</code> rate:</strong> too many cache misses are reaching the object-storage backend. This costs money and adds latency. Consider cache warmup, larger cache, or building an index.</li>
       <li><strong>Low semantic-cache hit rate:</strong> the threshold may be too strict for your embedding model, or query vectors may not cluster tightly enough for safe reuse. Lower <code>semantic_cache.min_similarity</code> only after measuring result quality on your corpus.</li>
       <li><strong>Rising query latency:</strong> if cold queries dominate, build an IVF_PQ index. If warm queries are slow, check for serialisation overhead with large result sets.</li>
@@ -407,8 +407,8 @@ groups:
 </div>
 
 <footer class="site-footer">
-  Firn is open source under the Apache 2.0 License.
-  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  hev search is open source under the Apache 2.0 License.
+  <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
 </footer>
 
 <script src="main.js"></script>

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Firn demo script for asciinema recording.
+# hev search demo script for asciinema recording.
 #
 # Usage:
 #   1. Make sure MinIO and the API are running:
 #        docker compose up -d minio minio-init
-#        FIRNFLOW_S3_BUCKET=firnflow-test \
-#        FIRNFLOW_S3_ENDPOINT=http://127.0.0.1:9000 \
-#        FIRNFLOW_S3_ACCESS_KEY=minioadmin \
-#        FIRNFLOW_S3_SECRET_KEY=minioadmin \
-#          ./scripts/cargo run -p firnflow-api
+#        HEVSEARCH_S3_BUCKET=hevsearch-test \
+#        HEVSEARCH_S3_ENDPOINT=http://127.0.0.1:9000 \
+#        HEVSEARCH_S3_ACCESS_KEY=minioadmin \
+#        HEVSEARCH_S3_SECRET_KEY=minioadmin \
+#          ./scripts/cargo run -p hevsearch-api
 #
 #   2. In another terminal:
 #        asciinema rec demo.cast
@@ -38,8 +38,8 @@ type_and_run() {
 clear
 echo ""
 echo "  ┌─────────────────────────────────────────┐"
-echo "  │  Firn — vector + FTS search on S3       │"
-echo "  │  github.com/gordonmurray/firnflow       │"
+echo "  │  hev search — vector + FTS search on S3       │"
+echo "  │  github.com/gordonmurray/hevsearch       │"
 echo "  └─────────────────────────────────────────┘"
 echo ""
 sleep 2

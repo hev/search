@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Deployment - Firn</title>
-  <meta name="description" content="Deploy Firn with Docker Compose for local development, or as a production container against AWS S3, MinIO, R2, Tigris, DigitalOcean Spaces, or native Google Cloud Storage.">
+  <title>Deployment - hev search</title>
+  <meta name="description" content="Deploy hev search with Docker Compose for local development, or as a production container against AWS S3, MinIO, R2, Tigris, DigitalOcean Spaces, or native Google Cloud Storage.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
   <button class="menu-toggle" aria-label="Toggle sidebar">
     <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
   </button>
-  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <a href="index.html" class="logo">hev<span>search</span></a>
   <nav>
     <a href="quickstart.html">Quickstart</a>
     <a href="api.html">API</a>
@@ -21,7 +21,7 @@
     <a href="architecture.html">Architecture</a>
     <a href="deployment.html" class="active">Deploy</a>
     <a href="monitoring.html">Monitoring</a>
-    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+    <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
   </nav>
 </header>
 
@@ -34,7 +34,7 @@
       <a href="deployment.html" class="active">Deployment</a>
     </div>
     <div class="sidebar-section">
-      <h4>Using Firn</h4>
+      <h4>Using hev search</h4>
       <a href="api.html">API reference</a>
       <a href="monitoring.html">Monitoring</a>
     </div>
@@ -46,13 +46,13 @@
 
   <main class="content">
     <h1>Deployment</h1>
-    <p class="subtitle">Run Firn locally with Docker Compose or deploy to production as a standalone container.</p>
+    <p class="subtitle">Run hev search locally with Docker Compose or deploy to production as a standalone container.</p>
 
     <h2>Local development</h2>
-    <p>The Docker Compose file launches MinIO (local S3) alongside the Firn API. No host Rust toolchain is required.</p>
+    <p>The Docker Compose file launches MinIO (local S3) alongside the hev search API. No host Rust toolchain is required.</p>
 
-    <pre><code>git clone https://github.com/gordonmurray/firnflow
-cd firnflow
+    <pre><code>git clone https://github.com/gordonmurray/hevsearch
+cd hevsearch
 docker compose up --build</code></pre>
 
     <p>This starts three services:</p>
@@ -60,29 +60,29 @@ docker compose up --build</code></pre>
       <thead><tr><th>Service</th><th>Port</th><th>Purpose</th></tr></thead>
       <tbody>
         <tr><td><code>minio</code></td><td>9000 (S3 API), 9001 (console)</td><td>S3-compatible object storage</td></tr>
-        <tr><td><code>minio-init</code></td><td>-</td><td>One-shot: creates the <code>firnflow</code> bucket</td></tr>
-        <tr><td><code>firnflow</code></td><td>3000</td><td>Firn API server</td></tr>
+        <tr><td><code>minio-init</code></td><td>-</td><td>One-shot: creates the <code>hevsearch</code> bucket</td></tr>
+        <tr><td><code>hevsearch</code></td><td>3000</td><td>hev search API server</td></tr>
       </tbody>
     </table>
     <p>MinIO console: <a href="http://localhost:9001">http://localhost:9001</a> (credentials: <code>minioadmin</code> / <code>minioadmin</code>)</p>
 
     <h3>Running just MinIO</h3>
-    <p>If you want to run Firn outside Docker (e.g. during development with a host Rust toolchain), start only MinIO:</p>
+    <p>If you want to run hev search outside Docker (e.g. during development with a host Rust toolchain), start only MinIO:</p>
     <pre><code># Start MinIO only
 docker compose up -d minio minio-init
 
-# Run Firn directly
-FIRNFLOW_STORAGE_URI=s3://firnflow \
-FIRNFLOW_S3_ENDPOINT=http://127.0.0.1:9000 \
-FIRNFLOW_S3_ACCESS_KEY=minioadmin \
-FIRNFLOW_S3_SECRET_KEY=minioadmin \
-  cargo run -p firnflow-api</code></pre>
+# Run hev search directly
+HEVSEARCH_STORAGE_URI=s3://hevsearch \
+HEVSEARCH_S3_ENDPOINT=http://127.0.0.1:9000 \
+HEVSEARCH_S3_ACCESS_KEY=minioadmin \
+HEVSEARCH_S3_SECRET_KEY=minioadmin \
+  cargo run -p hevsearch-api</code></pre>
 
     <h2>Production Docker</h2>
     <p>The included <code>Dockerfile</code> is a multi-stage build that produces a minimal production image.</p>
 
     <h3>Build the image</h3>
-    <pre><code>docker build -t firnflow-api .</code></pre>
+    <pre><code>docker build -t hevsearch-api .</code></pre>
 
     <h3>Image details</h3>
     <table>
@@ -95,23 +95,23 @@ FIRNFLOW_S3_SECRET_KEY=minioadmin \
 
     <h3>Run the container</h3>
     <pre><code>docker run -d \
-  --name firn \
+  --name hevsearch \
   -p 3000:3000 \
-  -e FIRNFLOW_STORAGE_URI=s3://my-production-bucket \
-  -e FIRNFLOW_S3_REGION=eu-west-1 \
-  -e FIRNFLOW_CACHE_MEMORY_BYTES=268435456 \
-  -e FIRNFLOW_CACHE_NVME_BYTES=10737418240 \
-  -v firn-cache:/var/lib/firnflow/cache \
-  firnflow-api</code></pre>
-    <p>For native GCS, swap the URI scheme and mount a service-account JSON: <code>-e FIRNFLOW_STORAGE_URI=gs://my-production-bucket -e GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp-sa.json -v /etc/gcp-sa.json:/etc/gcp-sa.json:ro</code>. Everything else stays the same.</p>
+  -e HEVSEARCH_STORAGE_URI=s3://my-production-bucket \
+  -e HEVSEARCH_S3_REGION=eu-west-1 \
+  -e HEVSEARCH_CACHE_MEMORY_BYTES=268435456 \
+  -e HEVSEARCH_CACHE_NVME_BYTES=10737418240 \
+  -v hevsearch-cache:/var/lib/hevsearch/cache \
+  hevsearch-api</code></pre>
+    <p>For native GCS, swap the URI scheme and mount a service-account JSON: <code>-e HEVSEARCH_STORAGE_URI=gs://my-production-bucket -e GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp-sa.json -v /etc/gcp-sa.json:/etc/gcp-sa.json:ro</code>. Everything else stays the same.</p>
 
     <div class="callout callout-info">
       <div class="callout-title">NVMe cache volume</div>
-      Mount a fast local SSD at <code>/var/lib/firnflow/cache</code> for the NVMe tier. The cache is ephemeral: losing it only means cache misses until it warms up again. For best performance, use a <code>tmpfs</code> or NVMe-backed volume.
+      Mount a fast local SSD at <code>/var/lib/hevsearch/cache</code> for the NVMe tier. The cache is ephemeral: losing it only means cache misses until it warms up again. For best performance, use a <code>tmpfs</code> or NVMe-backed volume.
     </div>
 
     <h2>AWS deployment</h2>
-    <p>For production on AWS, Firn works best with IAM-based credentials (instance profiles, ECS task roles, or IRSA for EKS). No access keys needed.</p>
+    <p>For production on AWS, hev search works best with IAM-based credentials (instance profiles, ECS task roles, or IRSA for EKS). No access keys needed.</p>
 
     <h3>Prerequisites</h3>
     <ol>
@@ -133,8 +133,8 @@ FIRNFLOW_S3_SECRET_KEY=minioadmin \
         "s3:ListBucket"
       ],
       "Resource": [
-        "arn:aws:s3:::my-firn-bucket",
-        "arn:aws:s3:::my-firn-bucket/*"
+        "arn:aws:s3:::my-hevsearch-bucket",
+        "arn:aws:s3:::my-hevsearch-bucket/*"
       ]
     }
   ]
@@ -144,14 +144,14 @@ FIRNFLOW_S3_SECRET_KEY=minioadmin \
     <pre><code>{
   "containerDefinitions": [
     {
-      "name": "firn",
-      "image": "firnflow-api:latest",
+      "name": "hevsearch",
+      "image": "hevsearch-api:latest",
       "portMappings": [{"containerPort": 3000}],
       "environment": [
-        {"name": "FIRNFLOW_STORAGE_URI", "value": "s3://my-firn-bucket"},
-        {"name": "FIRNFLOW_S3_REGION", "value": "eu-west-1"},
-        {"name": "FIRNFLOW_CACHE_MEMORY_BYTES", "value": "268435456"},
-        {"name": "FIRNFLOW_CACHE_NVME_BYTES", "value": "10737418240"}
+        {"name": "HEVSEARCH_STORAGE_URI", "value": "s3://my-hevsearch-bucket"},
+        {"name": "HEVSEARCH_S3_REGION", "value": "eu-west-1"},
+        {"name": "HEVSEARCH_CACHE_MEMORY_BYTES", "value": "268435456"},
+        {"name": "HEVSEARCH_CACHE_NVME_BYTES", "value": "10737418240"}
       ],
       "healthCheck": {
         "command": ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"],
@@ -162,7 +162,7 @@ FIRNFLOW_S3_SECRET_KEY=minioadmin \
       "mountPoints": [
         {
           "sourceVolume": "cache",
-          "containerPath": "/var/lib/firnflow/cache"
+          "containerPath": "/var/lib/hevsearch/cache"
         }
       ]
     }
@@ -170,26 +170,26 @@ FIRNFLOW_S3_SECRET_KEY=minioadmin \
 }</code></pre>
 
     <h2>Authentication and rate limiting</h2>
-    <p>The API ships with optional bearer-token authentication. <strong>Production deployments should always set <code>FIRNFLOW_API_KEY</code></strong> — running without it triggers a startup <code>WARN</code> log line and is unsupported. See <a href="configuration.html#authentication">configuration</a> for the full env-var list.</p>
+    <p>The API ships with optional bearer-token authentication. <strong>Production deployments should always set <code>HEVSEARCH_API_KEY</code></strong> — running without it triggers a startup <code>WARN</code> log line and is unsupported. See <a href="configuration.html#authentication">configuration</a> for the full env-var list.</p>
     <ul>
-      <li><code>FIRNFLOW_API_KEY</code> — read/write tier. Required.</li>
-      <li><code>FIRNFLOW_ADMIN_API_KEY</code> — separate destructive-ops key. Optional but recommended; set to a different value to lock <code>delete</code> / <code>compact</code> / index builds behind a credential the application clients do not hold.</li>
-      <li><code>FIRNFLOW_METRICS_TOKEN</code> — optional gate on <code>/metrics</code>. Use the same Bearer header.</li>
-      <li><code>FIRNFLOW_RATE_LIMIT_RPS</code> + <code>FIRNFLOW_RATE_LIMIT_BURST</code> — per-principal token-bucket limiter. Set once a normal traffic baseline is visible in <code>/metrics</code>.</li>
-      <li><code>FIRNFLOW_TRUST_PROXY_HEADERS=true</code> — only when Firn sits behind a load balancer or reverse proxy that strips client-supplied <code>X-Forwarded-For</code> at the edge.</li>
+      <li><code>HEVSEARCH_API_KEY</code> — read/write tier. Required.</li>
+      <li><code>HEVSEARCH_ADMIN_API_KEY</code> — separate destructive-ops key. Optional but recommended; set to a different value to lock <code>delete</code> / <code>compact</code> / index builds behind a credential the application clients do not hold.</li>
+      <li><code>HEVSEARCH_METRICS_TOKEN</code> — optional gate on <code>/metrics</code>. Use the same Bearer header.</li>
+      <li><code>HEVSEARCH_RATE_LIMIT_RPS</code> + <code>HEVSEARCH_RATE_LIMIT_BURST</code> — per-principal token-bucket limiter. Set once a normal traffic baseline is visible in <code>/metrics</code>.</li>
+      <li><code>HEVSEARCH_TRUST_PROXY_HEADERS=true</code> — only when hev search sits behind a load balancer or reverse proxy that strips client-supplied <code>X-Forwarded-For</code> at the edge.</li>
     </ul>
 
-    <p>Recommended rollout: deploy 0.5.0 with no keys (verify the WARN appears), set <code>FIRNFLOW_API_KEY</code>, roll clients to send <code>Authorization: Bearer …</code>, then set <code>FIRNFLOW_ADMIN_API_KEY</code> to a distinct value, and finally tune the rate-limit knobs. Rollback is to unset the variables and restart — no on-disk schema or cache format change.</p>
+    <p>Recommended rollout: deploy 0.5.0 with no keys (verify the WARN appears), set <code>HEVSEARCH_API_KEY</code>, roll clients to send <code>Authorization: Bearer …</code>, then set <code>HEVSEARCH_ADMIN_API_KEY</code> to a distinct value, and finally tune the rate-limit knobs. Rollback is to unset the variables and restart — no on-disk schema or cache format change.</p>
 
     <pre><code># curl with bearer header
-curl -X POST https://firn.example.com/ns/production/upsert \
-  -H "Authorization: Bearer $FIRNFLOW_API_KEY" \
+curl -X POST https://hevsearch.example.com/ns/production/upsert \
+  -H "Authorization: Bearer $HEVSEARCH_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"rows": [...]}'</code></pre>
 
     <div class="callout callout-warning">
       <div class="callout-title">Service-level only</div>
-      A token authorises operations against the firnflow process, not against a specific namespace. Per-tenant namespace isolation requires an authenticating gateway in front of Firn that maps tenants to namespaces.
+      A token authorises operations against the hevsearch process, not against a specific namespace. Per-tenant namespace isolation requires an authenticating gateway in front of hev search that maps tenants to namespaces.
     </div>
 
     <h2>Health checks</h2>
@@ -226,13 +226,13 @@ readinessProbe:
       {"vector": [0.0, 1.0, ...], "k": 10}
     ]
   }'</code></pre>
-    <p>This returns immediately (202) and runs the queries in the background, populating the exact cache as it goes. If your production traffic uses semantic caching, include the same <code>semantic_cache</code> block on eligible single-vector warmup queries so the in-memory semantic sidecar is seeded too. Monitor <code>firnflow_cache_misses_total</code> to track warmup progress and <code>firnflow_semantic_cache_hits_total</code> / <code>firnflow_semantic_cache_rejections_total</code> to confirm the semantic layer is behaving as expected.</p>
+    <p>This returns immediately (202) and runs the queries in the background, populating the exact cache as it goes. If your production traffic uses semantic caching, include the same <code>semantic_cache</code> block on eligible single-vector warmup queries so the in-memory semantic sidecar is seeded too. Monitor <code>hevsearch_cache_misses_total</code> to track warmup progress and <code>hevsearch_semantic_cache_hits_total</code> / <code>hevsearch_semantic_cache_rejections_total</code> to confirm the semantic layer is behaving as expected.</p>
 
     <h2>Recommended operational setup</h2>
     <ul>
-      <li><strong>Reverse proxy:</strong> put nginx, Caddy, or an ALB in front of Firn for TLS termination and rate limiting</li>
+      <li><strong>Reverse proxy:</strong> put nginx, Caddy, or an ALB in front of hev search for TLS termination and rate limiting</li>
       <li><strong>Prometheus scraping:</strong> scrape <code>/metrics</code> at 15s intervals</li>
-      <li><strong>Log aggregation:</strong> Firn logs structured JSON via <code>tracing</code>. Ship to your log aggregator.</li>
+      <li><strong>Log aggregation:</strong> hev search logs structured JSON via <code>tracing</code>. Ship to your log aggregator.</li>
       <li><strong>Cache volume:</strong> use a fast local SSD or NVMe, not networked storage</li>
       <li><strong>Compaction schedule:</strong> run <code>/ns/{ns}/compact</code> periodically for write-heavy namespaces</li>
     </ul>
@@ -241,8 +241,8 @@ readinessProbe:
 </div>
 
 <footer class="site-footer">
-  Firn is open source under the Apache 2.0 License.
-  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  hev search is open source under the Apache 2.0 License.
+  <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
 </footer>
 
 <script src="main.js"></script>

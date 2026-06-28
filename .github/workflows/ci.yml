@@ -23,10 +23,10 @@ env:
   # Tests fall back to these defaults when the env vars are not set,
   # matching docker-compose.yml for local parity. Setting them
   # explicitly in CI makes the wiring visible at a glance.
-  FIRNFLOW_S3_ENDPOINT: http://127.0.0.1:9000
-  FIRNFLOW_S3_ACCESS_KEY: minioadmin
-  FIRNFLOW_S3_SECRET_KEY: minioadmin
-  FIRNFLOW_S3_BUCKET: firnflow-test
+  HEVSEARCH_S3_ENDPOINT: http://127.0.0.1:9000
+  HEVSEARCH_S3_ACCESS_KEY: minioadmin
+  HEVSEARCH_S3_SECRET_KEY: minioadmin
+  HEVSEARCH_S3_BUCKET: hevsearch-test
 
 jobs:
   test:
@@ -105,7 +105,7 @@ jobs:
           docker run --rm --network host --entrypoint /bin/sh \
             minio/mc:latest -c "
               mc alias set local http://127.0.0.1:9000 minioadmin minioadmin &&
-              mc mb --ignore-existing local/firnflow-test
+              mc mb --ignore-existing local/hevsearch-test
             "
 
       - name: cargo fmt

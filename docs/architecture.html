@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Architecture - Firn</title>
-  <meta name="description" content="How Firn works internally: tiered storage, cache invalidation, namespace isolation, and the query and write paths.">
+  <title>Architecture - hev search</title>
+  <meta name="description" content="How hev search works internally: tiered storage, cache invalidation, namespace isolation, and the query and write paths.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
   <button class="menu-toggle" aria-label="Toggle sidebar">
     <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
   </button>
-  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <a href="index.html" class="logo">hev<span>search</span></a>
   <nav>
     <a href="quickstart.html">Quickstart</a>
     <a href="api.html">API</a>
@@ -21,7 +21,7 @@
     <a href="architecture.html" class="active">Architecture</a>
     <a href="deployment.html">Deploy</a>
     <a href="monitoring.html">Monitoring</a>
-    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+    <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
   </nav>
 </header>
 
@@ -34,7 +34,7 @@
       <a href="deployment.html">Deployment</a>
     </div>
     <div class="sidebar-section">
-      <h4>Using Firn</h4>
+      <h4>Using hev search</h4>
       <a href="api.html">API reference</a>
       <a href="monitoring.html">Monitoring</a>
     </div>
@@ -46,10 +46,10 @@
 
   <main class="content">
     <h1>Architecture</h1>
-    <p class="subtitle">How Firn turns cheap object storage into a fast, multi-tenant search engine.</p>
+    <p class="subtitle">How hev search turns cheap object storage into a fast, multi-tenant search engine.</p>
 
     <h2>Tiered storage</h2>
-    <p>Firn's core idea is a three-tier storage hierarchy. Data lives permanently in the configured object store, but queries are served from the fastest available tier:</p>
+    <p>hev search's core idea is a three-tier storage hierarchy. Data lives permanently in the configured object store, but queries are served from the fastest available tier:</p>
 
     <table>
       <thead><tr><th>Tier</th><th>Backed by</th><th>Latency</th><th>Role</th></tr></thead>
@@ -61,10 +61,10 @@
     </table>
 
     <p>The exact cache stores complete, serialised query result sets. When a query hits the cache, zero bytes are read from object storage. When it misses, the result is fetched from the backend and stored in the cache for future use.</p>
-    <p>Single-vector queries can also opt into a small in-memory semantic sidecar. After an exact-cache miss, Firn can compare the incoming query vector with recent cached query vectors in the same namespace generation. If cosine similarity clears the request's threshold and <code>k</code> / <code>nprobes</code> / <code>include_vector</code> match, Firn reuses the previous top-k bytes without touching object storage. This is approximate result reuse, so callers must opt in per request.</p>
+    <p>Single-vector queries can also opt into a small in-memory semantic sidecar. After an exact-cache miss, hev search can compare the incoming query vector with recent cached query vectors in the same namespace generation. If cosine similarity clears the request's threshold and <code>k</code> / <code>nprobes</code> / <code>include_vector</code> match, hev search reuses the previous top-k bytes without touching object storage. This is approximate result reuse, so callers must opt in per request.</p>
 
     <h2>Request middleware</h2>
-    <p>Every protected endpoint runs through a fixed middleware stack before the handler. The stack is wired up in <code>firnflow_api::router</code> and the order is load-bearing — bucketing on a validated <code>Principal</code> rather than an attacker-supplied header is the whole reason auth runs first.</p>
+    <p>Every protected endpoint runs through a fixed middleware stack before the handler. The stack is wired up in <code>hevsearch_api::router</code> and the order is load-bearing — bucketing on a validated <code>Principal</code> rather than an attacker-supplied header is the whole reason auth runs first.</p>
     <pre><code>request
   │
   ▼
@@ -83,7 +83,7 @@ per-principal limiter (optional) — keys on Principal
   │
   ▼
 handler</code></pre>
-    <p>The pre-auth IP limiter caps credential-stuffing throughput per peer IP and runs <em>before</em> auth on purpose. The per-principal limiter sits inside auth so it can read the validated identity. <code>/health</code> never traverses either layer; <code>/metrics</code> is gated only by the optional <code>FIRNFLOW_METRICS_TOKEN</code>. See <a href="configuration.html#authentication">configuration</a> for the env-var surface.</p>
+    <p>The pre-auth IP limiter caps credential-stuffing throughput per peer IP and runs <em>before</em> auth on purpose. The per-principal limiter sits inside auth so it can read the validated identity. <code>/health</code> never traverses either layer; <code>/metrics</code> is gated only by the optional <code>HEVSEARCH_METRICS_TOKEN</code>. See <a href="configuration.html#authentication">configuration</a> for the env-var surface.</p>
 
     <h2>Query path</h2>
     <p>Every query follows this exact sequence:</p>
@@ -91,11 +91,11 @@ handler</code></pre>
       <li><strong>Hash the query.</strong> The cacheable search fields in <code>QueryRequest</code> (vector, vectors, k, nprobes, text, include_vector) are serialised with bincode and hashed with xxh3 to produce a deterministic <code>QueryHash</code>. <code>include_vector</code> is part of the key because a full and a vector-light result for the same search are different payloads that must not collide. The <code>semantic_cache</code> control block is deliberately excluded so toggling it does not split otherwise-identical exact-cache entries.</li>
       <li><strong>Build the cache key.</strong> The key is a tuple of <code>(namespace, generation, query_hash)</code>. The generation is derived from the namespace's current Lance table version, read from the pooled handle (in memory once the handle is warm), so it advances on every committed write and is stable across process restarts &mdash; a recovered NVMe entry is only reachable while the table is unchanged. The manifest commit timestamp is folded in so a deleted-and-recreated namespace does not reuse a prior incarnation's cache entries.</li>
       <li><strong>Check foyer.</strong> The HybridCache checks RAM first, then NVMe. On a hit, the serialised result is returned and a <code>cache_hits_total</code> metric is recorded.</li>
-      <li><strong>Optional semantic lookup.</strong> If the exact cache misses and the request includes <code>semantic_cache.enabled: true</code>, Firn scans the namespace's in-memory semantic sidecar for a nearby single-vector query with matching <code>k</code>, resolved <code>nprobes</code>, and <code>include_vector</code>. A hit returns that cached result immediately and records <code>firnflow_semantic_cache_hits_total</code>. Ineligible shapes such as multivector, FTS, and hybrid requests return 400 when semantic caching is enabled.</li>
+      <li><strong>Optional semantic lookup.</strong> If the exact cache misses and the request includes <code>semantic_cache.enabled: true</code>, hev search scans the namespace's in-memory semantic sidecar for a nearby single-vector query with matching <code>k</code>, resolved <code>nprobes</code>, and <code>include_vector</code>. A hit returns that cached result immediately and records <code>hevsearch_semantic_cache_hits_total</code>. Ineligible shapes such as multivector, FTS, and hybrid requests return 400 when semantic caching is enabled.</li>
       <li><strong>On miss: query object storage.</strong> LanceDB runs the query against the Lance table on the configured backend (vector nearest-neighbour, multivector, BM25 FTS, or hybrid) using the namespace's pooled <code>Connection</code> and <code>Table</code> handle &mdash; the first request for a namespace opens and caches the handle, every subsequent request skips the credential-resolution and manifest-read round-trips. The result is serialised with bincode and stored in foyer. Eligible semantic-cache requests also add the query vector and result bytes to the sidecar. The exact-cache miss counter was already recorded before the semantic lookup; backend work records <code>s3_requests_total</code>. (The metric name predates native GCS support; it now counts object-store operations regardless of backend.)</li>
       <li><strong>Return the result.</strong> The query duration (cache hit or miss) is recorded in the <code>query_duration_seconds</code> histogram.</li>
     </ol>
-    <p>The semantic sidecar is bounded to 1024 entries per namespace generation and lives only in the Firn process. Any committed change &mdash; write, delete, compaction, or index build &mdash; advances the table version and so drops both the exact cache and the sidecar for that namespace on the next read. Index builds invalidate even though the rows are unchanged, because building an index is itself a Lance commit; the trade-off buys post-build queries that use the new index instead of replaying a pre-index result.</p>
+    <p>The semantic sidecar is bounded to 1024 entries per namespace generation and lives only in the hev search process. Any committed change &mdash; write, delete, compaction, or index build &mdash; advances the table version and so drops both the exact cache and the sidecar for that namespace on the next read. Index builds invalidate even though the rows are unchanged, because building an index is itself a Lance commit; the trade-off buys post-build queries that use the new index instead of replaying a pre-index result.</p>
 
     <h2>Write path</h2>
     <p>Writes follow a strict ordering to prevent stale cache state:</p>
@@ -107,7 +107,7 @@ handler</code></pre>
     <p>This is automatic and safe: the version only advances on a committed write, so a failed write leaves the generation &mdash; and therefore the cache &mdash; untouched with valid data. There is no window where the cache is empty and queries would storm the backend.</p>
 
     <h2>Cache invalidation</h2>
-    <p>Firn keys cached results on the <strong>Lance table version</strong>, so invalidation falls out of the data itself rather than a separate bookkeeping step.</p>
+    <p>hev search keys cached results on the <strong>Lance table version</strong>, so invalidation falls out of the data itself rather than a separate bookkeeping step.</p>
 
     <h3>How it works</h3>
     <p>The cache key carries a per-namespace generation:</p>
@@ -130,7 +130,7 @@ handler</code></pre>
     </table>
 
     <h2>Object cache</h2>
-    <p>The result cache above answers a whole query from a single cached payload, so a repeated query reads nothing from object storage. It cannot help a query it has never seen &mdash; a new filter, a new vector, or the first query after a restart still falls through to the backend, where cold latency is dominated by object-storage reads. The object cache is an optional second layer that targets exactly those reads. It is disabled by default and enabled with <code>FIRNFLOW_OBJECT_CACHE_ENABLED</code>.</p>
+    <p>The result cache above answers a whole query from a single cached payload, so a repeated query reads nothing from object storage. It cannot help a query it has never seen &mdash; a new filter, a new vector, or the first query after a restart still falls through to the backend, where cold latency is dominated by object-storage reads. The object cache is an optional second layer that targets exactly those reads. It is disabled by default and enabled with <code>HEVSEARCH_OBJECT_CACHE_ENABLED</code>.</p>
     <p>It sits one level below the storage engine: a local byte-range cache wrapped around the object store the engine reads through. When the engine asks for a range of a file, the cache serves it from local disk if present, otherwise fetches it from object storage and keeps a copy. The next query that touches the same data and index bytes &mdash; even a different query shape &mdash; is served locally.</p>
 
     <h3>What it caches, and why that is safe</h3>
@@ -138,8 +138,8 @@ handler</code></pre>
     <p>Everything that <em>can</em> change is always read straight through, never cached: manifests, the version pointer, and transaction logs, plus any HEAD, conditional, or explicitly-versioned read. Because the manifest is always read live, a write, delete, compaction, or index build is observed immediately &mdash; the engine resolves the new manifest, which names new fragment and index files, and the cache simply misses on those new names and fetches them. A deleted-and-recreated namespace is safe for the same reason: it writes fresh unique paths, so old cached bytes are unreachable rather than served. There is no invalidation step because there is nothing mutable to invalidate.</p>
 
     <h3>Capacity and restart</h3>
-    <p>The cache is bounded by a byte budget (<code>FIRNFLOW_OBJECT_CACHE_BYTES</code>); when full it evicts least-recently-used entries. On startup it scans its directory and counts existing files toward the budget, evicting down to the cap before serving, so a restart reuses the warm cache without exceeding its bound. Like every cache here it is a performance layer only &mdash; object storage remains the source of truth, and losing the local cache costs latency, never data.</p>
-    <p>Effectiveness and savings are observable through the <a href="monitoring.html">object-cache metrics</a> (<code>firnflow_object_cache_hits_total</code>, <code>_misses_total</code>, <code>_s3_bytes_total</code>, <code>_evictions_total</code>).</p>
+    <p>The cache is bounded by a byte budget (<code>HEVSEARCH_OBJECT_CACHE_BYTES</code>); when full it evicts least-recently-used entries. On startup it scans its directory and counts existing files toward the budget, evicting down to the cap before serving, so a restart reuses the warm cache without exceeding its bound. Like every cache here it is a performance layer only &mdash; object storage remains the source of truth, and losing the local cache costs latency, never data.</p>
+    <p>Effectiveness and savings are observable through the <a href="monitoring.html">object-cache metrics</a> (<code>hevsearch_object_cache_hits_total</code>, <code>_misses_total</code>, <code>_s3_bytes_total</code>, <code>_evictions_total</code>).</p>
 
     <h2>Connection pool</h2>
     <p>The namespace manager caches a <code>lancedb::Connection</code> and <code>Table</code> handle per namespace after the first open. Without the pool, every upsert and every cache-miss query would re-run credential resolution (AWS chain or Google service-account JSON, depending on backend) and re-read the Lance table manifest; with the pool, those costs are paid once per namespace per process lifetime.</p>
@@ -152,12 +152,12 @@ handler</code></pre>
     </ul>
     <p>Ordinary upserts do <strong>not</strong> evict the handle. A merge-insert write commits through the cached handle and its result is visible to subsequent reads on that same handle, so there is no need to reopen the table on every write.</p>
 
-    <p>Pool occupancy is exposed as the <code>firnflow_cached_handles</code> gauge at <code>/metrics</code>. Compare it against <code>firnflow_active_namespaces</code> to see how many namespaces are currently paying the cold-open cost.</p>
+    <p>Pool occupancy is exposed as the <code>hevsearch_cached_handles</code> gauge at <code>/metrics</code>. Compare it against <code>hevsearch_active_namespaces</code> to see how many namespaces are currently paying the cold-open cost.</p>
 
     <h2>Namespace isolation</h2>
     <p>Each namespace is a fully isolated unit:</p>
     <ul>
-      <li><strong>Namespace root:</strong> <code>{FIRNFLOW_STORAGE_URI}/{namespace}/</code> &mdash; e.g. <code>s3://my-bucket/docs/</code> or <code>gs://my-bucket/tenants/acme/docs/</code>. No data sharing between namespaces.</li>
+      <li><strong>Namespace root:</strong> <code>{HEVSEARCH_STORAGE_URI}/{namespace}/</code> &mdash; e.g. <code>s3://my-bucket/docs/</code> or <code>gs://my-bucket/tenants/acme/docs/</code>. No data sharing between namespaces.</li>
       <li><strong>Vector dimension:</strong> inferred from the first upsert; subsequent upserts to the same namespace must match</li>
       <li><strong>Cache:</strong> one shared foyer instance, but keys are scoped by namespace</li>
       <li><strong>Lifecycle:</strong> lazy creation (no objects in the backend until the first write), full cleanup on delete</li>
@@ -171,10 +171,10 @@ handler</code></pre>
       <li>On subsequent upserts, every row is validated against the resolved dimension</li>
       <li>On re-open (after restart), the dimension is read from the existing Lance table schema</li>
     </ul>
-    <p>This means a single Firn instance can serve namespaces at different dimensions simultaneously, for example 384-dim sentence embeddings alongside 1536-dim OpenAI embeddings.</p>
+    <p>This means a single hev search instance can serve namespaces at different dimensions simultaneously, for example 384-dim sentence embeddings alongside 1536-dim OpenAI embeddings.</p>
 
     <h2>ANN index</h2>
-    <p>Firn supports explicit IVF_PQ (Inverted File with Product Quantisation) index builds via the <code>/ns/{ns}/index</code> endpoint. The index is optional; without it, queries perform a linear scan.</p>
+    <p>hev search supports explicit IVF_PQ (Inverted File with Product Quantisation) index builds via the <code>/ns/{ns}/index</code> endpoint. The index is optional; without it, queries perform a linear scan.</p>
 
     <h3>When to build an index</h3>
     <ul>
@@ -214,11 +214,11 @@ handler</code></pre>
     </ul>
 
     <h2>Concurrency</h2>
-    <p>Firn relies on LanceDB's native concurrency model, which uses the backend's conditional-write primitive to serialise commits between concurrent writers. For S3-family backends that is <code>If-None-Match: *</code>; for native Google Cloud Storage it is the generation precondition (<code>x-goog-if-generation-match: 0</code> on the GCS XML API), which lancedb's <code>gcs</code> feature routes through transparently. Both paths are stress-tested with 100 consecutive runs of an 8-writer × 100-row contention test against real buckets (AWS S3, MinIO, R2, Tigris, Spaces, and native GCS), each showing zero row-count discrepancies. The GCS S3-interop endpoint is a separate path that silently drops <code>If-None-Match: *</code> and is not supported.</p>
+    <p>hev search relies on LanceDB's native concurrency model, which uses the backend's conditional-write primitive to serialise commits between concurrent writers. For S3-family backends that is <code>If-None-Match: *</code>; for native Google Cloud Storage it is the generation precondition (<code>x-goog-if-generation-match: 0</code> on the GCS XML API), which lancedb's <code>gcs</code> feature routes through transparently. Both paths are stress-tested with 100 consecutive runs of an 8-writer × 100-row contention test against real buckets (AWS S3, MinIO, R2, Tigris, Spaces, and native GCS), each showing zero row-count discrepancies. The GCS S3-interop endpoint is a separate path that silently drops <code>If-None-Match: *</code> and is not supported.</p>
 
     <div class="callout callout-info">
       <div class="callout-title">Single-node design</div>
-      Firn currently operates as a single-node service. The cache is in-process (not distributed). Horizontal scaling would require a shared cache layer or request routing, which is not yet implemented.
+      hev search currently operates as a single-node service. The cache is in-process (not distributed). Horizontal scaling would require a shared cache layer or request routing, which is not yet implemented.
     </div>
 
     <h2>Serialisation</h2>
@@ -237,8 +237,8 @@ handler</code></pre>
 </div>
 
 <footer class="site-footer">
-  Firn is open source under the Apache 2.0 License.
-  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  hev search is open source under the Apache 2.0 License.
+  <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
 </footer>
 
 <script src="main.js"></script>

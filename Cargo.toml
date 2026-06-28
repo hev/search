@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/firnflow-core",
-    "crates/firnflow-api",
-    "crates/firnflow-bench",
+    "crates/hevsearch-core",
+    "crates/hevsearch-api",
+    "crates/hevsearch-bench",
     "python",
 ]
 
@@ -51,7 +51,7 @@ tokio = { version = "1", features = ["full"] }
 # Web framework.
 axum = "0.8"
 # `util` feature is required for `tower::ServiceExt::oneshot`, which
-# the firnflow-api smoke test uses to drive the router without
+# the hevsearch-api smoke test uses to drive the router without
 # spinning up a real TCP listener.
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }

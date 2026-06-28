@@ -5,7 +5,7 @@
 .env
 .env.local
 
-# Depot build config (local-only; upstream is gordonmurray/firnflow)
+# Depot build config (local-only; upstream is gordonmurray/hevsearch)
 depot.json
 
 # Claude Code local state (settings + session traces)
@@ -13,6 +13,6 @@ depot.json
 
 # Python examples: local virtualenv, demo data, byte-code caches
 /examples/.venv
-/examples/firn_data_demo
+/examples/hevsearch_data_demo
 __pycache__/
 *.pyc

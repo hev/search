@@ -7,7 +7,7 @@ file is the direct output of the benchmark harness for one run; the report
 tables are assembled from these.
 
 All runs are against real AWS S3 in `eu-west-1`, model `lightonai/LateOn`
-(128-dim per-token vectors via PyLate), IVF_PQ unless noted, `k=100`. Firn
+(128-dim per-token vectors via PyLate), IVF_PQ unless noted, `k=100`. hev search
 version is called out per group below.
 
 ## JSON shape
@@ -27,15 +27,15 @@ pass:
 ```
 cell, split, concurrency, wall_s, qps, latency_p50/p95/p99_ms,
 counters_before / counters_after / counters_delta: {
-  firnflow_object_cache_{hits,misses,inner_gets,s3_bytes,evictions}_total,
-  firnflow_cache_hits_total,        # the result-cache guardrail: 0 in every measured cell
-  firnflow_cache_misses_total,
-  firnflow_s3_requests_total
+  hevsearch_object_cache_{hits,misses,inner_gets,s3_bytes,evictions}_total,
+  hevsearch_cache_hits_total,        # the result-cache guardrail: 0 in every measured cell
+  hevsearch_cache_misses_total,
+  hevsearch_s3_requests_total
 }
 ```
 
 Note the fiqa A/B cells pre-date the low-level
-`firnflow_object_store_requests_total` / `firnflow_object_store_get_bytes_total`
+`hevsearch_object_store_requests_total` / `hevsearch_object_store_get_bytes_total`
 counters, so the cache-*off* cells there have no backend byte figure of their own
 — that gap is exactly what those counters were added to close. The NQ cache A/B
 (`nq_cache_ab/`) was run with the instrumented build, so its cells carry the
@@ -45,7 +45,7 @@ always-on backend counters and have a true cache-*off* byte figure.
 
 ### §1 Retrieval quality (eight datasets) -> `quality_0.9.2/`
 
-The published quality table. Every dataset scored on Firn `0.9.2`. The five
+The published quality table. Every dataset scored on hev search `0.9.2`. The five
 smaller sets and the two largest were loaded via `/import`; `fiqa` here is the
 `/upsert` re-load on `0.9.2` (the single-fragment `/import` namespace scored the
 same within rebuild jitter, 0.411, so the table value is representative).
@@ -67,13 +67,13 @@ The first sweep, before the table was standardised on `0.9.2`. Kept only because
 the report's caveat compares two datasets across the reload (fiqa
 0.4563 -> 0.4124, trec-covid 0.8367 -> 0.5794). **Not** part of the published
 table — superseded by `quality_0.9.2/`. A like-for-like quality number must come
-from one Firn version; do not mix these with the `0.9.2` set.
+from one hev search version; do not mix these with the `0.9.2` set.
 
 ### §2 Object cache, the cache on/off A/B (fiqa) -> `cache_ab_fiqa/`
 
 One single-fragment fiqa namespace, `0.9.2`, `nprobes=20`, `k=100`,
 concurrency 32. The 648-query set is split into two disjoint halves: split A
-warms, split B (324 queries) is measured. `firnflow_cache_hits_total` is 0 in
+warms, split B (324 queries) is measured. `hevsearch_cache_hits_total` is 0 in
 every measured cell (the `counters_delta` field) — proof the result cache never
 served a measured query.
 
@@ -116,7 +116,7 @@ The cache A/B repeated on `beir-nq` (1,000,000 multivector documents, single
 fragment, IVF_PQ `num_sub_vectors=64`/`num_bits=8`, `nprobes=20`, `k=100`,
 concurrency 32, 500 measured queries per cell). Run on the instrumented build, so
 every cell carries the always-on backend counters
-(`firnflow_object_store_requests_total` / `_get_bytes_total`) — which is what
+(`hevsearch_object_store_requests_total` / `_get_bytes_total`) — which is what
 gives the cache-*off* cells a real backend byte figure that the fiqa A/B could not
 produce.
 
@@ -129,8 +129,8 @@ produce.
 
 Headline: for the same 500 queries, cache-off (`warm-off`) reads **361 GB** from
 S3 vs cache-on warm (`warm-on`) **2.79 GB** — a ~130x byte reduction, read
-directly off `firnflow_object_store_get_bytes_total` on both arms. Latency is flat
-(~46-48 s p50) across all four cells; `firnflow_cache_hits_total` (the
+directly off `hevsearch_object_store_get_bytes_total` on both arms. Latency is flat
+(~46-48 s p50) across all four cells; `hevsearch_cache_hits_total` (the
 result-cache guardrail) is 0 in every cell. `uncontended-probe.json` is a 10-query
 probe on an already-warmed process at concurrency 32 (so no queueing): it records
 the ~14.5 s *single-query* latency that the ~46 s saturated cells sit on top of —

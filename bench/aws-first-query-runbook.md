@@ -5,7 +5,7 @@ against real AWS S3 from an EC2 instance, so the cold first-query
 numbers reflect genuine object-storage latency rather than a local
 MinIO loopback. The harness itself, its measurement cases, and its
 environment variables are documented in the rustdoc header of
-`crates/firnflow-bench/src/bin/first_query_profile.rs`. This file
+`crates/hevsearch-bench/src/bin/first_query_profile.rs`. This file
 covers the parts that live outside the binary: instance choice,
 credentials, bucket-side request attribution, the two runs (smoke then
 headline), and how to read the result.
@@ -71,8 +71,8 @@ is torn down afterwards.
     `arn:aws:s3:::$BUCKET/*`.
 
 With the instance profile attached, the harness reads credentials from
-the default chain (instance metadata), so `FIRNFLOW_S3_ACCESS_KEY` and
-`FIRNFLOW_S3_SECRET_KEY` are left unset.
+the default chain (instance metadata), so `HEVSEARCH_S3_ACCESS_KEY` and
+`HEVSEARCH_S3_SECRET_KEY` are left unset.
 
 ## Build the harness on the instance
 
@@ -85,9 +85,9 @@ sudo dnf install -y git gcc gcc-c++ make protobuf-compiler protobuf-devel
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
   --default-toolchain 1.94.0
 source "$HOME/.cargo/env"
-git clone https://github.com/gordonmurray/firnflow.git
-cd firnflow
-cargo build --release -p firnflow-bench --bin first_query_profile
+git clone https://github.com/gordonmurray/hevsearch.git
+cd hevsearch
+cargo build --release -p hevsearch-bench --bin first_query_profile
 ```
 
 If `protobuf-compiler` and `protobuf-devel` are not in the instance's
@@ -100,7 +100,7 @@ index-build time that follows.
 ## Bucket-side request attribution
 
 The harness reports a `s3_requests delta` per case, but that counter
-only tracks calls at firnflow's service boundary, not the raw range
+only tracks calls at hevsearch's service boundary, not the raw range
 GETs that `object_store` issues underneath. To see the real S3
 request and byte counts, attribute them on the bucket side. The
 harness pins all of its data under a single namespace prefix and
@@ -124,13 +124,13 @@ prefix attribution are wired correctly, all before committing to the
 long run.
 
 ```bash
-FIRNFLOW_STORAGE_URI=s3://$BUCKET \
-FIRNFLOW_S3_REGION=$REGION \
-FIRNFLOW_PROFILE_NAMESPACE=first-query-profile-smoke \
-FIRNFLOW_PROFILE_ROWS=250000 \
-FIRNFLOW_PROFILE_DIM=1536 \
-FIRNFLOW_PROFILE_REPS=10 \
-FIRNFLOW_PROFILE_OUT=bench/results/first_query_profile_smoke.md \
+HEVSEARCH_STORAGE_URI=s3://$BUCKET \
+HEVSEARCH_S3_REGION=$REGION \
+HEVSEARCH_PROFILE_NAMESPACE=first-query-profile-smoke \
+HEVSEARCH_PROFILE_ROWS=250000 \
+HEVSEARCH_PROFILE_DIM=1536 \
+HEVSEARCH_PROFILE_REPS=10 \
+HEVSEARCH_PROFILE_OUT=bench/results/first_query_profile_smoke.md \
   ./target/release/first_query_profile
 ```
 
@@ -148,13 +148,13 @@ it here, not after the headline run.
 ## Run 2: headline (1M rows, 1536-dim)
 
 ```bash
-FIRNFLOW_STORAGE_URI=s3://$BUCKET \
-FIRNFLOW_S3_REGION=$REGION \
-FIRNFLOW_PROFILE_NAMESPACE=first-query-profile-1m \
-FIRNFLOW_PROFILE_ROWS=1000000 \
-FIRNFLOW_PROFILE_DIM=1536 \
-FIRNFLOW_PROFILE_REPS=20 \
-FIRNFLOW_PROFILE_OUT=bench/results/first_query_profile.md \
+HEVSEARCH_STORAGE_URI=s3://$BUCKET \
+HEVSEARCH_S3_REGION=$REGION \
+HEVSEARCH_PROFILE_NAMESPACE=first-query-profile-1m \
+HEVSEARCH_PROFILE_ROWS=1000000 \
+HEVSEARCH_PROFILE_DIM=1536 \
+HEVSEARCH_PROFILE_REPS=20 \
+HEVSEARCH_PROFILE_OUT=bench/results/first_query_profile.md \
   ./target/release/first_query_profile
 ```
 
@@ -186,12 +186,12 @@ rep per invocation against the already-seeded namespace:
 
 ```bash
 for i in $(seq 1 20); do
-  FIRNFLOW_STORAGE_URI=s3://$BUCKET \
-  FIRNFLOW_S3_REGION=$REGION \
-  FIRNFLOW_PROFILE_NAMESPACE=first-query-profile-1m \
-  FIRNFLOW_PROFILE_SEED=false \
-  FIRNFLOW_PROFILE_REPS=1 \
-  FIRNFLOW_PROFILE_OUT=bench/results/fresh_process_$i.md \
+  HEVSEARCH_STORAGE_URI=s3://$BUCKET \
+  HEVSEARCH_S3_REGION=$REGION \
+  HEVSEARCH_PROFILE_NAMESPACE=first-query-profile-1m \
+  HEVSEARCH_PROFILE_SEED=false \
+  HEVSEARCH_PROFILE_REPS=1 \
+  HEVSEARCH_PROFILE_OUT=bench/results/fresh_process_$i.md \
     ./target/release/first_query_profile
 done
 ```
@@ -206,7 +206,7 @@ Terminate the instance once the report is committed. The seeded
 namespaces (`first-query-profile-smoke`, `first-query-profile-1m`)
 stay in the bucket; delete them through the API
 (`DELETE /ns/{namespace}`) or leave them for a re-run with
-`FIRNFLOW_PROFILE_SEED=false`. If S3 access logging was enabled only
+`HEVSEARCH_PROFILE_SEED=false`. If S3 access logging was enabled only
 for this run, turn it back off.
 
 ## Reading the result, and what to do next
@@ -218,7 +218,7 @@ which in turn points at the next piece of work:
   reads** (large `warm-novel` and `dropped-handle` numbers, confirmed
   by the bucket-side request and byte counts over the run window), the
   bottleneck is the index and data reads over the network. That is the
-  case the local object cache (`FIRNFLOW_OBJECT_CACHE_ENABLED`) is built
+  case the local object cache (`HEVSEARCH_OBJECT_CACHE_ENABLED`) is built
   to address, and the next step is to re-run with the object cache on
   and measure the difference on the second cold query. A `dropped-handle`
   number close to `cold-process` (with `warm-novel` well below both)
@@ -255,7 +255,7 @@ committed alongside this runbook.
   dominant cost. The handle pool removes that cost on subsequent
   queries.
 - `first_query_profile_objcache.md` (1M rows) re-ran the same namespace
-  with the local object cache on (`FIRNFLOW_PROFILE_OBJECT_CACHE=true`).
+  with the local object cache on (`HEVSEARCH_PROFILE_OBJECT_CACHE=true`).
   Once the cache was warm, a novel query dropped from 214 ms to 7 ms
   (about 30x), cold-process from 719 ms to 383 ms, and `dropped-handle`
   from 690 ms to 279 ms, serving Lance's index and metadata reads from

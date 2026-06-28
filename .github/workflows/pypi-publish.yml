@@ -1,8 +1,8 @@
-# Build and publish the `firn` Python package (crate at python/) to PyPI.
+# Build and publish the `hevsearch` Python package (crate at python/) to PyPI.
 #
-# Triggers on its own tag scheme, firn-v* (e.g. firn-v0.1.0), kept
+# Triggers on its own tag scheme, hevsearch-v* (e.g. hevsearch-v0.1.0), kept
 # separate from the server's v* tags so the package releases on its own
-# cadence and a server release never tries to re-push the same firn
+# cadence and a server release never tries to re-push the same hevsearch
 # version (PyPI rejects duplicate versions).
 #
 # Flow: build the wheel matrix + sdist -> publish to TestPyPI
@@ -14,7 +14,7 @@ name: pypi-publish
 on:
   push:
     tags:
-      - "firn-v*"
+      - "hevsearch-v*"
 
 # Default: read-only (lets the build/sdist jobs check out). The publish
 # jobs override this with `id-token: write` for OIDC trusted publishing.
@@ -122,7 +122,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install pytest
-          python -m pip install --no-index --find-links dist firn
+          python -m pip install --no-index --find-links dist hevsearch
       - name: Run the suite against the installed wheel
         run: pytest python/tests -q
 

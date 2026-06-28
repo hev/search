@@ -1,14 +1,14 @@
-# firn
+# hevsearch
 
 Vector + full-text search on object storage, embeddable in-process. No
 server, no infrastructure to stand up.
 
 ```python
-import firn
+import hevsearch
 
-db = firn.connect()                 # local ./firn_data
+db = hevsearch.connect()                 # local ./hevsearch_data
 # ...or object storage:
-# db = firn.connect(storage_url="s3://bucket",
+# db = hevsearch.connect(storage_url="s3://bucket",
 #                   access_key=..., secret_key=...)
 
 db.add([
@@ -28,4 +28,4 @@ vector, by text, or both at once (reciprocal-rank fused). Storage is a
 local directory or any S3-compatible object store (AWS, Tigris, R2,
 MinIO, …) or GCS.
 
-Apache-2.0. Part of [Firn](https://firnflow.io).
+Apache-2.0. Part of [hev search](https://hevsearch.com).

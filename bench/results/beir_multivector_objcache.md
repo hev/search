@@ -1,13 +1,13 @@
-# Firn multivector retrieval on object storage: BEIR quality, bulk import, and the object cache
+# hev search multivector retrieval on object storage: BEIR quality, bulk import, and the object cache
 
-This report measures Firn's late-interaction (multivector) search path against
+This report measures hev search's late-interaction (multivector) search path against
 real AWS S3: retrieval quality across eight BEIR datasets, the bulk-import path
 for large first loads, and what the on-disk object cache actually does for query
 cost and latency.
 
 ## Background (for any reader)
 
-- **Firn** (`firnflow`) is a vector and full-text search engine that keeps its
+- **hev search** (`hevsearch`) is a vector and full-text search engine that keeps its
   data on object storage (S3 / MinIO / R2 / GCS) and puts a RAM + local-NVMe
   cache in front of it. The point is to run search directly on cheap, elastic
   object storage instead of a fleet of always-on disks.
@@ -29,7 +29,7 @@ cost and latency.
   128-dim per-token vectors, via PyLate `1.6.0` (sentence-transformers `5.3.0`),
   encoder document length `300` tokens. One vector per token, so the per-document
   vector count varies by dataset (dataset means range ~16 to ~237; see §1/§2).
-- **Engine:** Firn `0.9.2`. Storage on **real AWS S3** in `eu-west-1` (not
+- **Engine:** hev search `0.9.2`. Storage on **real AWS S3** in `eu-west-1` (not
   loopback MinIO). All eight quality datasets were loaded and scored on this one
   version via `/import`, so the quality table is single-version and internally
   consistent. (An earlier draft mixed `0.9.0` and `0.9.2` numbers; the small
@@ -37,11 +37,11 @@ cost and latency.
 - **Index / query:** IVF_PQ vector index, `num_sub_vectors=64`, `num_bits=8`
   (default), queried at `nprobes=20`, `k=100`. Late-interaction (MaxSim) scoring.
 - **Object cache:** read-through byte-range cache on local NVMe
-  (`FIRNFLOW_OBJECT_CACHE_DIR=/object-cache`), enabled with
-  `FIRNFLOW_OBJECT_CACHE_ENABLED=true`, a 100 GiB byte budget
-  (`FIRNFLOW_OBJECT_CACHE_BYTES=107374182400`), and the per-entry cap left at its
-  256 MiB default (`FIRNFLOW_OBJECT_CACHE_MAX_ENTRY_BYTES`). The `/import` path ran
-  with `FIRNFLOW_IMPORT_MAX_BYTES=0` (no cap) and `FIRNFLOW_MAX_BODY_BYTES` at
+  (`HEVSEARCH_OBJECT_CACHE_DIR=/object-cache`), enabled with
+  `HEVSEARCH_OBJECT_CACHE_ENABLED=true`, a 100 GiB byte budget
+  (`HEVSEARCH_OBJECT_CACHE_BYTES=107374182400`), and the per-entry cap left at its
+  256 MiB default (`HEVSEARCH_OBJECT_CACHE_MAX_ENTRY_BYTES`). The `/import` path ran
+  with `HEVSEARCH_IMPORT_MAX_BYTES=0` (no cap) and `HEVSEARCH_MAX_BODY_BYTES` at
   32 MiB.
 - **Host:** all numbers reported here were measured on a single box
   (g4dn.8xlarge: 32 vCPU, 128 GiB RAM, 1×T4 GPU) in `eu-west-1`, reading from an
@@ -51,7 +51,7 @@ cost and latency.
   (§2) was measured on released `0.9.2`, whose object-cache counters only exist
   when the cache is on. The 1M-document NQ A/B (§2) was measured on an
   instrumented build — `0.9.2` plus an always-on backend read counter
-  (`firnflow_object_store_get_bytes_total`) that records bytes fetched from S3
+  (`hevsearch_object_store_get_bytes_total`) that records bytes fetched from S3
   whether the cache is on *or* off. That counter is what lets the NQ run report a
   real cache-*off* byte figure; quality numbers are unaffected by it.
 
@@ -60,7 +60,7 @@ cost and latency.
 A one-screen summary before the detail, since quality and performance live on
 different axes here:
 
-- **Shows (quality, host-independent):** Firn's multivector path reaches the
+- **Shows (quality, host-independent):** hev search's multivector path reaches the
   expected BEIR quality — it matches published ColBERT-style baselines on the
   control sets (scifact, nfcorpus) and tracks each task's known difficulty across
   eight datasets (§1).
@@ -82,7 +82,7 @@ different axes here:
 
 ## 1. Retrieval quality (eight BEIR datasets)
 
-All eight datasets were loaded and scored on a single Firn version (`0.9.2`) via
+All eight datasets were loaded and scored on a single hev search version (`0.9.2`) via
 `/import`, so the table is internally consistent. Each row is scored over the
 **full official BEIR query set** for that dataset (the `queries` column below — not
 the split-B subset used for the latency A/B in §2). These quality numbers are
@@ -124,14 +124,14 @@ effect, not a document-length one: per-document vector counts do not predict it
 **Calibration against published baselines.** For the two datasets with external
 reference points:
 
-| dataset | PLAID nDCG@10 | earlier Firn (0.7.1 repro) | this run (0.9.2) |
+| dataset | PLAID nDCG@10 | earlier hev search (0.7.1 repro) | this run (0.9.2) |
 |---|---:|---:|---:|
 | scifact | 0.7661 | 0.7575 | 0.7533 |
 | nfcorpus | 0.3779 | n/a | 0.3763 |
 
-This run matches the earlier Firn SciFact reproduction (0.7575 on 0.7.1 → 0.7533
+This run matches the earlier hev search SciFact reproduction (0.7575 on 0.7.1 → 0.7533
 here) and lands within ~1–2% of the PLAID baselines on both, so quality holds on the
-control datasets. (NFCorpus has no earlier Firn number — the prior SciFact gists
+control datasets. (NFCorpus has no earlier hev search number — the prior SciFact gists
 were SciFact-only. PLAID figures are the published ColBERT-style BEIR numbers
 Antoine cited: SciFact 76.61, NFCorpus 37.79.)
 
@@ -177,7 +177,7 @@ cache)?
 **Method.** One host, one single-fragment fiqa namespace, IVF_PQ, `nprobes=20`,
 `k=100`, concurrency 32. The query set is split in two disjoint halves: split A
 warms the cache, split B (324 novel queries) is measured. Because B is disjoint
-from A, B never hits Firn's exact-result cache, so this measures real query work,
+from A, B never hits hev search's exact-result cache, so this measures real query work,
 not a cache replay. **The exact-result-cache hit counter was 0 in every measured
 cell** (the guardrail). Four cache cells plus a warm-process cell:
 
@@ -191,7 +191,7 @@ cell** (the guardrail). Four cache cells plus a warm-process cell:
 
 **Reading the cells.** "off" / "on" is the object cache; "cold" / "warm" is the
 *procedure*. Cold cells measure on a fresh process; warm cells first run split A
-and then restart Firn before measuring split B. So `warm-off` runs the identical
+and then restart hev search before measuring split B. So `warm-off` runs the identical
 warm procedure as `warm-on` but with the cache off: it is the control that
 isolates the object cache as the only difference between the two, and its "warm"
 refers to the procedure, not a warmed cache (the cache is off). `warm-process` is
@@ -223,7 +223,7 @@ state, and a warm process makes no difference either. For this multivector
 workload, latency is bound by the CPU cost of MaxSim scoring, not by storage
 I/O, so the object cache reduces S3 access (and therefore cost) without speeding
 up queries. This is the opposite of single-vector search, which is I/O-bound and
-does see large cache speed-ups (Firn's single-vector first-query profile showed
+does see large cache speed-ups (hev search's single-vector first-query profile showed
 roughly 30× on warm-novel queries). The honest summary: **on multivector, the
 object cache is a storage-cost lever, not a latency lever.**
 
@@ -235,7 +235,7 @@ byte counter does not exist when the cache is off. To get a real cache-off
 measurement — and to see whether the storage saving holds at scale — the same A/B
 was repeated on **NQ (Natural Questions), 1,000,000 multivector documents**, a
 single `/import` fragment, on the instrumented build that carries the always-on
-backend byte counter `firnflow_object_store_get_bytes_total`. Same shape as fiqa:
+backend byte counter `hevsearch_object_store_get_bytes_total`. Same shape as fiqa:
 IVF_PQ `num_sub_vectors=64`/`num_bits=8`, `nprobes=20`, `k=100`, concurrency 32,
 500 measured queries per cell, split B disjoint from the split-A warming set so no
 query is a result-cache replay.
@@ -247,7 +247,7 @@ query is a result-cache replay.
 | warm-off | off | cold | 0.65 | 48.0 s | 54.8 s | 87,175 | **361 GB** |
 | warm-on | on, warm | cold | 0.68 | 46.4 s | 54.0 s | 24,039 | **2.79 GB** |
 
-(The "backend S3 bytes" column is `firnflow_object_store_get_bytes_total` over the
+(The "backend S3 bytes" column is `hevsearch_object_store_get_bytes_total` over the
 measured pass — the real bytes fetched from S3, recorded identically whether the
 cache is on or off. The cold-off cell read 372 GB; warm-off, the clean cache-off
 control, read 361 GB.)
@@ -265,7 +265,7 @@ which is why 500 queries balloon to ~360 GB.
 **Latency is still flat, now confirmed at 1M.** Every cell lands at ~46–48 s p50
 regardless of cache state — the cache changes the S3 byte bill by two orders of
 magnitude and does not move latency at all, because MaxSim over a 1M-document
-candidate set is CPU-bound. The result-cache guardrail held: `firnflow_cache_hits_total`
+candidate set is CPU-bound. The result-cache guardrail held: `hevsearch_cache_hits_total`
 was 0 in all four cells. So the fiqa conclusion is not a small-corpus artifact:
 **at 1M documents the object cache is, again, a storage-cost lever and not a
 latency lever for multivector search.**
@@ -378,8 +378,8 @@ bookkeeping makes throughput decay as the namespace grows. On webis-touche2020
 The `/import` endpoint (added in 0.9.2) sends the whole corpus as one Arrow IPC
 stream, appended in a **single commit**, binary and columnar so the embeddings
 avoid JSON's ~3× decimal-text inflation. The default `/import` size cap is 8 GiB
-(`FIRNFLOW_IMPORT_MAX_BYTES`), so the 30 GB webis stream needs the cap raised; these
-runs set `FIRNFLOW_IMPORT_MAX_BYTES=0` to disable it:
+(`HEVSEARCH_IMPORT_MAX_BYTES`), so the 30 GB webis stream needs the cap raised; these
+runs set `HEVSEARCH_IMPORT_MAX_BYTES=0` to disable it:
 
 | dataset | docs | Arrow stream | server-side import | rate |
 |---|---:|---:|---:|---:|
@@ -401,7 +401,7 @@ document first load practical at all.
 | vector index | IVF_PQ `num_sub_vectors=64`, `num_bits=8` | safe default; 32/8 was marginally better on fiqa, 4-bit only when storage-bound |
 | index vs exact | **measure both** at your corpus size | IVF_PQ loss grows with size: none ≤25k, ~22% at 57k (§1) |
 | `nprobes` | 20 | quality flat 8→100, latency unchanged (CPU-bound) |
-| object cache | on, `FIRNFLOW_OBJECT_CACHE_BYTES` ≥ working set | cuts S3 byte cost (~130× at 1M); does not cut multivector latency |
+| object cache | on, `HEVSEARCH_OBJECT_CACHE_BYTES` ≥ working set | cuts S3 byte cost (~130× at 1M); does not cut multivector latency |
 
 **Ingest — `/import` vs `/upsert`.** Use `/import` for the *first* bulk load of a
 namespace: it streams the whole corpus as one Arrow IPC body and appends it in a
@@ -419,7 +419,7 @@ latency, which is CPU-bound on MaxSim — every NQ and fiqa cache cell sits at t
 same p50 regardless of cache state. (Single-vector search *is* I/O-bound and does
 see large cache latency wins — a different workload; do not carry the latency claim
 across.) **Size the cache to hold the working set:** the saving needs
-`FIRNFLOW_OBJECT_CACHE_BYTES` to cover the index byte-ranges plus the candidate
+`HEVSEARCH_OBJECT_CACHE_BYTES` to cover the index byte-ranges plus the candidate
 vectors a query reads; below that the cache thrashes and the saving largely
 disappears (§2, the 256 MiB run).
 
@@ -494,7 +494,7 @@ lists each prefix with its document count, mean document length, and byte size.
   a quality one — slicing the corpus drops relevant documents, so its scores are not
   BEIR-comparable, and it is used only for the §2 cache A/B.
 - **Config to reproduce:** IVF_PQ `num_sub_vectors=64`, `num_bits=8`, `nprobes=20`,
-  `k=100`, cosine distance, firnflow 0.9.2 (the NQ cache A/B additionally needs the
+  `k=100`, cosine distance, hevsearch 0.9.2 (the NQ cache A/B additionally needs the
   always-on backend byte counter — an instrumented build, see Setup).
 - **Checksums:** not yet published; a per-object manifest (key, size, sha256) can be
   generated from the prefix on request.
@@ -522,7 +522,7 @@ the numbers can be audited rather than taken on trust. A full table-to-file map 
 in [`beir_multivector_raw/README.md`](beir_multivector_raw/README.md).
 
 **Exact vs IVF_PQ across corpus sizes (§1).** Each pair holds the corpus and the
-full official query set fixed, `nprobes=20`, `k=100`, firnflow 0.9.2, real S3 in
+full official query set fixed, `nprobes=20`, `k=100`, hevsearch 0.9.2, real S3 in
 `eu-west-1`, scored through the same BEIR-eval path as the §1 table. Method:
 `/import` the corpus as a single fragment with the vector index skipped and score
 it (exact), then build the IVF_PQ index on the same data and score the identical
@@ -540,6 +540,6 @@ query set again; the result-cache hit counter was 0 throughout.
 **1M-document cache A/B (§2).** `beir_multivector_raw/nq_cache_ab/` — the four
 NQ cells (`cold-off`, `cold-on`, `warm-off`, `warm-on`) plus their split-A warming
 passes and the uncontended probe. Each JSON carries a `/metrics` snapshot before
-and after the measured pass, including `firnflow_object_store_get_bytes_total` (the
+and after the measured pass, including `hevsearch_object_store_get_bytes_total` (the
 always-on backend byte counter that gives the cache-off arm its 361 GB figure) and
-`firnflow_cache_hits_total` (the result-cache guardrail, 0 in every cell).
+`hevsearch_cache_hits_total` (the result-cache guardrail, 0 in every cell).

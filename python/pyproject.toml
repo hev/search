@@ -3,13 +3,13 @@ requires = ["maturin>=1.7,<2"]
 build-backend = "maturin"
 
 [project]
-name = "firn"
+name = "hevsearch"
 version = "0.1.0"
 description = "Multi-tenant hybrid (vector + full-text) search on object storage, embeddable in-process."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Gordon Murray" }]
+authors = [{ name = "Adam Hevenor" }]
 keywords = ["vector-search", "full-text-search", "hybrid-search", "object-storage", "embeddings"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -22,10 +22,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://firnflow.io"
-Repository = "https://github.com/gordonmurray/firnflow"
+Homepage = "https://hevsearch.com"
+Repository = "https://github.com/gordonmurray/hevsearch"
 
 [tool.maturin]
-module-name = "firn._native"
+module-name = "hevsearch._native"
 python-source = "."
 features = ["pyo3/extension-module"]

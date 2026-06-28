@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Quickstart - Firn</title>
-  <meta name="description" content="Get Firn running with Docker Compose. Insert vectors, run queries, and check your cache metrics.">
+  <title>Quickstart - hev search</title>
+  <meta name="description" content="Get hev search running with Docker Compose. Insert vectors, run queries, and check your cache metrics.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
   <button class="menu-toggle" aria-label="Toggle sidebar">
     <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
   </button>
-  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <a href="index.html" class="logo">hev<span>search</span></a>
   <nav>
     <a href="quickstart.html" class="active">Quickstart</a>
     <a href="api.html">API</a>
@@ -21,7 +21,7 @@
     <a href="architecture.html">Architecture</a>
     <a href="deployment.html">Deploy</a>
     <a href="monitoring.html">Monitoring</a>
-    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+    <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
   </nav>
 </header>
 
@@ -34,7 +34,7 @@
       <a href="deployment.html">Deployment</a>
     </div>
     <div class="sidebar-section">
-      <h4>Using Firn</h4>
+      <h4>Using hev search</h4>
       <a href="api.html">API reference</a>
       <a href="monitoring.html">Monitoring</a>
     </div>
@@ -46,7 +46,7 @@
 
   <main class="content">
     <h1>Quickstart</h1>
-    <p class="subtitle">Get Firn running locally with Docker. The first <code>docker compose up --build</code> compiles the server from source, so give it a few minutes; later starts take seconds.</p>
+    <p class="subtitle">Get hev search running locally with Docker. The first <code>docker compose up --build</code> compiles the server from source, so give it a few minutes; later starts take seconds.</p>
 
     <h2>Prerequisites</h2>
     <ul>
@@ -55,13 +55,13 @@
 
     <div class="callout callout-info">
       <div class="callout-title">Default-open local stack</div>
-      This quickstart talks to a default-open local stack — no <code>Authorization</code> header is required. Before exposing Firn on a network you do not trust, set <code>FIRNFLOW_API_KEY</code> and send <code>Authorization: Bearer &lt;token&gt;</code> with every request. See <a href="deployment.html#authentication-and-rate-limiting">deployment</a> and <a href="configuration.html#authentication">configuration</a> for the full story.
+      This quickstart talks to a default-open local stack — no <code>Authorization</code> header is required. Before exposing hev search on a network you do not trust, set <code>HEVSEARCH_API_KEY</code> and send <code>Authorization: Bearer &lt;token&gt;</code> with every request. See <a href="deployment.html#authentication-and-rate-limiting">deployment</a> and <a href="configuration.html#authentication">configuration</a> for the full story.
     </div>
 
     <h2>1. Clone and start the stack</h2>
-    <p>This launches MinIO (local S3) and the Firn API server together.</p>
-    <pre><code>git clone https://github.com/gordonmurray/firnflow
-cd firnflow
+    <p>This launches MinIO (local S3) and the hev search API server together.</p>
+    <pre><code>git clone https://github.com/gordonmurray/hevsearch
+cd hevsearch
 docker compose up --build</code></pre>
 
     <p>Once you see <code>listening on 0.0.0.0:3000</code>, the API is ready. MinIO is available at <code>localhost:9000</code> (API) and <code>localhost:9001</code> (console, credentials: <code>minioadmin</code> / <code>minioadmin</code>).</p>
@@ -72,7 +72,7 @@ docker compose up --build</code></pre>
     <pre><code>ok</code></pre>
 
     <h2>3. Upsert vectors</h2>
-    <p>Insert a few vectors into the <code>demo</code> namespace. Firn auto-detects the vector dimension from the first upsert.</p>
+    <p>Insert a few vectors into the <code>demo</code> namespace. hev search auto-detects the vector dimension from the first upsert.</p>
     <pre><code>curl -X POST http://localhost:3000/ns/demo/upsert \
   -H 'Content-Type: application/json' \
   -d '{
@@ -161,22 +161,22 @@ curl -X POST http://localhost:3000/ns/articles/fts-index</code></pre>
   }'</code></pre>
 
     <h2>7. Check the metrics</h2>
-    <p>See exactly how many object-storage requests Firn has saved you.</p>
-    <pre><code>curl -s http://localhost:3000/metrics | grep firnflow</code></pre>
+    <p>See exactly how many object-storage requests hev search has saved you.</p>
+    <pre><code>curl -s http://localhost:3000/metrics | grep hevsearch</code></pre>
     <p>Key metric families to look for:</p>
-    <pre><code>firnflow_cache_hits_total{namespace="demo"} ...
-firnflow_cache_misses_total{namespace="demo"} ...
-firnflow_semantic_cache_hits_total{namespace="demo"} ...
-firnflow_s3_requests_total{namespace="demo",operation="query"} ...
-firnflow_active_namespaces ...
-firnflow_cached_handles ...</code></pre>
-    <p>The exact cache miss count increments when a query misses the RAM/NVMe result cache. If semantic caching hits after that, <code>firnflow_semantic_cache_hits_total</code> increments and <code>firnflow_s3_requests_total{operation="query"}</code> does not. <code>firnflow_cached_handles</code> tracks namespaces with a warm LanceDB connection in the in-process pool &mdash; the first request to any namespace opens the connection, every later request reuses it.</p>
+    <pre><code>hevsearch_cache_hits_total{namespace="demo"} ...
+hevsearch_cache_misses_total{namespace="demo"} ...
+hevsearch_semantic_cache_hits_total{namespace="demo"} ...
+hevsearch_s3_requests_total{namespace="demo",operation="query"} ...
+hevsearch_active_namespaces ...
+hevsearch_cached_handles ...</code></pre>
+    <p>The exact cache miss count increments when a query misses the RAM/NVMe result cache. If semantic caching hits after that, <code>hevsearch_semantic_cache_hits_total</code> increments and <code>hevsearch_s3_requests_total{operation="query"}</code> does not. <code>hevsearch_cached_handles</code> tracks namespaces with a warm LanceDB connection in the in-process pool &mdash; the first request to any namespace opens the connection, every later request reuses it.</p>
 
     <h2>Next steps</h2>
     <ul>
       <li><a href="api.html">API reference</a> - all nine endpoints with full request and response schemas</li>
       <li><a href="configuration.html">Configuration</a> - tune cache sizes, connect to AWS S3, native GCS, or any other supported object-storage backend</li>
-      <li><a href="deployment.html">Deployment</a> - run Firn in production with Docker or on Kubernetes</li>
+      <li><a href="deployment.html">Deployment</a> - run hev search in production with Docker or on Kubernetes</li>
       <li><a href="monitoring.html">Monitoring</a> - Prometheus metrics, PromQL examples, and alerting rules</li>
     </ul>
 
@@ -184,8 +184,8 @@ firnflow_cached_handles ...</code></pre>
 </div>
 
 <footer class="site-footer">
-  Firn is open source under the Apache 2.0 License.
-  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  hev search is open source under the Apache 2.0 License.
+  <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
 </footer>
 
 <script src="main.js"></script>

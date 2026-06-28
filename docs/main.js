@@ -1,4 +1,4 @@
-/* Firn docs - firnflow.io */
+/* hev search docs - hevsearch.com */
 
 document.addEventListener("DOMContentLoaded", function () {
   // ── Mobile sidebar toggle ──

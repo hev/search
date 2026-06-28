@@ -1,0 +1,38 @@
+[package]
+name = "hevsearch-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "hevsearch axum REST server."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "hevsearch-api"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+tower.workspace = true
+tower_governor.workspace = true
+governor.workspace = true
+subtle.workspace = true
+dashmap.workspace = true
+uuid.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+arrow-ipc.workspace = true
+futures.workspace = true
+tempfile = "3"
+hevsearch-core = { path = "../hevsearch-core" }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,20 @@
+[package]
+name = "hevsearch-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "hevsearch benchmark harness for cold vs warm query latency."
+# Two binaries ship from this crate (the original cold-vs-warm
+# harness at `src/main.rs` and the first-query-profile harness at
+# `src/bin/first_query_profile.rs`); cargo refuses to pick one
+# implicitly so pin the default to preserve the existing
+# `cargo run -p hevsearch-bench` invocation.
+default-run = "hevsearch-bench"
+
+[dependencies]
+hevsearch-core = { path = "../hevsearch-core" }
+tokio.workspace = true
+anyhow.workspace = true
+tempfile = "3"
+bincode.workspace = true

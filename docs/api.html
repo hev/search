@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>API Reference - Firn</title>
-  <meta name="description" content="Complete REST API reference for Firn. All endpoints, request and response schemas, status codes, and curl examples.">
+  <title>API Reference - hev search</title>
+  <meta name="description" content="Complete REST API reference for hev search. All endpoints, request and response schemas, status codes, and curl examples.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
   <button class="menu-toggle" aria-label="Toggle sidebar">
     <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
   </button>
-  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <a href="index.html" class="logo">hev<span>search</span></a>
   <nav>
     <a href="quickstart.html">Quickstart</a>
     <a href="api.html" class="active">API</a>
@@ -21,7 +21,7 @@
     <a href="architecture.html">Architecture</a>
     <a href="deployment.html">Deploy</a>
     <a href="monitoring.html">Monitoring</a>
-    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+    <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
   </nav>
 </header>
 
@@ -34,7 +34,7 @@
       <a href="deployment.html">Deployment</a>
     </div>
     <div class="sidebar-section">
-      <h4>Using Firn</h4>
+      <h4>Using hev search</h4>
       <a href="api.html" class="active">API reference</a>
       <a href="monitoring.html">Monitoring</a>
     </div>
@@ -49,27 +49,27 @@
     <p class="subtitle">All request and response bodies are JSON. The base URL defaults to <code>http://localhost:3000</code>.</p>
 
     <h2>Authentication</h2>
-    <p>When <code>FIRNFLOW_API_KEY</code> is configured, every protected endpoint requires <code>Authorization: Bearer &lt;token&gt;</code>. Two tiers exist:</p>
+    <p>When <code>HEVSEARCH_API_KEY</code> is configured, every protected endpoint requires <code>Authorization: Bearer &lt;token&gt;</code>. Two tiers exist:</p>
     <ul>
-      <li><strong>Read/write</strong> (<code>FIRNFLOW_API_KEY</code>) — <code>upsert</code>, <code>query</code>, <code>list</code>, <code>warmup</code>, <code>GET /ns/{namespace}</code>, and <code>GET /operations/{id}</code>.</li>
-      <li><strong>Admin</strong> (<code>FIRNFLOW_ADMIN_API_KEY</code>) — <code>delete</code>, <code>index</code>, <code>fts-index</code>, <code>scalar-index</code>, <code>compact</code>. The admin key also satisfies read/write routes. If no admin key is configured, the read/write key authorises admin routes too (single-key fallback).</li>
+      <li><strong>Read/write</strong> (<code>HEVSEARCH_API_KEY</code>) — <code>upsert</code>, <code>query</code>, <code>list</code>, <code>warmup</code>, <code>GET /ns/{namespace}</code>, and <code>GET /operations/{id}</code>.</li>
+      <li><strong>Admin</strong> (<code>HEVSEARCH_ADMIN_API_KEY</code>) — <code>delete</code>, <code>index</code>, <code>fts-index</code>, <code>scalar-index</code>, <code>compact</code>. The admin key also satisfies read/write routes. If no admin key is configured, the read/write key authorises admin routes too (single-key fallback).</li>
     </ul>
-    <p><code>/health</code> is always public. <code>/metrics</code> is public unless <code>FIRNFLOW_METRICS_TOKEN</code> is set, in which case the same Bearer header is required. Token comparisons are constant-time (<code>subtle::ConstantTimeEq</code>). See <a href="configuration.html#authentication">configuration</a> for the full env-var list, including the optional <code>FIRNFLOW_RATE_LIMIT_RPS</code> / <code>FIRNFLOW_PREAUTH_IP_LIMIT_RPS</code> rate-limit knobs.</p>
+    <p><code>/health</code> is always public. <code>/metrics</code> is public unless <code>HEVSEARCH_METRICS_TOKEN</code> is set, in which case the same Bearer header is required. Token comparisons are constant-time (<code>subtle::ConstantTimeEq</code>). See <a href="configuration.html#authentication">configuration</a> for the full env-var list, including the optional <code>HEVSEARCH_RATE_LIMIT_RPS</code> / <code>HEVSEARCH_PREAUTH_IP_LIMIT_RPS</code> rate-limit knobs.</p>
     <p>Rejection responses on protected endpoints:</p>
     <ul>
-      <li><code>401 Unauthorized</code> — header missing, malformed, or token unknown. Includes <code>WWW-Authenticate: Bearer realm="firnflow"</code>.</li>
+      <li><code>401 Unauthorized</code> — header missing, malformed, or token unknown. Includes <code>WWW-Authenticate: Bearer realm="hevsearch"</code>.</li>
       <li><code>403 Forbidden</code> — valid token but the route requires admin scope and only the read/write key was presented.</li>
       <li><code>429 Too Many Requests</code> — rejected by either rate limiter; includes <code>Retry-After</code> seconds.</li>
     </ul>
     <div class="callout callout-warning">
       <div class="callout-title">Service-level only</div>
-      A token authorises operations against the firnflow process, not against a specific namespace. Per-tenant namespace isolation requires an authenticating gateway in front of Firn.
+      A token authorises operations against the hevsearch process, not against a specific namespace. Per-tenant namespace isolation requires an authenticating gateway in front of hev search.
     </div>
 
     <h2>Namespaces</h2>
-    <p>Every data operation is scoped to a namespace. Namespace names must be lowercase alphanumeric with hyphens, and no longer than 64 characters. Each namespace maps to an isolated object-storage prefix under the configured <code>FIRNFLOW_STORAGE_URI</code> &mdash; for example <code>s3://bucket/namespace/</code> or <code>gs://bucket/tenants/acme/namespace/</code>.</p>
+    <p>Every data operation is scoped to a namespace. Namespace names must be lowercase alphanumeric with hyphens, and no longer than 64 characters. Each namespace maps to an isolated object-storage prefix under the configured <code>HEVSEARCH_STORAGE_URI</code> &mdash; for example <code>s3://bucket/namespace/</code> or <code>gs://bucket/tenants/acme/namespace/</code>.</p>
     <p>Valid: <code>my-project</code>, <code>embeddings-v2</code>, <code>prod-search</code>.<br>
-    Invalid: <code>My_Project</code> (uppercase and underscores), <code>a-very-long-name-that-exceeds-the-sixty-four-character-limit-imposed-by-firn</code>.</p>
+    Invalid: <code>My_Project</code> (uppercase and underscores), <code>a-very-long-name-that-exceeds-the-sixty-four-character-limit-imposed-by-hevsearch</code>.</p>
 
     <h2>Endpoints</h2>
 
@@ -185,7 +185,7 @@
         <span class="endpoint-desc">Bulk-ingest an Arrow IPC stream (binary, insert-only, async)</span>
       </div>
       <div class="endpoint-body">
-        <p>The bulk first-load path. The body is an <a href="https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format">Arrow IPC stream</a>, not JSON: binary and columnar, so embeddings avoid JSON's ~3x decimal-text inflation, and the route is not bound by <code>FIRNFLOW_MAX_BODY_BYTES</code> (a whole corpus can stream in one request). The entire stream is appended in a <strong>single Lance commit</strong>, which is what keeps throughput flat on a large load where many small <code>/upsert</code> commits would not.</p>
+        <p>The bulk first-load path. The body is an <a href="https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format">Arrow IPC stream</a>, not JSON: binary and columnar, so embeddings avoid JSON's ~3x decimal-text inflation, and the route is not bound by <code>HEVSEARCH_MAX_BODY_BYTES</code> (a whole corpus can stream in one request). The entire stream is appended in a <strong>single Lance commit</strong>, which is what keeps throughput flat on a large load where many small <code>/upsert</code> commits would not.</p>
         <p><strong>Insert-only.</strong> Rows are appended, not merged: a repeated <code>id</code> creates a second row. Use <code>/import</code> for first-loads or known-new ids, and <code>/upsert</code> for idempotent updates. Build indexes <em>after</em> the load (see the README "Loading data at scale" recipe).</p>
 
         <h4>Request</h4>
@@ -206,7 +206,7 @@
   "namespace": "demo",
   "status": "running"
 }</code></pre>
-        <p>Poll <code>GET /operations/{operation_id}</code> for completion. Tuning: <code>FIRNFLOW_IMPORT_MAX_BYTES</code> caps a single import body spooled to disk (default 8 GiB; <code>0</code> disables, returns <code>413</code> when exceeded), and <code>FIRNFLOW_IMPORT_TMP_DIR</code> sets the spool directory.</p>
+        <p>Poll <code>GET /operations/{operation_id}</code> for completion. Tuning: <code>HEVSEARCH_IMPORT_MAX_BYTES</code> caps a single import body spooled to disk (default 8 GiB; <code>0</code> disables, returns <code>413</code> when exceeded), and <code>HEVSEARCH_IMPORT_TMP_DIR</code> sets the spool directory.</p>
 
         <h4>Example</h4>
         <pre><code># write an Arrow IPC stream file (e.g. with pyarrow's RecordBatchStreamWriter), then:
@@ -217,7 +217,7 @@ curl -X POST http://localhost:3000/ns/demo/import \
         <h4>Errors</h4>
         <ul>
           <li><code>400</code> — body is not a valid Arrow IPC stream, or the schema is missing/extra/mistyped (see Request)</li>
-          <li><code>413</code> — body exceeds <code>FIRNFLOW_IMPORT_MAX_BYTES</code></li>
+          <li><code>413</code> — body exceeds <code>HEVSEARCH_IMPORT_MAX_BYTES</code></li>
           <li><code>415</code> — wrong <code>Content-Type</code></li>
         </ul>
       </div>
@@ -275,7 +275,7 @@ curl -X POST http://localhost:3000/ns/demo/import \
           <li><strong>The <code>semantic_cache</code> block does not change the exact-cache key.</strong> Toggling <code>enabled</code> on and off does not split otherwise-identical entries.</li>
           <li><strong>k, nprobes, and include_vector must match</strong> between the incoming request and the cached candidate; mismatches are skipped. A vector-light cached result is never used to answer a request that wants vectors back, or vice versa.</li>
           <li><strong>Any committed change drops the semantic layer</strong> alongside the exact cache: writes, deletes, compactions, and index builds. An index build invalidates too, because it is a Lance commit that advances the table version the cache keys on, even though the rows are unchanged.</li>
-          <li><strong>Behaviour is observable</strong> via three Prometheus counters: <code>firnflow_semantic_cache_hits_total{namespace}</code>, <code>firnflow_semantic_cache_misses_total{namespace}</code>, and <code>firnflow_semantic_cache_rejections_total{namespace, reason}</code> (with bounded reason labels: <code>unsupported_query_shape</code>, <code>empty_index</code>).</li>
+          <li><strong>Behaviour is observable</strong> via three Prometheus counters: <code>hevsearch_semantic_cache_hits_total{namespace}</code>, <code>hevsearch_semantic_cache_misses_total{namespace}</code>, and <code>hevsearch_semantic_cache_rejections_total{namespace, reason}</code> (with bounded reason labels: <code>unsupported_query_shape</code>, <code>empty_index</code>).</li>
         </ul>
         <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
   -H 'Content-Type: application/json' \
@@ -540,7 +540,7 @@ curl -X POST http://localhost:3000/ns/demo/import \
 
         <div class="callout callout-info">
           <div class="callout-title">Monitoring warmup progress</div>
-          Watch the <code>firnflow_cache_misses_total</code> metric to track how many warmup queries have completed. For semantic warmup, also watch <code>firnflow_semantic_cache_rejections_total{reason="empty_index"}</code> at startup and <code>firnflow_semantic_cache_hits_total</code> once near-duplicate traffic starts. Failures inside the background task are logged server-side but do not affect the HTTP response.
+          Watch the <code>hevsearch_cache_misses_total</code> metric to track how many warmup queries have completed. For semantic warmup, also watch <code>hevsearch_semantic_cache_rejections_total{reason="empty_index"}</code> at startup and <code>hevsearch_semantic_cache_hits_total</code> once near-duplicate traffic starts. Failures inside the background task are logged server-side but do not affect the HTTP response.
         </div>
       </div>
     </div>
@@ -581,7 +581,7 @@ curl -X POST http://localhost:3000/ns/demo/import \
 
         <div class="callout callout-warning">
           <div class="callout-title">Index build time</div>
-          Index builds can take minutes for large datasets (147s for 100k vectors at dim=1536 on MinIO). Monitor <code>firnflow_index_build_duration_seconds</code> to track completion. Queries against the namespace continue to work during the build using linear scan.
+          Index builds can take minutes for large datasets (147s for 100k vectors at dim=1536 on MinIO). Monitor <code>hevsearch_index_build_duration_seconds</code> to track completion. Queries against the namespace continue to work during the build using linear scan.
         </div>
       </div>
     </div>
@@ -648,7 +648,7 @@ curl -X POST http://localhost:3000/ns/demo/scalar-index \
 
         <div class="callout callout-info">
           <div class="callout-title">Idempotent and self-maintaining</div>
-          Repeat calls rebuild the index in place. <code>POST /compact</code> incrementally absorbs new rows into the existing BTree, so a separate rebuild is not needed after compaction. Operators monitor <code>firnflow_index_build_duration_seconds{kind="scalar"}</code> for completion.
+          Repeat calls rebuild the index in place. <code>POST /compact</code> incrementally absorbs new rows into the existing BTree, so a separate rebuild is not needed after compaction. Operators monitor <code>hevsearch_index_build_duration_seconds{kind="scalar"}</code> for completion.
         </div>
       </div>
     </div>
@@ -771,8 +771,8 @@ curl -X POST http://localhost:3000/ns/demo/scalar-index \
 </div>
 
 <footer class="site-footer">
-  Firn is open source under the Apache 2.0 License.
-  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  hev search is open source under the Apache 2.0 License.
+  <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
 </footer>
 
 <script src="main.js"></script>

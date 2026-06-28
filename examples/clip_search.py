@@ -1,7 +1,7 @@
-"""firn + OpenCLIP photo search on Tigris.
+"""hevsearch + OpenCLIP photo search on Tigris.
 
 Embeds a few sample photos with OpenCLIP, stores the image embeddings in
-firn (whose tables live on Tigris) and the photo bytes as Tigris objects,
+hevsearch (whose tables live on Tigris) and the photo bytes as Tigris objects,
 then searches by text and by image.
 
 CLIP puts images and text in the same vector space, so a text query like
@@ -15,14 +15,14 @@ import io
 import os
 
 import boto3
-import firn
+import hevsearch
 import open_clip
 import torch
 from PIL import Image
 from skimage import data
 
 ENDPOINT = "https://t3.storage.dev"
-BUCKET = os.environ.get("TIGRIS_BUCKET", "firn-tigris-bucket")
+BUCKET = os.environ.get("TIGRIS_BUCKET", "hevsearch-tigris-bucket")
 AK = os.environ["TIGRIS_ACCESS_KEY"]
 SK = os.environ["TIGRIS_SECRET_KEY"]
 PREFIX = "clip-demo/photos/"
@@ -70,8 +70,8 @@ s3 = boto3.client(
     aws_secret_access_key=SK,
 )
 
-# firn, with its search index living on Tigris too.
-db = firn.connect(
+# hevsearch, with its search index living on Tigris too.
+db = hevsearch.connect(
     storage_url=f"s3://{BUCKET}/clip-demo",
     endpoint=ENDPOINT,
     region="auto",
@@ -79,7 +79,7 @@ db = firn.connect(
     secret_key=SK,
 )
 
-# --- ingest: photo bytes -> Tigris objects, embeddings -> firn ---
+# --- ingest: photo bytes -> Tigris objects, embeddings -> hevsearch ---
 images = {}
 docs = []
 for i, (name, arr) in enumerate(SAMPLES.items(), start=1):
@@ -92,7 +92,7 @@ for i, (name, arr) in enumerate(SAMPLES.items(), start=1):
     s3.upload_fileobj(buf, BUCKET, key)
     docs.append({"id": i, "vector": embed_image(img), "text": key})
 db.add(docs)
-print(f"ingested {len(docs)} photos -> Tigris ({BUCKET}/{PREFIX}) + firn\n")
+print(f"ingested {len(docs)} photos -> Tigris ({BUCKET}/{PREFIX}) + hevsearch\n")
 
 # --- search by text (lower distance = closer match) ---
 print("text -> image search:")

@@ -1,7 +1,7 @@
 # Cold vs warm query latency — initial baseline
 
 - **Date**: 2026-04-11
-- **Harness**: `./scripts/cargo run --release -p firnflow-bench`
+- **Harness**: `./scripts/cargo run --release -p hevsearch-bench`
 - **Backend**: MinIO
 - **Config**: dim=32, rows=100, queries=50
 - **Upsert phase**: completed in 33 ms
@@ -19,15 +19,15 @@
 
 | metric                                             | value |
 | -------------------------------------------------- | ----: |
-| `firnflow_cache_misses_total`                    | 50 |
-| `firnflow_cache_hits_total`                      | 50 |
-| `firnflow_s3_requests_total{operation=upsert}` | 1 |
-| `firnflow_s3_requests_total{operation=query}`  | 50 |
+| `hevsearch_cache_misses_total`                    | 50 |
+| `hevsearch_cache_hits_total`                      | 50 |
+| `hevsearch_s3_requests_total{operation=upsert}` | 1 |
+| `hevsearch_s3_requests_total{operation=query}`  | 50 |
 
 The load-bearing observation: **50 query-kind S3 requests for 50 cold queries, then 0 additional for 50 warm queries.** Every warm query was served from foyer without touching the backend, which is the whole reason the cache exists.
 
 ## Notes
 
-- `s3_requests_total` counts firnflow-initiated S3-bound *operations* at the service boundary, not raw HTTP requests to S3 — see the help text on the metric for the approximation caveat.
+- `s3_requests_total` counts hevsearch-initiated S3-bound *operations* at the service boundary, not raw HTTP requests to S3 — see the help text on the metric for the approximation caveat.
 - Each run starts cold: the bench uses a fresh `tempfile::tempdir` for the foyer NVMe tier and a fresh namespace timestamp so nothing is reused between runs.
 - The vector dimension here (32) is deliberately smaller than the 1536 used in the serialisation benchmark so the run completes in seconds against MinIO over the `--network host` loopback. Bump it for production-representative numbers.

@@ -1,14 +1,14 @@
-"""firn quickstart: local, no infrastructure.
+"""hevsearch quickstart: local, no infrastructure.
 
 Each row carries a vector (your embedding) plus optional text. Search by
 vector (nearest-neighbour), by text (BM25 full-text), or both at once
 (hybrid). The full-text index is built on the first text search.
 """
 
-import firn
+import hevsearch
 
-# No server, no infrastructure: writes to ./firn_data_demo locally.
-db = firn.connect("./firn_data_demo")
+# No server, no infrastructure: writes to ./hevsearch_data_demo locally.
+db = hevsearch.connect("./hevsearch_data_demo")
 
 # Bring your own vectors. Tiny 4-dim toy vectors here, each with text.
 db.add(

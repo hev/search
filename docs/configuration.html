@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Configuration - Firn</title>
-  <meta name="description" content="All environment variables for configuring Firn: object-storage backends (S3-family and native GCS), cache sizing, bind address, and logging.">
+  <title>Configuration - hev search</title>
+  <meta name="description" content="All environment variables for configuring hev search: object-storage backends (S3-family and native GCS), cache sizing, bind address, and logging.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
   <button class="menu-toggle" aria-label="Toggle sidebar">
     <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
   </button>
-  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <a href="index.html" class="logo">hev<span>search</span></a>
   <nav>
     <a href="quickstart.html">Quickstart</a>
     <a href="api.html">API</a>
@@ -21,7 +21,7 @@
     <a href="architecture.html">Architecture</a>
     <a href="deployment.html">Deploy</a>
     <a href="monitoring.html">Monitoring</a>
-    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+    <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
   </nav>
 </header>
 
@@ -34,7 +34,7 @@
       <a href="deployment.html">Deployment</a>
     </div>
     <div class="sidebar-section">
-      <h4>Using Firn</h4>
+      <h4>Using hev search</h4>
       <a href="api.html">API reference</a>
       <a href="monitoring.html">Monitoring</a>
     </div>
@@ -46,7 +46,7 @@
 
   <main class="content">
     <h1>Configuration</h1>
-    <p class="subtitle">Firn is configured entirely through environment variables. Either <code>FIRNFLOW_STORAGE_URI</code> (preferred) or the legacy <code>FIRNFLOW_S3_BUCKET</code> is required; everything else has a sensible default.</p>
+    <p class="subtitle">hev search is configured entirely through environment variables. Either <code>HEVSEARCH_STORAGE_URI</code> (preferred) or the legacy <code>HEVSEARCH_S3_BUCKET</code> is required; everything else has a sensible default.</p>
 
     <h2>Core settings</h2>
 
@@ -54,67 +54,67 @@
       <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>FIRNFLOW_STORAGE_URI</code></td>
-          <td><em>required (or set <code>FIRNFLOW_S3_BUCKET</code>)</em></td>
+          <td><code>HEVSEARCH_STORAGE_URI</code></td>
+          <td><em>required (or set <code>HEVSEARCH_S3_BUCKET</code>)</em></td>
           <td>Object-storage root that every namespace lives under. Accepts a URI of the form <code>scheme://bucket[/prefix...]</code> where scheme is <code>s3</code> (any S3-compatible backend) or <code>gs</code> (native Google Cloud Storage). Namespace tables live at <code>{root}/{namespace}/</code>. Multi-segment prefixes are supported, e.g. <code>s3://shared-bucket/tenants/acme/prod</code> or <code>gs://shared-bucket/tenants/acme/prod</code>.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_S3_BUCKET</code></td>
+          <td><code>HEVSEARCH_S3_BUCKET</code></td>
           <td><em>legacy fallback</em></td>
-          <td>Legacy S3-only form. Equivalent to <code>FIRNFLOW_STORAGE_URI=s3://&lt;bucket&gt;</code>. Both vars remain supported; if both are set they must agree, or startup fails.</td>
+          <td>Legacy S3-only form. Equivalent to <code>HEVSEARCH_STORAGE_URI=s3://&lt;bucket&gt;</code>. Both vars remain supported; if both are set they must agree, or startup fails.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_BIND</code></td>
+          <td><code>HEVSEARCH_BIND</code></td>
           <td><code>0.0.0.0:3000</code></td>
           <td>Address and port for the HTTP listener. Use <code>127.0.0.1:3000</code> to restrict to localhost.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_MAX_BODY_BYTES</code></td>
+          <td><code>HEVSEARCH_MAX_BODY_BYTES</code></td>
           <td><code>16777216</code> (16 MB)</td>
           <td>Maximum request body size for every JSON endpoint. Raise this when upserting large batches (multivector workloads in particular hit the ceiling fast, around 2 MB per row at 512 sub-vectors of dimension 128). Lower it to tighten the DoS surface in front of a trusted client.</td>
         </tr>
         <tr>
           <td><code>RUST_LOG</code></td>
           <td><code>info</code></td>
-          <td>Log level filter. Supports <code>tracing</code> directives like <code>firnflow_api=debug,firnflow_core=trace</code>.</td>
+          <td>Log level filter. Supports <code>tracing</code> directives like <code>hevsearch_api=debug,hevsearch_core=trace</code>.</td>
         </tr>
       </tbody>
     </table>
 
     <h2>Object storage backend</h2>
-    <p>For S3-family backends, the <code>FIRNFLOW_S3_*</code> variables below configure the endpoint and credentials. For native Google Cloud Storage, set <code>FIRNFLOW_STORAGE_URI=gs://&lt;bucket&gt;</code> and one of the standard <code>GOOGLE_*</code> credential variables — no other firnflow-specific configuration is required.</p>
+    <p>For S3-family backends, the <code>HEVSEARCH_S3_*</code> variables below configure the endpoint and credentials. For native Google Cloud Storage, set <code>HEVSEARCH_STORAGE_URI=gs://&lt;bucket&gt;</code> and one of the standard <code>GOOGLE_*</code> credential variables — no other hevsearch-specific configuration is required.</p>
 
     <h3>S3-family variables</h3>
-    <p>For real AWS S3, you typically only need <code>FIRNFLOW_STORAGE_URI</code>. Credentials come from the standard AWS chain (instance profile, environment, <code>~/.aws/credentials</code>), and the region follows <code>AWS_REGION</code> / <code>AWS_DEFAULT_REGION</code> if you do not set <code>FIRNFLOW_S3_REGION</code> explicitly.</p>
+    <p>For real AWS S3, you typically only need <code>HEVSEARCH_STORAGE_URI</code>. Credentials come from the standard AWS chain (instance profile, environment, <code>~/.aws/credentials</code>), and the region follows <code>AWS_REGION</code> / <code>AWS_DEFAULT_REGION</code> if you do not set <code>HEVSEARCH_S3_REGION</code> explicitly.</p>
 
     <table>
       <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>FIRNFLOW_S3_ENDPOINT</code></td>
+          <td><code>HEVSEARCH_S3_ENDPOINT</code></td>
           <td><em>unset (use AWS)</em></td>
-          <td>Custom S3 endpoint URL. Set this for MinIO, R2, Tigris, DigitalOcean Spaces, or any S3-compatible backend. When set, path-style addressing and plain HTTP are automatically enabled. Not used for native GCS — set <code>FIRNFLOW_STORAGE_URI=gs://...</code> instead.</td>
+          <td>Custom S3 endpoint URL. Set this for MinIO, R2, Tigris, DigitalOcean Spaces, or any S3-compatible backend. When set, path-style addressing and plain HTTP are automatically enabled. Not used for native GCS — set <code>HEVSEARCH_STORAGE_URI=gs://...</code> instead.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_S3_ACCESS_KEY</code></td>
+          <td><code>HEVSEARCH_S3_ACCESS_KEY</code></td>
           <td><em>unset</em></td>
           <td>S3 access key ID. Falls back to the standard AWS credential chain if not set.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_S3_SECRET_KEY</code></td>
+          <td><code>HEVSEARCH_S3_SECRET_KEY</code></td>
           <td><em>unset</em></td>
           <td>S3 secret access key. Falls back to the standard AWS credential chain if not set.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_S3_REGION</code></td>
+          <td><code>HEVSEARCH_S3_REGION</code></td>
           <td><code>AWS_REGION</code> / <code>AWS_DEFAULT_REGION</code>, else <code>us-east-1</code></td>
-          <td>Region for the bucket. If unset, Firn falls back to the standard <code>AWS_REGION</code>, then <code>AWS_DEFAULT_REGION</code>, then <code>us-east-1</code>. Set it to pin the region explicitly. Some S3-compatible providers (R2, Tigris) accept <code>auto</code>. A region that does not match the bucket fails the request on backends that enforce region (real AWS S3); MinIO and most emulators ignore it.</td>
+          <td>Region for the bucket. If unset, hev search falls back to the standard <code>AWS_REGION</code>, then <code>AWS_DEFAULT_REGION</code>, then <code>us-east-1</code>. Set it to pin the region explicitly. Some S3-compatible providers (R2, Tigris) accept <code>auto</code>. A region that does not match the bucket fails the request on backends that enforce region (real AWS S3); MinIO and most emulators ignore it.</td>
         </tr>
       </tbody>
     </table>
 
     <h3>Google Cloud Storage variables</h3>
-    <p>Native GCS routing uses lancedb's <code>gcs</code> feature and the matching <code>object_store::gcp</code> client. Both authenticate from the standard Google environment variables; firnflow forwards them unmodified.</p>
+    <p>Native GCS routing uses lancedb's <code>gcs</code> feature and the matching <code>object_store::gcp</code> client. Both authenticate from the standard Google environment variables; hevsearch forwards them unmodified.</p>
 
     <table>
       <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
@@ -139,45 +139,45 @@
 
     <h3>AWS S3</h3>
     <p>For production AWS deployments, let the standard credential chain handle authentication (instance profiles, ECS task roles, or <code>~/.aws/credentials</code>).</p>
-    <pre><code>FIRNFLOW_STORAGE_URI=s3://my-firn-bucket
-FIRNFLOW_S3_REGION=eu-west-1</code></pre>
+    <pre><code>HEVSEARCH_STORAGE_URI=s3://my-hevsearch-bucket
+HEVSEARCH_S3_REGION=eu-west-1</code></pre>
 
     <h3>MinIO</h3>
-    <pre><code>FIRNFLOW_STORAGE_URI=s3://firnflow
-FIRNFLOW_S3_ENDPOINT=http://localhost:9000
-FIRNFLOW_S3_ACCESS_KEY=minioadmin
-FIRNFLOW_S3_SECRET_KEY=minioadmin</code></pre>
+    <pre><code>HEVSEARCH_STORAGE_URI=s3://hevsearch
+HEVSEARCH_S3_ENDPOINT=http://localhost:9000
+HEVSEARCH_S3_ACCESS_KEY=minioadmin
+HEVSEARCH_S3_SECRET_KEY=minioadmin</code></pre>
 
     <h3>Cloudflare R2</h3>
     <p>R2 provides an S3-compatible API. Use your R2 endpoint and API tokens.</p>
-    <pre><code>FIRNFLOW_STORAGE_URI=s3://firn-r2
-FIRNFLOW_S3_ENDPOINT=https://&lt;account-id&gt;.r2.cloudflarestorage.com
-FIRNFLOW_S3_ACCESS_KEY=&lt;r2-access-key&gt;
-FIRNFLOW_S3_SECRET_KEY=&lt;r2-secret-key&gt;
-FIRNFLOW_S3_REGION=auto</code></pre>
+    <pre><code>HEVSEARCH_STORAGE_URI=s3://hevsearch-r2
+HEVSEARCH_S3_ENDPOINT=https://&lt;account-id&gt;.r2.cloudflarestorage.com
+HEVSEARCH_S3_ACCESS_KEY=&lt;r2-access-key&gt;
+HEVSEARCH_S3_SECRET_KEY=&lt;r2-secret-key&gt;
+HEVSEARCH_S3_REGION=auto</code></pre>
 
     <h3>Tigris</h3>
-    <pre><code>FIRNFLOW_STORAGE_URI=s3://firn-tigris
-FIRNFLOW_S3_ENDPOINT=https://t3.storage.dev
-FIRNFLOW_S3_ACCESS_KEY=&lt;tigris-access-key&gt;
-FIRNFLOW_S3_SECRET_KEY=&lt;tigris-secret-key&gt;
-FIRNFLOW_S3_REGION=auto</code></pre>
+    <pre><code>HEVSEARCH_STORAGE_URI=s3://hevsearch-tigris
+HEVSEARCH_S3_ENDPOINT=https://t3.storage.dev
+HEVSEARCH_S3_ACCESS_KEY=&lt;tigris-access-key&gt;
+HEVSEARCH_S3_SECRET_KEY=&lt;tigris-secret-key&gt;
+HEVSEARCH_S3_REGION=auto</code></pre>
 
     <h3>DigitalOcean Spaces</h3>
-    <pre><code>FIRNFLOW_STORAGE_URI=s3://firn-spaces
-FIRNFLOW_S3_ENDPOINT=https://&lt;region&gt;.digitaloceanspaces.com
-FIRNFLOW_S3_ACCESS_KEY=&lt;spaces-access-key&gt;
-FIRNFLOW_S3_SECRET_KEY=&lt;spaces-secret-key&gt;
-FIRNFLOW_S3_REGION=&lt;region&gt;</code></pre>
+    <pre><code>HEVSEARCH_STORAGE_URI=s3://hevsearch-spaces
+HEVSEARCH_S3_ENDPOINT=https://&lt;region&gt;.digitaloceanspaces.com
+HEVSEARCH_S3_ACCESS_KEY=&lt;spaces-access-key&gt;
+HEVSEARCH_S3_SECRET_KEY=&lt;spaces-secret-key&gt;
+HEVSEARCH_S3_REGION=&lt;region&gt;</code></pre>
 
     <h3>Google Cloud Storage (native)</h3>
     <p>Use the <code>gs://</code> scheme. The GCS S3-interop endpoint is a separate path that silently drops <code>If-None-Match: *</code> and is not supported — do not reach for it.</p>
-    <pre><code>FIRNFLOW_STORAGE_URI=gs://my-firn-bucket
-GOOGLE_APPLICATION_CREDENTIALS=/etc/firnflow/gcp-sa.json</code></pre>
+    <pre><code>HEVSEARCH_STORAGE_URI=gs://my-hevsearch-bucket
+GOOGLE_APPLICATION_CREDENTIALS=/etc/hevsearch/gcp-sa.json</code></pre>
 
     <div class="callout callout-info">
       <div class="callout-title">Provider validation</div>
-      Firn is validated against <strong>AWS S3</strong>, <strong>MinIO</strong>, <strong>Cloudflare R2</strong>, <strong>Tigris</strong>, <strong>DigitalOcean Spaces</strong>, and <strong>native Google Cloud Storage</strong> with 100-run concurrent-writer stress tests. <strong>Backblaze B2</strong> and the GCS S3-interop endpoint are not supported. See the compatibility matrix in the <a href="https://github.com/gordonmurray/firnflow#storage-backends">project README</a> for the per-provider details.
+      hev search is validated against <strong>AWS S3</strong>, <strong>MinIO</strong>, <strong>Cloudflare R2</strong>, <strong>Tigris</strong>, <strong>DigitalOcean Spaces</strong>, and <strong>native Google Cloud Storage</strong> with 100-run concurrent-writer stress tests. <strong>Backblaze B2</strong> and the GCS S3-interop endpoint are not supported. See the compatibility matrix in the <a href="https://github.com/gordonmurray/hevsearch#storage-backends">project README</a> for the per-provider details.
     </div>
 
     <h2>Cache settings</h2>
@@ -187,17 +187,17 @@ GOOGLE_APPLICATION_CREDENTIALS=/etc/firnflow/gcp-sa.json</code></pre>
       <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>FIRNFLOW_CACHE_MEMORY_BYTES</code></td>
+          <td><code>HEVSEARCH_CACHE_MEMORY_BYTES</code></td>
           <td><code>67108864</code> (64 MB)</td>
           <td>RAM tier capacity in bytes. This is the L1 cache; hits here are sub-microsecond.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_CACHE_NVME_PATH</code></td>
-          <td><code>/tmp/firnflow-cache</code></td>
-          <td>Directory for the foyer NVMe-tier block file. In production, point this at a fast local SSD. The Docker image defaults to <code>/var/lib/firnflow/cache</code>.</td>
+          <td><code>HEVSEARCH_CACHE_NVME_PATH</code></td>
+          <td><code>/tmp/hevsearch-cache</code></td>
+          <td>Directory for the foyer NVMe-tier block file. In production, point this at a fast local SSD. The Docker image defaults to <code>/var/lib/hevsearch/cache</code>.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_CACHE_NVME_BYTES</code></td>
+          <td><code>HEVSEARCH_CACHE_NVME_BYTES</code></td>
           <td><code>268435456</code> (256 MB)</td>
           <td>NVMe tier capacity in bytes. This is the L2 cache; hits here avoid the object-storage round-trip but are slower than RAM.</td>
         </tr>
@@ -218,7 +218,7 @@ GOOGLE_APPLICATION_CREDENTIALS=/etc/firnflow/gcp-sa.json</code></pre>
 
     <div class="callout callout-info">
       <div class="callout-title">Cache is ephemeral</div>
-      The cache is a performance optimisation, not durable storage. Data in the configured object store is always the source of truth. If the cache is lost (restart, crash, disk failure), Firn repopulates it transparently on the next query.
+      The cache is a performance optimisation, not durable storage. Data in the configured object store is always the source of truth. If the cache is lost (restart, crash, disk failure), hev search repopulates it transparently on the next query.
     </div>
 
     <h2 id="object-cache">Object cache</h2>
@@ -229,22 +229,22 @@ GOOGLE_APPLICATION_CREDENTIALS=/etc/firnflow/gcp-sa.json</code></pre>
       <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>FIRNFLOW_OBJECT_CACHE_ENABLED</code></td>
+          <td><code>HEVSEARCH_OBJECT_CACHE_ENABLED</code></td>
           <td><code>false</code></td>
           <td>Enable the byte-range object cache. When off, every object-storage read goes straight to the backend.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_OBJECT_CACHE_DIR</code></td>
-          <td><code>/tmp/firnflow-object-cache</code></td>
+          <td><code>HEVSEARCH_OBJECT_CACHE_DIR</code></td>
+          <td><code>/tmp/hevsearch-object-cache</code></td>
           <td>Directory for cached object bytes. In production, point this at a fast local SSD/NVMe. Existing files are scanned and counted toward the capacity on startup, so the cache survives a restart within its byte budget.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_OBJECT_CACHE_BYTES</code></td>
+          <td><code>HEVSEARCH_OBJECT_CACHE_BYTES</code></td>
           <td><code>10737418240</code> (10 GB)</td>
           <td>Maximum bytes of cached object data held on disk. When full, least-recently-used entries are evicted. The cap is enforced across restarts (small per-entry size sidecars are negligible additional overhead).</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_OBJECT_CACHE_MAX_ENTRY_BYTES</code></td>
+          <td><code>HEVSEARCH_OBJECT_CACHE_MAX_ENTRY_BYTES</code></td>
           <td><code>268435456</code> (256 MB)</td>
           <td>Largest single read the cache will buffer and store. A read above this is streamed straight through and not cached, so one large fragment read cannot spike memory by its full size. Lower it on memory-constrained hosts; raise it to cache larger fragments whole.</td>
         </tr>
@@ -257,23 +257,23 @@ GOOGLE_APPLICATION_CREDENTIALS=/etc/firnflow/gcp-sa.json</code></pre>
     </div>
 
     <h2>Authentication</h2>
-    <p>Firn supports optional bearer-token authentication. Both keys are opt-in via env: when neither is set, the API stays open and logs a single startup <code>WARN</code> (the default for the local-dev compose stack).</p>
+    <p>hev search supports optional bearer-token authentication. Both keys are opt-in via env: when neither is set, the API stays open and logs a single startup <code>WARN</code> (the default for the local-dev compose stack).</p>
 
     <table>
       <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>FIRNFLOW_API_KEY</code></td>
+          <td><code>HEVSEARCH_API_KEY</code></td>
           <td><em>unset (open)</em></td>
           <td>Read/write tier. Authorises <code>upsert</code>, <code>query</code>, <code>list</code>, and <code>warmup</code>. Send as <code>Authorization: Bearer &lt;token&gt;</code>. Compared in constant time.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_ADMIN_API_KEY</code></td>
+          <td><code>HEVSEARCH_ADMIN_API_KEY</code></td>
           <td><em>unset</em></td>
-          <td>Admin tier. Authorises destructive ops (<code>delete</code>, <code>index</code>, <code>fts-index</code>, <code>scalar-index</code>, <code>compact</code>) <em>and</em> read/write ops. If unset, <code>FIRNFLOW_API_KEY</code> authorises admin routes too (single-key fallback).</td>
+          <td>Admin tier. Authorises destructive ops (<code>delete</code>, <code>index</code>, <code>fts-index</code>, <code>scalar-index</code>, <code>compact</code>) <em>and</em> read/write ops. If unset, <code>HEVSEARCH_API_KEY</code> authorises admin routes too (single-key fallback).</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_METRICS_TOKEN</code></td>
+          <td><code>HEVSEARCH_METRICS_TOKEN</code></td>
           <td><em>unset (open)</em></td>
           <td>Optional gate on <code>/metrics</code>. Same Bearer parser as the data plane, so Prometheus's <code>bearer_token</code> / <code>bearer_token_file</code> scrape config works directly. <code>/metrics</code> stays public when this is unset.</td>
         </tr>
@@ -282,13 +282,13 @@ GOOGLE_APPLICATION_CREDENTIALS=/etc/firnflow/gcp-sa.json</code></pre>
 
     <p>Status codes:</p>
     <ul>
-      <li><code>401 Unauthorized</code> — missing, malformed, or unknown token. Response includes <code>WWW-Authenticate: Bearer realm="firnflow"</code>.</li>
+      <li><code>401 Unauthorized</code> — missing, malformed, or unknown token. Response includes <code>WWW-Authenticate: Bearer realm="hevsearch"</code>.</li>
       <li><code>403 Forbidden</code> — valid token but insufficient scope (write key on an admin route while a separate admin key is configured).</li>
     </ul>
 
     <div class="callout callout-warning">
       <div class="callout-title">Service-level only</div>
-      This authenticates clients to the firnflow process. It does <strong>not</strong> bind a credential to a namespace: any holder of <code>FIRNFLOW_API_KEY</code> can read or write any namespace. For per-tenant namespace isolation, place Firn behind an authenticating gateway that maps tenants to namespaces.
+      This authenticates clients to the hevsearch process. It does <strong>not</strong> bind a credential to a namespace: any holder of <code>HEVSEARCH_API_KEY</code> can read or write any namespace. For per-tenant namespace isolation, place hev search behind an authenticating gateway that maps tenants to namespaces.
     </div>
 
     <h2>Rate limiting</h2>
@@ -298,24 +298,24 @@ GOOGLE_APPLICATION_CREDENTIALS=/etc/firnflow/gcp-sa.json</code></pre>
       <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>FIRNFLOW_RATE_LIMIT_RPS</code></td>
+          <td><code>HEVSEARCH_RATE_LIMIT_RPS</code></td>
           <td><em>unset (disabled)</em></td>
           <td>Sustained requests per second per principal. <code>0</code> or unset disables the per-principal limiter.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_RATE_LIMIT_BURST</code></td>
+          <td><code>HEVSEARCH_RATE_LIMIT_BURST</code></td>
           <td><code>30</code></td>
           <td>Token-bucket burst size. Used by both limiters when active.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_PREAUTH_IP_LIMIT_RPS</code></td>
+          <td><code>HEVSEARCH_PREAUTH_IP_LIMIT_RPS</code></td>
           <td><em>unset (disabled)</em></td>
           <td>Optional pre-auth IP limiter. When set, a coarse limiter wraps the protected sub-router as the outermost layer and caps credential-stuffing throughput per peer IP.</td>
         </tr>
         <tr>
-          <td><code>FIRNFLOW_TRUST_PROXY_HEADERS</code></td>
+          <td><code>HEVSEARCH_TRUST_PROXY_HEADERS</code></td>
           <td><code>false</code></td>
-          <td>When <code>true</code>, the IP extractor reads peer IP from <code>X-Forwarded-For</code> / <code>X-Real-IP</code>. Default reads from the connection only — safe for deployments reachable directly. Enable only when Firn sits behind a trusted proxy that strips the client-supplied header.</td>
+          <td>When <code>true</code>, the IP extractor reads peer IP from <code>X-Forwarded-For</code> / <code>X-Real-IP</code>. Default reads from the connection only — safe for deployments reachable directly. Enable only when hev search sits behind a trusted proxy that strips the client-supplied header.</td>
         </tr>
       </tbody>
     </table>
@@ -326,30 +326,30 @@ GOOGLE_APPLICATION_CREDENTIALS=/etc/firnflow/gcp-sa.json</code></pre>
     <p>To customise settings for local development, create a <code>docker-compose.override.yml</code>:</p>
     <pre><code># docker-compose.override.yml
 services:
-  firnflow:
+  hevsearch:
     environment:
-      FIRNFLOW_CACHE_MEMORY_BYTES: "268435456"   # 256 MB RAM cache
-      FIRNFLOW_CACHE_NVME_BYTES: "1073741824"    # 1 GB NVMe cache
-      RUST_LOG: "firnflow_core=debug,firnflow_api=debug"</code></pre>
+      HEVSEARCH_CACHE_MEMORY_BYTES: "268435456"   # 256 MB RAM cache
+      HEVSEARCH_CACHE_NVME_BYTES: "1073741824"    # 1 GB NVMe cache
+      RUST_LOG: "hevsearch_core=debug,hevsearch_api=debug"</code></pre>
 
     <h2>Full example</h2>
     <p>A complete production configuration against AWS S3:</p>
     <pre><code># Production environment
-FIRNFLOW_STORAGE_URI=s3://prod-firn-vectors
-FIRNFLOW_S3_REGION=eu-west-1
-FIRNFLOW_BIND=0.0.0.0:3000
-FIRNFLOW_MAX_BODY_BYTES=33554432            # 32 MB body limit for larger batches
-FIRNFLOW_CACHE_MEMORY_BYTES=268435456
-FIRNFLOW_CACHE_NVME_PATH=/var/lib/firnflow/cache
-FIRNFLOW_CACHE_NVME_BYTES=10737418240
+HEVSEARCH_STORAGE_URI=s3://prod-hevsearch-vectors
+HEVSEARCH_S3_REGION=eu-west-1
+HEVSEARCH_BIND=0.0.0.0:3000
+HEVSEARCH_MAX_BODY_BYTES=33554432            # 32 MB body limit for larger batches
+HEVSEARCH_CACHE_MEMORY_BYTES=268435456
+HEVSEARCH_CACHE_NVME_PATH=/var/lib/hevsearch/cache
+HEVSEARCH_CACHE_NVME_BYTES=10737418240
 RUST_LOG=info</code></pre>
 
   </main>
 </div>
 
 <footer class="site-footer">
-  Firn is open source under the Apache 2.0 License.
-  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  hev search is open source under the Apache 2.0 License.
+  <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
 </footer>
 
 <script src="main.js"></script>

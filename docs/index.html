@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Firn - Multi-tenant vector search on object storage</title>
+  <title>hev search - Multi-tenant vector search on object storage</title>
   <meta name="description" content="High-performance multi-tenant vector and full-text search engine backed by object storage (AWS S3, MinIO, R2, Tigris, Spaces, native GCS). An open-source alternative to proprietary object-storage-backed search, built with LanceDB and foyer.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body class="page-home">
 
 <header class="site-header">
-  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <a href="index.html" class="logo">hev<span>search</span></a>
   <nav>
     <a href="quickstart.html">Quickstart</a>
     <a href="api.html">API</a>
@@ -18,7 +18,7 @@
     <a href="architecture.html">Architecture</a>
     <a href="deployment.html">Deploy</a>
     <a href="monitoring.html">Monitoring</a>
-    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+    <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
   </nav>
 </header>
 
@@ -32,7 +32,7 @@
       </p>
       <div class="hero-actions">
         <a href="quickstart.html" class="btn btn-primary">Get started</a>
-        <a href="https://github.com/gordonmurray/firnflow" class="btn btn-secondary">View on GitHub</a>
+        <a href="https://github.com/gordonmurray/hevsearch" class="btn btn-secondary">View on GitHub</a>
       </div>
     </div>
 
@@ -57,13 +57,13 @@
 
     <h2>How it works</h2>
     <p>
-      Firn stores every namespace under its own object-storage prefix using <strong>LanceDB</strong> as the storage engine. A tiered cache powered by <strong>foyer</strong> sits in front of the backend, serving repeated queries from RAM or NVMe in microseconds instead of milliseconds. Single-vector queries can also opt into semantic caching, where a near-duplicate query may reuse a previous top-k result when its vector clears your cosine-similarity threshold. Writes automatically invalidate both cache layers for the affected namespace, because the cache key carries the Lance table version and every committed write advances it.
+      hev search stores every namespace under its own object-storage prefix using <strong>LanceDB</strong> as the storage engine. A tiered cache powered by <strong>foyer</strong> sits in front of the backend, serving repeated queries from RAM or NVMe in microseconds instead of milliseconds. Single-vector queries can also opt into semantic caching, where a near-duplicate query may reuse a previous top-k result when its vector clears your cosine-similarity threshold. Writes automatically invalidate both cache layers for the affected namespace, because the cache key carries the Lance table version and every committed write advances it.
     </p>
     <p>
       The result: your data lives cheaply on object storage, but hot and near-duplicate queries can feel local. The <code>/metrics</code> endpoint shows exactly how many backend requests the exact and semantic cache layers are saving you.
     </p>
     <p>
-      New in 0.6.0: native Google Cloud Storage support. Set <code>FIRNFLOW_STORAGE_URI=gs://your-bucket</code> and Firn routes through lancedb's native GCS backend, using the GCS XML API's generation precondition (<code>x-goog-if-generation-match: 0</code>) instead of <code>If-None-Match: *</code>. Validated by the same 100-run Lance concurrent-writer stress that gates every other backend. Switching between AWS S3, MinIO, Cloudflare R2, Tigris, DigitalOcean Spaces, and native GCS is a single env-var change &mdash; see the <a href="https://github.com/gordonmurray/firnflow#backend-configuration">backend configuration recipes</a>.
+      New in 0.6.0: native Google Cloud Storage support. Set <code>HEVSEARCH_STORAGE_URI=gs://your-bucket</code> and hev search routes through lancedb's native GCS backend, using the GCS XML API's generation precondition (<code>x-goog-if-generation-match: 0</code>) instead of <code>If-None-Match: *</code>. Validated by the same 100-run Lance concurrent-writer stress that gates every other backend. Switching between AWS S3, MinIO, Cloudflare R2, Tigris, DigitalOcean Spaces, and native GCS is a single env-var change &mdash; see the <a href="https://github.com/gordonmurray/hevsearch#backend-configuration">backend configuration recipes</a>.
     </p>
     <p>
       Production hardening, new in 0.5.0: optional bearer-token authentication with a read/write and admin scope split, optional <code>tower-governor</code> rate limiting keyed on the validated principal, and an opt-in <code>/metrics</code> token. See <a href="configuration.html#authentication">configuration</a> and <a href="deployment.html#authentication-and-rate-limiting">deployment</a>.
@@ -129,8 +129,8 @@
 </div>
 
 <footer class="site-footer">
-  Firn is open source under the Apache 2.0 License.
-  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  hev search is open source under the Apache 2.0 License.
+  <a href="https://github.com/gordonmurray/hevsearch">GitHub</a>
 </footer>
 
 <script src="main.js"></script>

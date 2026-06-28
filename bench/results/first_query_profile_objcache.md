@@ -8,8 +8,8 @@
 - **Namespace**: `first-query-profile-1m`
 - **Config**: rows=1000000, dim=1536, k=10, nprobes=20, reps=20
 - **Foyer cache**: RAM=16 MB, NVMe=256 MB (fresh tempdir per service build)
-- **Object cache**: ENABLED, dir `/tmp/firn-obj-cache`, budget 10 GiB (persists across reps)
-- **Harness**: `./scripts/cargo run --release -p firnflow-bench --bin first_query_profile`
+- **Object cache**: ENABLED, dir `/tmp/hevsearch-obj-cache`, budget 10 GiB (persists across reps)
+- **Harness**: `./scripts/cargo run --release -p hevsearch-bench --bin first_query_profile`
 
 ## Seed
 
@@ -54,5 +54,5 @@ Cumulative over the whole run (seed + all cases), shared across every service bu
 ## Caveats
 
 - **`cold-process` is a lower bound on a true fresh-process number.** Every repetition runs inside one binary invocation, so the AWS SDK HTTP client pool, TLS sessions, and the Tokio runtime persist across repetitions even though the in-process `NamespaceManager` + cache + service objects are rebuilt each rep. A true fresh-process measurement needs an outer driver that spawns a fresh binary per repetition. The `fresh-process` case runs after every other case so the difference vs `cold-process` is a coarse signal for SDK / connection warmup.
-- **`s3_requests delta` only counts firnflow's service-boundary calls**, not raw `object_store` GETs / range GETs. For real S3 access-log attribution use the namespace prefix above as the path filter (primary) or the start/stop UTC window as a backstop.
+- **`s3_requests delta` only counts hevsearch's service-boundary calls**, not raw `object_store` GETs / range GETs. For real S3 access-log attribution use the namespace prefix above as the path filter (primary) or the start/stop UTC window as a backstop.
 - **`warm-identical` and `warm-novel` bypass the foyer result cache** by calling `NamespaceManager::query` directly. This isolates the LanceDB / index / handle-pool warm-state cost. A foyer hit would otherwise dominate the number and tell us nothing about the underlying object-store path.

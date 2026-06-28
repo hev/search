@@ -1,7 +1,7 @@
 # Cold vs warm query latency — realistic parameters
 
 - **Date**: 2026-04-12
-- **Harness**: `./scripts/cargo run --release -p firnflow-bench`
+- **Harness**: `./scripts/cargo run --release -p hevsearch-bench`
 - **Backend**: MinIO
 - **Config**: dim=1536, rows=100000, queries=50, nprobes=20
 - **Storage**: ~586 MB raw vector data
@@ -42,5 +42,5 @@
 ## Notes
 
 - Each run starts cold: fresh `tempfile::tempdir` for the foyer NVMe tier, fresh namespace timestamps.
-- `s3_requests_total` counts firnflow-initiated operations at the service boundary, not raw HTTP requests to S3.
+- `s3_requests_total` counts hevsearch-initiated operations at the service boundary, not raw HTTP requests to S3.
 - Index build time is the "Index Tax" — paid once, amortised across all subsequent queries.

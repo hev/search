@@ -1,12 +1,12 @@
 # Serialisation benchmark — initial baseline
 
 - **Date**: 2026-04-11
-- **Benchmark**: `crates/firnflow-core/benches/serialisation.rs`
-- **Run**: `./scripts/cargo bench -p firnflow-core --bench serialisation`
+- **Benchmark**: `crates/hevsearch-core/benches/serialisation.rs`
+- **Run**: `./scripts/cargo bench -p hevsearch-core --bench serialisation`
 - **Serialiser**: bincode 2 (serde path) with `config::standard()`
 - **Payload**: `QueryResultSet { query_id, Vec<QueryResult { id, score, vector: Vec<f32; 1536] }> }`
 - **Iterations**: 200 warmup / 2000 samples per phase
-- **Host**: `firnflow-rust-dev:1.94` (rust:1.94-bookworm) under `./scripts/cargo bench` (release profile)
+- **Host**: `hevsearch-rust-dev:1.94` (rust:1.94-bookworm) under `./scripts/cargo bench` (release profile)
 
 ## Raw numbers
 

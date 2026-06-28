@@ -1,0 +1,206 @@
+//! Axum application state.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::Context;
+use hevsearch_core::cache::NamespaceCache;
+use hevsearch_core::{CoreMetrics, NamespaceManager, NamespaceService};
+
+use crate::auth::{AuthConfig, AuthState};
+use crate::config::AppConfig;
+use crate::operations::OperationRegistry;
+use crate::rate_limit::RateLimitSettings;
+
+/// Shared state every handler receives via `axum::extract::State`.
+///
+/// Derives `Clone` because axum clones the state per-request to
+/// hand it to extractors. Everything inside is already `Arc`-wrapped
+/// so the clone is cheap.
+#[derive(Clone)]
+pub struct AppState {
+    /// Service facade combining the cache and the namespace manager.
+    /// Every cached read/write path goes through this.
+    pub service: Arc<NamespaceService>,
+    /// Direct manager handle for the one endpoint that intentionally
+    /// bypasses the foyer cache (the `/list` path). Shares its
+    /// underlying `NamespaceManager` with `service`; holding a
+    /// separate `Arc` makes the architectural split explicit.
+    pub manager: Arc<NamespaceManager>,
+    /// Shared metrics registry; the `/metrics` handler encodes
+    /// this into the Prometheus text format.
+    pub metrics: Arc<CoreMetrics>,
+    /// Registry of in-flight and recently-finished background
+    /// operations (index builds, compaction, warmup). Backs the
+    /// `GET /operations/{id}` status endpoint.
+    pub operations: Arc<OperationRegistry>,
+    /// Auth + rate-limit configuration. `Arc` so middleware closures
+    /// can share it without cloning the inner `Secret`s. Tests
+    /// construct `AuthConfig::disabled()` (default-open) via
+    /// [`AppState::new_with_defaults`] / the `tests/common` helper.
+    pub auth: Arc<AuthConfig>,
+    /// Rate-limit knobs separate from `auth` so the router can
+    /// build governor layers without needing to mutate `auth`.
+    pub rate_limit: RateLimitSettings,
+    /// Maximum request body size in bytes. The router reads this
+    /// once at build time and installs a single global
+    /// `DefaultBodyLimit` layer; it is not consulted per request.
+    pub max_body_bytes: usize,
+    /// Cap on a single `/import` Arrow body (spooled to disk). `0`
+    /// disables the cap; otherwise the handler returns `413` once the
+    /// streamed body exceeds it. The `/import` route bypasses
+    /// `max_body_bytes`, so this is its replacement guard.
+    pub import_max_bytes: u64,
+    /// Directory the `/import` handler spools request bodies to.
+    pub import_tmp_dir: PathBuf,
+}
+
+impl AppState {
+    /// Combine the auth config with metrics into the bundle the
+    /// auth middleware extracts via `State<AuthState>`.
+    pub fn auth_state(&self) -> AuthState {
+        AuthState {
+            config: Arc::clone(&self.auth),
+            metrics: Arc::clone(&self.metrics),
+        }
+    }
+}
+
+/// Assemble `AppState` from an `AppConfig`. Pure config validation
+/// (the duplicate-key check inside `build_auth_config`) runs first
+/// so a misconfiguration is reported with no metrics, manager,
+/// cache directory, or cache initialised — operators see the auth
+/// error directly rather than having it masked by an unrelated
+/// filesystem or cache setup failure further down. After validation
+/// we build the metrics registry so it can be threaded into both
+/// the foyer cache (hit/miss counters) and the namespace service
+/// (query/write duration histograms, `s3_requests_total`), then
+/// wire everything into one `NamespaceService`. Logs a single
+/// `WARN` when neither auth key is set so an operator running
+/// unauthenticated in production has a clear audit trail.
+pub async fn build_state(cfg: &AppConfig) -> anyhow::Result<AppState> {
+    // Validate before any side effects (metrics, FS, cache). A pure
+    // config error must surface before unrelated infrastructure
+    // failures could mask it.
+    let auth = build_auth_config(cfg)?;
+
+    let metrics =
+        Arc::new(CoreMetrics::new().map_err(|e| anyhow::anyhow!("build metrics registry: {e}"))?);
+
+    let mut manager = NamespaceManager::new(
+        cfg.storage_root.clone(),
+        cfg.storage_options.clone(),
+        Arc::clone(&metrics),
+    );
+    if cfg.object_cache_enabled {
+        std::fs::create_dir_all(&cfg.object_cache_dir).with_context(|| {
+            format!(
+                "creating object cache directory {}",
+                cfg.object_cache_dir.display()
+            )
+        })?;
+        let mut oc_cfg = hevsearch_core::object_cache::ObjectCacheConfig::new(
+            cfg.object_cache_dir.clone(),
+            cfg.object_cache_bytes,
+        );
+        oc_cfg.max_entry_bytes = cfg.object_cache_max_entry_bytes;
+        // Hand the registered object-cache counters in so hits/misses/evictions surface at /metrics.
+        let session =
+            hevsearch_core::object_cache::build_cached_session(&oc_cfg, metrics.object_cache());
+        manager = manager.with_object_cache_session(session);
+        tracing::info!(
+            dir = %cfg.object_cache_dir.display(),
+            capacity_bytes = cfg.object_cache_bytes,
+            "object cache enabled (issue #51): Lance object-store reads served from local NVMe"
+        );
+    }
+    let manager = Arc::new(manager);
+
+    std::fs::create_dir_all(&cfg.cache_nvme_path).with_context(|| {
+        format!(
+            "creating cache nvme directory {}",
+            cfg.cache_nvme_path.display()
+        )
+    })?;
+
+    let cache = Arc::new(
+        NamespaceCache::new(
+            cfg.cache_memory_bytes,
+            &cfg.cache_nvme_path,
+            cfg.cache_nvme_bytes,
+            Arc::clone(&metrics),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("build namespace cache: {e}"))?,
+    );
+
+    let service = Arc::new(NamespaceService::new(
+        Arc::clone(&manager),
+        cache,
+        Arc::clone(&metrics),
+    ));
+
+    let operations = Arc::new(OperationRegistry::new());
+
+    Ok(AppState {
+        service,
+        manager,
+        metrics,
+        operations,
+        auth: Arc::new(auth),
+        rate_limit: cfg.rate_limit.clone(),
+        max_body_bytes: cfg.max_body_bytes,
+        import_max_bytes: cfg.import_max_bytes,
+        import_tmp_dir: cfg.import_tmp_dir.clone(),
+    })
+}
+
+/// Assemble the [`AuthConfig`] and apply startup-time validation.
+///
+/// Refuses to proceed when both the read/write and admin keys are
+/// configured to the same value: `principal_for` checks the admin
+/// key first, so identical bytes would silently classify every
+/// request as admin and collapse the scope split. The operator
+/// either wanted distinct keys (and made a copy/paste mistake) or
+/// wanted single-tier behaviour (in which case `HEVSEARCH_ADMIN_API_KEY`
+/// should be unset to engage the documented single-key fallback).
+/// Either way, refusing startup is the safer answer.
+fn build_auth_config(cfg: &AppConfig) -> anyhow::Result<AuthConfig> {
+    let auth = AuthConfig::default()
+        .with_write_key(cfg.api_key.clone())
+        .with_admin_key(cfg.admin_api_key.clone())
+        .with_metrics_key(cfg.metrics_token.clone())
+        .with_trust_proxy_headers(cfg.rate_limit.trust_proxy_headers);
+
+    if auth.duplicate_write_and_admin_keys() {
+        anyhow::bail!(
+            "HEVSEARCH_API_KEY and HEVSEARCH_ADMIN_API_KEY are configured to \
+             the same value; the scope split would silently collapse and \
+             every authenticated request would be treated as admin. Either \
+             set HEVSEARCH_ADMIN_API_KEY to a distinct value, or unset it \
+             to use the documented single-key fallback."
+        );
+    }
+
+    if auth.is_open() {
+        tracing::warn!(
+            "hevsearch API is running without authentication; \
+             set HEVSEARCH_API_KEY before exposing this service"
+        );
+    } else {
+        tracing::info!(
+            admin_key_configured = cfg.admin_api_key.is_some(),
+            metrics_token_configured = cfg.metrics_token.is_some(),
+            trust_proxy_headers = cfg.rate_limit.trust_proxy_headers,
+            "auth enabled"
+        );
+        if cfg.api_key.is_some() && cfg.admin_api_key.is_none() {
+            tracing::info!(
+                "single-key fallback active: HEVSEARCH_API_KEY also \
+                 authorises admin routes (set HEVSEARCH_ADMIN_API_KEY \
+                 to lock destructive ops behind a separate key)"
+            );
+        }
+    }
+    Ok(auth)
+}
