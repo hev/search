@@ -171,6 +171,6 @@ undone:
 - `CLAUDE.md` § "Engine (keep) vs edge (shed)" — auth is the canonical removal;
   `AGENTS.md` § "Change protocol" — subtractive removals stay local and get
   recorded.
-- `../layer/docs/rfcs/0086-firnflow-vectorstore-backend.md` § "The engine is
+- `../layer/docs/rfcs/0086-hev-search-vectorstore-backend.md` § "The engine is
   headless; Layer is the edge" — the edge view: Layer supplies `deriveFromStore` +
   scoped keys, closing the tenancy gap stock firnflow defers to "a gateway".

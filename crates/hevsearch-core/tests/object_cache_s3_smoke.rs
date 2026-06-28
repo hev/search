@@ -204,9 +204,9 @@ async fn run_gates(
         .query(ns, mvec, None, 1, None, None, None, false)
         .await
         .map_err(|e| format!("post-recreate query: {e}"))?;
-    let top = after.results.first().map(|r| r.id);
+    let top = after.results.first().map(|r| r.id.clone());
     println!("GATE 2  post-recreate top id={top:?}");
-    if top != Some(marker) {
+    if top != Some(hevsearch_core::RowId::U64(marker)) {
         return Err(format!(
             "recreate served stale data: top id {top:?}, want {marker}"
         ));

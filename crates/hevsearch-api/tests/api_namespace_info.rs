@@ -95,6 +95,7 @@ async fn info_returns_namespace_metadata() {
     assert_eq!(info["namespace"].as_str().unwrap(), ns);
     assert_eq!(info["kind"].as_str().unwrap(), "single");
     assert_eq!(info["vector_dim"].as_u64().unwrap(), 4);
+    assert_eq!(info["distance_metric"].as_str().unwrap(), "l2");
     assert_eq!(info["row_count"].as_u64().unwrap(), 3);
     assert!(info["fragment_count"].as_u64().unwrap() >= 1);
     assert_eq!(info["has_vector_index"], json!(false));
@@ -113,7 +114,9 @@ async fn info_returns_namespace_metadata() {
     let metrics = metrics_text(app).await;
     let info_ticks: u64 = metrics
         .lines()
-        .filter(|l| l.starts_with("hevsearch_s3_requests_total") && l.contains("operation=\"info\""))
+        .filter(|l| {
+            l.starts_with("hevsearch_s3_requests_total") && l.contains("operation=\"info\"")
+        })
         .filter_map(|l| l.split_whitespace().last())
         .filter_map(|v| v.parse::<f64>().ok())
         .map(|v| v as u64)

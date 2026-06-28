@@ -115,6 +115,7 @@ async fn service_cache_aside_follows_table_version() {
         k: 10,
         nprobes: None,
         text: None,
+        fuzzy: None,
         filter: None,
         include_vector: true,
         semantic_cache: None,
@@ -205,6 +206,91 @@ async fn service_cache_aside_follows_table_version() {
     );
 }
 
+#[tokio::test]
+async fn local_row_delete_does_not_serve_cached_deleted_row() {
+    let storage = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let metrics = test_metrics();
+    let manager = Arc::new(NamespaceManager::new(
+        StorageRoot::local(storage.path()).unwrap(),
+        HashMap::new(),
+        Arc::clone(&metrics),
+    ));
+    let cache = Arc::new(
+        NamespaceCache::new(
+            16 * 1024 * 1024,
+            cache_dir.path(),
+            64 * 1024 * 1024,
+            Arc::clone(&metrics),
+        )
+        .await
+        .expect("build cache"),
+    );
+    let service = NamespaceService::new(
+        Arc::clone(&manager),
+        Arc::clone(&cache),
+        Arc::clone(&metrics),
+    );
+
+    let ns = NamespaceId::new("local-row-delete-cache").unwrap();
+    let req = QueryRequest {
+        vector: unit_vector(0),
+        vectors: None,
+        k: 10,
+        nprobes: None,
+        text: None,
+        fuzzy: None,
+        filter: None,
+        include_vector: true,
+        semantic_cache: None,
+    };
+
+    service
+        .upsert(
+            &ns,
+            vec![
+                UpsertRow::from((1, unit_vector(0))),
+                UpsertRow::from((2, unit_vector(1))),
+            ],
+        )
+        .await
+        .expect("initial upsert");
+
+    let first = service
+        .query_with_cache_source(&ns, &req)
+        .await
+        .expect("initial query");
+    assert_eq!(first.cache_source, QueryCacheSource::Backend);
+    assert_eq!(first.result.results.len(), 2);
+    let _cached = service
+        .query_with_cache_source(&ns, &req)
+        .await
+        .expect("cached query");
+
+    let deleted = service
+        .delete_ids(&ns, &[hevsearch_core::RowId::U64(1)])
+        .await
+        .expect("row delete");
+    assert_eq!(deleted, 1);
+
+    let after = service
+        .query_with_cache_source(&ns, &req)
+        .await
+        .expect("query after delete");
+    assert_eq!(
+        after.cache_source,
+        QueryCacheSource::Backend,
+        "delete commit must advance the cache generation, not serve stale bytes"
+    );
+    let ids: Vec<_> = after
+        .result
+        .results
+        .iter()
+        .map(|row| row.id.clone())
+        .collect();
+    assert_eq!(ids, vec![hevsearch_core::RowId::U64(2)]);
+}
+
 /// Deleting a namespace and recreating it under the same name must not
 /// serve the deleted incarnation's cached results, even when the new
 /// incarnation reaches the same Lance version. The generation folds in
@@ -244,6 +330,7 @@ async fn delete_recreate_does_not_serve_old_incarnation() {
         k: 10,
         nprobes: None,
         text: None,
+        fuzzy: None,
         filter: None,
         include_vector: true,
         semantic_cache: None,

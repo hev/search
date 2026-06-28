@@ -29,6 +29,7 @@ use crate::query::{
     effective_semantic_threshold, validate_facet_request, validate_semantic_cache_request,
     FacetRequest, QueryRequest, DEFAULT_NPROBES,
 };
+use crate::DistanceMetric;
 use crate::{FacetResultSet, HevSearchError, NamespaceId, QueryResultSet};
 
 /// Where a query result came from.
@@ -139,9 +140,21 @@ impl NamespaceService {
         ns: &NamespaceId,
         rows: Vec<UpsertRow>,
     ) -> Result<(), HevSearchError> {
+        self.upsert_with_distance_metric(ns, rows, None).await
+    }
+
+    /// Write path with an optional namespace-creation distance metric.
+    pub async fn upsert_with_distance_metric(
+        &self,
+        ns: &NamespaceId,
+        rows: Vec<UpsertRow>,
+        distance_metric: Option<DistanceMetric>,
+    ) -> Result<(), HevSearchError> {
         let start = Instant::now();
         self.metrics.record_s3_request(ns, "upsert");
-        self.manager.upsert(ns, rows).await?;
+        self.manager
+            .upsert_with_distance_metric(ns, rows, distance_metric)
+            .await?;
         self.semantic.invalidate(ns);
         self.metrics.record_write(ns, start.elapsed().as_secs_f64());
         Ok(())
@@ -161,9 +174,22 @@ impl NamespaceService {
         ns: &NamespaceId,
         reader: Box<dyn RecordBatchReader + Send>,
     ) -> Result<usize, HevSearchError> {
+        self.import_with_distance_metric(ns, reader, None).await
+    }
+
+    /// Bulk import with an optional namespace-creation distance metric.
+    pub async fn import_with_distance_metric(
+        &self,
+        ns: &NamespaceId,
+        reader: Box<dyn RecordBatchReader + Send>,
+        distance_metric: Option<DistanceMetric>,
+    ) -> Result<usize, HevSearchError> {
         let start = Instant::now();
         self.metrics.record_s3_request(ns, "import");
-        let imported = self.manager.import_arrow(ns, reader).await?;
+        let imported = self
+            .manager
+            .import_arrow_with_distance_metric(ns, reader, distance_metric)
+            .await?;
         self.semantic.invalidate(ns);
         self.metrics.record_write(ns, start.elapsed().as_secs_f64());
         Ok(imported)
@@ -188,6 +214,35 @@ impl NamespaceService {
         let start = Instant::now();
         self.metrics.record_s3_request(ns, "delete");
         let count = self.manager.delete(ns).await?;
+        self.semantic.invalidate(ns);
+        self.metrics.record_write(ns, start.elapsed().as_secs_f64());
+        Ok(count)
+    }
+
+    /// Delete rows from an existing namespace by id.
+    pub async fn delete_ids(
+        &self,
+        ns: &NamespaceId,
+        ids: &[crate::RowId],
+    ) -> Result<u64, HevSearchError> {
+        let start = Instant::now();
+        self.metrics.record_s3_request(ns, "delete_ids");
+        let count = self.manager.delete_ids(ns, ids).await?;
+        self.semantic.invalidate(ns);
+        self.metrics.record_write(ns, start.elapsed().as_secs_f64());
+        Ok(count)
+    }
+
+    /// Delete rows from an existing namespace by DataFusion SQL
+    /// predicate.
+    pub async fn delete_rows(
+        &self,
+        ns: &NamespaceId,
+        predicate: &str,
+    ) -> Result<u64, HevSearchError> {
+        let start = Instant::now();
+        self.metrics.record_s3_request(ns, "delete_rows");
+        let count = self.manager.delete_rows(ns, predicate).await?;
         self.semantic.invalidate(ns);
         self.metrics.record_write(ns, start.elapsed().as_secs_f64());
         Ok(count)
@@ -294,6 +349,17 @@ impl NamespaceService {
                 .record_semantic_cache_rejection(ns, "unsupported_query_shape");
         }
 
+        if semantic_eligible {
+            let metric = self.manager.distance_metric(ns).await?;
+            if metric != Some(DistanceMetric::Cosine) {
+                self.metrics
+                    .record_semantic_cache_rejection(ns, "unsupported_distance_metric");
+                return Err(HevSearchError::InvalidRequest(
+                    "semantic_cache is only supported on cosine namespaces".into(),
+                ));
+            }
+        }
+
         if let Some(sem) = semantic_opt {
             if semantic_eligible {
                 let threshold = effective_semantic_threshold(sem);
@@ -347,13 +413,14 @@ impl NamespaceService {
         self.metrics.record_s3_request(ns, "query");
         let result = self
             .manager
-            .query(
+            .query_with_fuzzy(
                 ns,
                 req.vector.clone(),
                 req.vectors.clone(),
                 req.k,
                 req.nprobes,
                 req.text.clone(),
+                req.fuzzy.clone(),
                 req.filter.clone(),
                 req.include_vector,
             )
@@ -520,6 +587,7 @@ pub fn hash_query_for_cache(req: &QueryRequest) -> Result<QueryHash, HevSearchEr
         k: usize,
         nprobes: Option<usize>,
         text: &'a Option<String>,
+        fuzzy: &'a Option<crate::query::FuzzyRequest>,
         filter: &'a Option<String>,
         // Deliberately in the key, unlike `semantic_cache`: a full
         // and a vector-light result set are different payloads and
@@ -532,6 +600,7 @@ pub fn hash_query_for_cache(req: &QueryRequest) -> Result<QueryHash, HevSearchEr
         k: req.k,
         nprobes: req.nprobes,
         text: &req.text,
+        fuzzy: &req.fuzzy,
         filter: &req.filter,
         include_vector: req.include_vector,
     };
@@ -616,6 +685,7 @@ mod tests {
             k: 10,
             nprobes: None,
             text: None,
+            fuzzy: None,
             filter: filter.map(str::to_string),
             include_vector: true,
             semantic_cache: None,

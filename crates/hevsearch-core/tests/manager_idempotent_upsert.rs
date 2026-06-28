@@ -81,7 +81,7 @@ fn unit_vector(axis: usize) -> Vec<f32> {
 
 fn row(id: u64, vector: Vec<f32>, text: &str) -> UpsertRow {
     UpsertRow {
-        id,
+        id: hevsearch_core::RowId::U64(id),
         vector,
         vectors: None,
         text: Some(text.to_string()),
@@ -161,7 +161,7 @@ async fn reupsert_advances_ingested_at() {
         .await
         .expect("initial upsert");
     let first = manager
-        .list(&ns, 50, ListOrder::Desc, None)
+        .list(&ns, 50, ListOrder::Desc, None, None)
         .await
         .expect("list")
         .rows
@@ -178,7 +178,7 @@ async fn reupsert_advances_ingested_at() {
         .await
         .expect("re-upsert");
     let second = manager
-        .list(&ns, 50, ListOrder::Desc, None)
+        .list(&ns, 50, ListOrder::Desc, None, None)
         .await
         .expect("list")
         .rows
@@ -233,7 +233,7 @@ async fn multivector_reupsert_replaces_not_appends() {
     let bag_b = vec![unit_vector(2), unit_vector(3)];
 
     let mv_row = |id: u64, bag: Vec<Vec<f32>>| UpsertRow {
-        id,
+        id: hevsearch_core::RowId::U64(id),
         vector: Vec::new(),
         vectors: Some(bag),
         text: None,

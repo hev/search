@@ -61,7 +61,7 @@ fn row(id: u64, axis: usize, text: &str) -> UpsertRow {
     let mut vector = vec![0.0_f32; DIM];
     vector[axis] = 1.0;
     UpsertRow {
-        id,
+        id: hevsearch_core::RowId::U64(id),
         vector,
         vectors: None,
         text: Some(text.to_string()),

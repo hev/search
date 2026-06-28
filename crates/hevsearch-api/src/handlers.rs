@@ -4,6 +4,8 @@
 //! * `POST   /ns/{namespace}/upsert`
 //! * `POST   /ns/{namespace}/import`
 //! * `POST   /ns/{namespace}/query`
+//! * `POST   /ns/{namespace}/facet`
+//! * `POST   /ns/{namespace}/delete`
 //! * `GET    /ns/{namespace}/list`
 //! * `GET    /ns/{namespace}`
 //! * `DELETE /ns/{namespace}`
@@ -31,9 +33,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use hevsearch_core::{
-    decode_list_cursor, validate_arrow_import_schema, FacetRequest, FacetResultSet, HevSearchError,
-    IndexRequest, ListOrder, ListPage, NamespaceId, NamespaceInfo, QueryRequest,
-    UpsertRow as CoreUpsertRow, LIST_MAX_LIMIT,
+    decode_list_cursor, validate_arrow_import_schema, DistanceMetric, FacetRequest, FacetResultSet,
+    HevSearchError, IndexRequest, ListOrder, ListPage, NamespaceId, NamespaceInfo, QueryRequest,
+    RowId, UpsertRow as CoreUpsertRow, LIST_MAX_LIMIT,
 };
 
 use crate::error::ApiError;
@@ -52,6 +54,25 @@ const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
 pub struct DeleteResponse {
     /// Number of S3 objects removed during the delete.
     pub objects_deleted: usize,
+}
+
+/// Body of `POST /ns/{namespace}/delete`. Exactly one selector is
+/// required: row ids or a DataFusion SQL filter predicate.
+#[derive(Debug, Deserialize)]
+pub struct DeleteRowsRequest {
+    /// Stable row ids to remove.
+    #[serde(default)]
+    pub ids: Option<Vec<RowId>>,
+    /// DataFusion SQL predicate selecting rows to remove.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+/// Body of a successful row-delete response.
+#[derive(Debug, Serialize)]
+pub struct DeleteRowsResponse {
+    /// Number of live rows removed by the delete commit.
+    pub deleted: u64,
 }
 
 /// Optional body of `POST /ns/{namespace}/scalar-index`. Selects the
@@ -123,7 +144,7 @@ pub struct WarmupAccepted {
 #[derive(Debug, Deserialize)]
 pub struct UpsertRow {
     /// Stable row identifier.
-    pub id: u64,
+    pub id: RowId,
     /// Single-vector payload. Length must match the namespace's
     /// dimension. Default empty for multivector rows.
     #[serde(default)]
@@ -145,6 +166,10 @@ pub struct UpsertRow {
 /// Body of `POST /ns/{namespace}/upsert`.
 #[derive(Debug, Deserialize)]
 pub struct UpsertRequest {
+    /// Optional distance metric for a fresh namespace. Existing
+    /// namespaces reject attempts to change it.
+    #[serde(default)]
+    pub distance_metric: Option<DistanceMetric>,
     pub rows: Vec<UpsertRow>,
 }
 
@@ -154,6 +179,15 @@ pub struct UpsertResponse {
     /// Number of rows accepted for upsert. Matches `rows.len()` on the
     /// request — there is no per-row failure reporting yet.
     pub upserted: usize,
+}
+
+/// Optional query parameters for `POST /ns/{namespace}/import`.
+#[derive(Debug, Deserialize, Default)]
+pub struct ImportQuery {
+    /// Optional distance metric for a fresh namespace. Existing
+    /// namespaces reject attempts to change it.
+    #[serde(default)]
+    pub distance_metric: Option<DistanceMetric>,
 }
 
 /// Liveness probe. Returns HTTP 200 with body `ok`.
@@ -180,7 +214,10 @@ pub async fn upsert(
             attributes: r.attributes,
         })
         .collect();
-    state.service.upsert(&ns, rows).await?;
+    state
+        .service
+        .upsert_with_distance_metric(&ns, rows, req.distance_metric)
+        .await?;
     Ok(Json(UpsertResponse { upserted: count }))
 }
 
@@ -229,6 +266,32 @@ pub async fn delete(
     let ns = NamespaceId::new(namespace)?;
     let objects_deleted = state.service.delete(&ns).await?;
     Ok(Json(DeleteResponse { objects_deleted }))
+}
+
+/// Delete rows from a namespace by id or by filter predicate.
+pub async fn delete_rows(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+    Json(req): Json<DeleteRowsRequest>,
+) -> Result<Json<DeleteRowsResponse>, ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+    let deleted = match (req.ids, req.filter) {
+        (Some(ids), None) => state.service.delete_ids(&ns, &ids).await,
+        (None, Some(filter)) => state.service.delete_rows(&ns, &filter).await,
+        (Some(_), Some(_)) => Err(HevSearchError::InvalidRequest(
+            "delete request must set exactly one of ids or filter".into(),
+        )),
+        (None, None) => Err(HevSearchError::InvalidRequest(
+            "delete request must set exactly one of ids or filter".into(),
+        )),
+    };
+    match deleted {
+        Ok(deleted) => Ok(Json(DeleteRowsResponse { deleted })),
+        Err(HevSearchError::InvalidRequest(msg)) if msg.contains("does not exist") => {
+            Err(ApiError::NotFound(msg))
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Async cache-warmup hint.
@@ -518,6 +581,7 @@ fn status_error(status: StatusCode, msg: impl Into<String>) -> Response {
 pub async fn import(
     State(state): State<AppState>,
     Path(namespace): Path<String>,
+    Query(params): Query<ImportQuery>,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
@@ -615,7 +679,10 @@ pub async fn import(
             }
         };
         let reader: Box<dyn RecordBatchReader + Send> = Box::new(reader);
-        match service.import(&ns_owned, reader).await {
+        match service
+            .import_with_distance_metric(&ns_owned, reader, params.distance_metric)
+            .await
+        {
             Ok(_imported) => operations.succeed(&op_for_task),
             Err(e) => {
                 tracing::error!(namespace = %ns_owned, error = %e, "import failed");
@@ -707,6 +774,8 @@ pub struct ListParams {
     pub limit: Option<usize>,
     #[serde(default)]
     pub cursor: Option<String>,
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 /// List rows in a namespace ordered by `_ingested_at`.
@@ -758,7 +827,10 @@ pub async fn list(
         _ => None,
     };
 
-    let page = state.manager.list(&ns, limit, order, cursor).await?;
+    let page = state
+        .manager
+        .list(&ns, limit, order, cursor, params.filter)
+        .await?;
     Ok(Json(page))
 }
 

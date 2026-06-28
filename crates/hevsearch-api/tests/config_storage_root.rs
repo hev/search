@@ -37,7 +37,10 @@ fn expect_err(uri: Option<&str>, bucket: Option<&str>) -> String {
 #[test]
 fn uri_only_uses_parsed_uri() {
     let out = expect_ok(Some("s3://from-uri/hevsearch"), None);
-    assert_eq!(out.root, StorageRoot::parse("s3://from-uri/hevsearch").unwrap());
+    assert_eq!(
+        out.root,
+        StorageRoot::parse("s3://from-uri/hevsearch").unwrap()
+    );
     assert!(
         !out.fallback_logged,
         "URI-only must not trigger the legacy-fallback log"

@@ -516,7 +516,10 @@ mod tests {
         // hands lancedb::connect the same scheme the operator
         // configured — never silently rewriting to s3://.
         let root = StorageRoot::parse("gs://hevsearch-gcs-bucket").unwrap();
-        assert_eq!(root.namespace_uri(&ns("docs")), "gs://hevsearch-gcs-bucket/docs");
+        assert_eq!(
+            root.namespace_uri(&ns("docs")),
+            "gs://hevsearch-gcs-bucket/docs"
+        );
         let root = StorageRoot::parse("gs://hevsearch-gcs-bucket/tenants/acme").unwrap();
         assert_eq!(
             root.namespace_uri(&ns("docs")),
@@ -541,7 +544,10 @@ mod tests {
     #[test]
     fn namespace_uri_with_single_segment_prefix() {
         let root = StorageRoot::parse("s3://my-bucket/hevsearch").unwrap();
-        assert_eq!(root.namespace_uri(&ns("docs")), "s3://my-bucket/hevsearch/docs");
+        assert_eq!(
+            root.namespace_uri(&ns("docs")),
+            "s3://my-bucket/hevsearch/docs"
+        );
     }
 
     #[test]

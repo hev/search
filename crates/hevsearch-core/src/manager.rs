@@ -66,15 +66,17 @@ use object_store::ObjectStore;
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::metrics::CoreMetrics;
-use crate::query::DEFAULT_NPROBES;
+use crate::query::{FuzzyRequest, DEFAULT_NPROBES};
 use crate::result::{
-    FacetBucket, FacetField, FacetResultSet, ListOrder, ListPage, ListRow, NamespaceInfo,
+    DistanceMetric, FacetBucket, FacetField, FacetResultSet, ListOrder, ListPage, ListRow,
+    NamespaceInfo, RowId, RowIdType,
 };
 use crate::storage_root::Scheme;
 use crate::vector::VectorKind;
 use crate::{HevSearchError, NamespaceId, QueryResult, QueryResultSet, StorageRoot};
 
 const TABLE_NAME: &str = "data";
+const DISTANCE_METRIC_METADATA_KEY: &str = "hevsearch.distance_metric";
 const DISTANCE_COLUMN: &str = "_distance";
 const SCORE_COLUMN: &str = "_score";
 const RELEVANCE_COLUMN: &str = "_relevance_score";
@@ -151,6 +153,31 @@ pub enum AttributeType {
     StringList,
 }
 
+impl RowId {
+    fn id_type(&self) -> RowIdType {
+        match self {
+            Self::U64(_) => RowIdType::U64,
+            Self::String(_) => RowIdType::String,
+        }
+    }
+
+    fn to_sql_literal(&self) -> String {
+        match self {
+            Self::U64(id) => id.to_string(),
+            Self::String(id) => format!("'{}'", id.replace('\'', "''")),
+        }
+    }
+}
+
+impl RowIdType {
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::U64 => "u64",
+            Self::String => "string",
+        }
+    }
+}
+
 impl AttributeType {
     fn arrow(self) -> DataType {
         match self {
@@ -187,6 +214,52 @@ impl AttributeType {
     }
 }
 
+impl DistanceMetric {
+    fn default_for_kind(kind: VectorKind) -> Self {
+        match kind {
+            VectorKind::Single => Self::L2,
+            VectorKind::Multivector => Self::Cosine,
+        }
+    }
+
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::L2 => "l2",
+            Self::Cosine => "cosine",
+            Self::Dot => "dot",
+        }
+    }
+
+    fn from_label(label: &str) -> Result<Self, HevSearchError> {
+        match label {
+            "l2" => Ok(Self::L2),
+            "cosine" => Ok(Self::Cosine),
+            "dot" => Ok(Self::Dot),
+            other => Err(HevSearchError::InvalidRequest(format!(
+                "unsupported distance_metric {other:?}; expected one of l2, cosine, dot"
+            ))),
+        }
+    }
+
+    fn to_lance(self) -> DistanceType {
+        match self {
+            Self::L2 => DistanceType::L2,
+            Self::Cosine => DistanceType::Cosine,
+            Self::Dot => DistanceType::Dot,
+        }
+    }
+
+    fn validate_for_kind(self, kind: VectorKind) -> Result<(), HevSearchError> {
+        if kind == VectorKind::Multivector && self != Self::Cosine {
+            return Err(HevSearchError::InvalidRequest(format!(
+                "multivector namespaces require distance_metric cosine, got {}",
+                self.as_label()
+            )));
+        }
+        Ok(())
+    }
+}
+
 fn validate_attribute_name(name: &str) -> Result<(), HevSearchError> {
     if RESERVED_ATTRIBUTE_COLUMNS.contains(&name) || name.starts_with('_') {
         return Err(HevSearchError::InvalidRequest(format!(
@@ -210,7 +283,9 @@ fn validate_attribute_name(name: &str) -> Result<(), HevSearchError> {
     Ok(())
 }
 
-fn infer_attribute_type(value: &serde_json::Value) -> Result<Option<AttributeType>, HevSearchError> {
+fn infer_attribute_type(
+    value: &serde_json::Value,
+) -> Result<Option<AttributeType>, HevSearchError> {
     match value {
         serde_json::Value::Null => Ok(None),
         serde_json::Value::Bool(_) => Ok(Some(AttributeType::Boolean)),
@@ -322,6 +397,8 @@ struct NamespaceSchemaInfo {
     /// dimension (each sub-vector is fixed at this width).
     dim: usize,
     kind: VectorKind,
+    id_type: RowIdType,
+    distance_metric: DistanceMetric,
     has_ingested_at: bool,
     attributes: BTreeMap<String, AttributeType>,
 }
@@ -341,7 +418,7 @@ struct NamespaceSchemaInfo {
 #[derive(Debug, Clone)]
 pub struct UpsertRow {
     /// Stable row identifier.
-    pub id: u64,
+    pub id: RowId,
     /// The single-vector payload. Length must match the namespace's
     /// dimension. Empty means "no single vector" — used when this
     /// row carries a multivector payload instead.
@@ -360,7 +437,7 @@ pub struct UpsertRow {
 impl From<(u64, Vec<f32>)> for UpsertRow {
     fn from((id, vector): (u64, Vec<f32>)) -> Self {
         Self {
-            id,
+            id: RowId::U64(id),
             vector,
             vectors: None,
             text: None,
@@ -590,6 +667,8 @@ impl NamespaceManager {
     fn schema_for_kind(
         kind: VectorKind,
         dim: usize,
+        id_type: RowIdType,
+        distance_metric: DistanceMetric,
         with_ingested_at: bool,
         attributes: &BTreeMap<String, AttributeType>,
     ) -> Arc<Schema> {
@@ -601,8 +680,12 @@ impl NamespaceManager {
                 DataType::List(Arc::new(Field::new("item", inner_fsl, true)))
             }
         };
+        let id_data_type = match id_type {
+            RowIdType::U64 => DataType::UInt64,
+            RowIdType::String => DataType::Utf8,
+        };
         let mut fields = vec![
-            Field::new("id", DataType::UInt64, false),
+            Field::new("id", id_data_type, false),
             Field::new("vector", vector_type, false),
             Field::new("text", DataType::Utf8, true),
         ];
@@ -616,7 +699,15 @@ impl NamespaceManager {
         for (name, ty) in attributes {
             fields.push(Field::new(name, ty.arrow(), true));
         }
-        Arc::new(Schema::new(fields))
+        Arc::new(
+            Schema::new(fields).with_metadata(
+                [(
+                    DISTANCE_METRIC_METADATA_KEY.to_string(),
+                    distance_metric.as_label().to_string(),
+                )]
+                .into(),
+            ),
+        )
     }
 
     async fn connect(&self, ns: &NamespaceId) -> Result<lancedb::Connection, HevSearchError> {
@@ -679,6 +770,8 @@ impl NamespaceManager {
         ns: &NamespaceId,
         kind: VectorKind,
         dim: usize,
+        id_type: RowIdType,
+        distance_metric: DistanceMetric,
         attributes: &BTreeMap<String, AttributeType>,
     ) -> Result<lancedb::Table, HevSearchError> {
         if let Some(entry) = self.handles.get(ns) {
@@ -691,7 +784,8 @@ impl NamespaceManager {
             Err(_) => {
                 // Fresh namespace: always create with the current
                 // schema, which includes `_ingested_at`.
-                let schema = Self::schema_for_kind(kind, dim, true, attributes);
+                let schema =
+                    Self::schema_for_kind(kind, dim, id_type, distance_metric, true, attributes);
                 let empty = rows_to_batch(&schema, kind, dim, Vec::new(), true)?;
                 let reader: Box<dyn RecordBatchReader + Send> =
                     Box::new(RecordBatchIterator::new(vec![Ok(empty)], schema));
@@ -792,6 +886,17 @@ impl NamespaceManager {
         ns: &NamespaceId,
         rows: Vec<UpsertRow>,
     ) -> Result<(), HevSearchError> {
+        self.upsert_with_distance_metric(ns, rows, None).await
+    }
+
+    /// Insert or update rows, optionally fixing the distance metric
+    /// when this is the namespace's first write.
+    pub async fn upsert_with_distance_metric(
+        &self,
+        ns: &NamespaceId,
+        rows: Vec<UpsertRow>,
+        requested_metric: Option<DistanceMetric>,
+    ) -> Result<(), HevSearchError> {
         if rows.is_empty() {
             return Ok(());
         }
@@ -802,7 +907,7 @@ impl NamespaceManager {
         // would have ambiguous semantics. Catch it before the write.
         let mut seen_ids = HashSet::with_capacity(rows.len());
         for row in &rows {
-            if !seen_ids.insert(row.id) {
+            if !seen_ids.insert(row.id.clone()) {
                 return Err(HevSearchError::InvalidRequest(format!(
                     "duplicate id {} in upsert request; ids must be unique within a single request",
                     row.id
@@ -822,10 +927,16 @@ impl NamespaceManager {
             Some(info) => (info, false),
             None => {
                 let (kind, dim) = inspect_row_payload(&rows[0])?;
+                let id_type = rows[0].id.id_type();
+                let distance_metric =
+                    requested_metric.unwrap_or_else(|| DistanceMetric::default_for_kind(kind));
+                distance_metric.validate_for_kind(kind)?;
                 (
                     NamespaceSchemaInfo {
                         dim,
                         kind,
+                        id_type,
+                        distance_metric,
                         has_ingested_at: true,
                         attributes: request_attributes.clone(),
                     },
@@ -833,12 +944,30 @@ impl NamespaceManager {
                 )
             }
         };
+        if let Some(requested_metric) = requested_metric {
+            requested_metric.validate_for_kind(info.kind)?;
+            if requested_metric != info.distance_metric {
+                return Err(HevSearchError::InvalidRequest(format!(
+                    "namespace {ns} distance_metric is {}, got {}",
+                    info.distance_metric.as_label(),
+                    requested_metric.as_label()
+                )));
+            }
+        }
         let new_attributes = reconcile_attribute_schema(&mut info, &request_attributes)?;
 
         // Validate every row against the namespace's resolved kind
         // and dim. Mixed-shape requests fail at the API boundary
         // with a precise per-row message.
         for row in &rows {
+            if row.id.id_type() != info.id_type {
+                return Err(HevSearchError::InvalidRequest(format!(
+                    "row id {}: namespace id_type is {}, got {}",
+                    row.id,
+                    info.id_type.as_label(),
+                    row.id.id_type().as_label()
+                )));
+            }
             validate_row_against(row, info.kind, info.dim)?;
         }
 
@@ -848,17 +977,37 @@ impl NamespaceManager {
         // row is "not matched" and inserted; into a populated table
         // matched ids are replaced and new ids inserted.
         let mut tbl = self
-            .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
             .await?;
         if !new_attributes.is_empty() && !is_fresh {
             add_null_attribute_columns(&tbl, &new_attributes).await?;
             self.evict_handle(ns);
             tbl = self
-                .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+                .get_or_open_table(
+                    ns,
+                    info.kind,
+                    info.dim,
+                    info.id_type,
+                    info.distance_metric,
+                    &info.attributes,
+                )
                 .await?;
         }
-        let schema =
-            Self::schema_for_kind(info.kind, info.dim, info.has_ingested_at, &info.attributes);
+        let schema = Self::schema_for_kind(
+            info.kind,
+            info.dim,
+            info.id_type,
+            info.distance_metric,
+            info.has_ingested_at,
+            &info.attributes,
+        );
         let batch = rows_to_batch(&schema, info.kind, info.dim, rows, info.has_ingested_at)?;
         let reader: Box<dyn RecordBatchReader + Send> =
             Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
@@ -893,7 +1042,14 @@ impl NamespaceManager {
                     // call is the warm upsert, so re-pool eagerly).
                     self.evict_handle(ns);
                     if let Err(e) = self
-                        .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+                        .get_or_open_table(
+                            ns,
+                            info.kind,
+                            info.dim,
+                            info.id_type,
+                            info.distance_metric,
+                            &info.attributes,
+                        )
                         .await
                     {
                         tracing::warn!(
@@ -955,8 +1111,21 @@ impl NamespaceManager {
         ns: &NamespaceId,
         reader: Box<dyn RecordBatchReader + Send>,
     ) -> Result<usize, HevSearchError> {
+        self.import_arrow_with_distance_metric(ns, reader, None)
+            .await
+    }
+
+    /// Bulk-append an Arrow IPC stream, optionally fixing the
+    /// namespace metric on first import.
+    pub async fn import_arrow_with_distance_metric(
+        &self,
+        ns: &NamespaceId,
+        reader: Box<dyn RecordBatchReader + Send>,
+        requested_metric: Option<DistanceMetric>,
+    ) -> Result<usize, HevSearchError> {
         let in_schema = reader.schema();
-        let (kind, dim, has_text, import_attributes) = validate_arrow_import_schema(&in_schema)?;
+        let (kind, dim, id_type, has_text, import_attributes) =
+            validate_arrow_import_schema(&in_schema)?;
 
         // Fresh namespace: the stream fixes kind/dim. Existing: it must
         // match the established shape.
@@ -970,32 +1139,77 @@ impl NamespaceManager {
                         info.dim,
                     )));
                 }
+                if info.id_type != id_type {
+                    return Err(HevSearchError::InvalidRequest(format!(
+                        "import: stream id_type is {}, but namespace {ns} is {}",
+                        id_type.as_label(),
+                        info.id_type.as_label()
+                    )));
+                }
+                if let Some(requested_metric) = requested_metric {
+                    requested_metric.validate_for_kind(info.kind)?;
+                    if requested_metric != info.distance_metric {
+                        return Err(HevSearchError::InvalidRequest(format!(
+                            "namespace {ns} distance_metric is {}, got {}",
+                            info.distance_metric.as_label(),
+                            requested_metric.as_label()
+                        )));
+                    }
+                }
                 let mut info = info;
                 let added = reconcile_attribute_schema(&mut info, &import_attributes)?;
                 (info, added)
             }
-            None => (
-                NamespaceSchemaInfo {
-                    dim,
-                    kind,
-                    has_ingested_at: true,
-                    attributes: import_attributes,
-                },
-                BTreeMap::new(),
-            ),
+            None => {
+                let distance_metric =
+                    requested_metric.unwrap_or_else(|| DistanceMetric::default_for_kind(kind));
+                distance_metric.validate_for_kind(kind)?;
+                (
+                    NamespaceSchemaInfo {
+                        dim,
+                        kind,
+                        id_type,
+                        distance_metric,
+                        has_ingested_at: true,
+                        attributes: import_attributes,
+                    },
+                    BTreeMap::new(),
+                )
+            }
         };
 
         let mut tbl = self
-            .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
             .await?;
         if !new_import_attributes.is_empty() {
             add_null_attribute_columns(&tbl, &new_import_attributes).await?;
             self.evict_handle(ns);
             tbl = self
-                .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+                .get_or_open_table(
+                    ns,
+                    info.kind,
+                    info.dim,
+                    info.id_type,
+                    info.distance_metric,
+                    &info.attributes,
+                )
                 .await?;
         }
-        let canonical = Self::schema_for_kind(info.kind, info.dim, true, &info.attributes);
+        let canonical = Self::schema_for_kind(
+            info.kind,
+            info.dim,
+            info.id_type,
+            info.distance_metric,
+            true,
+            &info.attributes,
+        );
 
         // Column positions in the incoming stream (any order).
         let id_idx = in_schema
@@ -1088,6 +1302,66 @@ impl NamespaceManager {
         self.evict_handle(ns);
 
         Ok(count)
+    }
+
+    /// Delete rows from an existing namespace using a DataFusion SQL
+    /// predicate evaluated by LanceDB. Returns the exact number of
+    /// live rows removed by the commit.
+    pub async fn delete_rows(
+        &self,
+        ns: &NamespaceId,
+        predicate: &str,
+    ) -> Result<u64, HevSearchError> {
+        if predicate.trim().is_empty() {
+            return Err(HevSearchError::InvalidRequest(
+                "delete predicate must not be empty".into(),
+            ));
+        }
+        let Some((tbl, info)) = self.open_existing(ns).await? else {
+            return Err(HevSearchError::InvalidRequest(format!(
+                "namespace {ns} does not exist"
+            )));
+        };
+        let result = tbl
+            .delete(predicate)
+            .await
+            .map_err(|e| HevSearchError::InvalidRequest(format!("delete filter: {e}")))?;
+        self.schema_info.insert(ns.clone(), info);
+        Ok(result.num_deleted_rows)
+    }
+
+    /// Delete all rows with the provided ids. Removes every live row
+    /// whose `id` matches, including duplicate-id leftovers from old
+    /// append-only namespaces.
+    pub async fn delete_ids(&self, ns: &NamespaceId, ids: &[RowId]) -> Result<u64, HevSearchError> {
+        if ids.is_empty() {
+            return Err(HevSearchError::InvalidRequest(
+                "delete ids must not be empty".into(),
+            ));
+        }
+        let Some(info) = self.resolve_schema_info(ns).await? else {
+            return Err(HevSearchError::InvalidRequest(format!(
+                "namespace {ns} does not exist"
+            )));
+        };
+        for id in ids {
+            if id.id_type() != info.id_type {
+                return Err(HevSearchError::InvalidRequest(format!(
+                    "delete id {}: namespace id_type is {}, got {}",
+                    id,
+                    info.id_type.as_label(),
+                    id.id_type().as_label()
+                )));
+            }
+        }
+        let predicate = format!(
+            "id IN ({})",
+            ids.iter()
+                .map(RowId::to_sql_literal)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        self.delete_rows(ns, &predicate).await
     }
 
     /// Object-store-relative path of a namespace as an
@@ -1246,6 +1520,34 @@ impl NamespaceManager {
         filter: Option<String>,
         include_vector: bool,
     ) -> Result<QueryResultSet, HevSearchError> {
+        self.query_with_fuzzy(
+            ns,
+            vector,
+            vectors,
+            k,
+            nprobes,
+            text,
+            None,
+            filter,
+            include_vector,
+        )
+        .await
+    }
+
+    /// Query with optional fuzzy full-text matching.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_with_fuzzy(
+        &self,
+        ns: &NamespaceId,
+        vector: Vec<f32>,
+        vectors: Option<Vec<Vec<f32>>>,
+        k: usize,
+        nprobes: Option<usize>,
+        text: Option<String>,
+        fuzzy: Option<FuzzyRequest>,
+        filter: Option<String>,
+        include_vector: bool,
+    ) -> Result<QueryResultSet, HevSearchError> {
         let info = match self.resolve_schema_info(ns).await? {
             Some(info) => info,
             None => {
@@ -1322,7 +1624,14 @@ impl NamespaceManager {
 
         let nprobes = nprobes.unwrap_or(DEFAULT_NPROBES);
         let tbl = self
-            .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
             .await?;
 
         // Opting out of the stored vector becomes a column projection:
@@ -1383,9 +1692,12 @@ impl NamespaceManager {
                     vq
                 }
             };
-            vq = vq.nprobes(nprobes).limit(k);
+            vq = vq
+                .distance_type(info.distance_metric.to_lance())
+                .nprobes(nprobes)
+                .limit(k);
             if let Some(ref t) = text {
-                vq = vq.full_text_search(FullTextSearchQuery::new(t.clone()));
+                vq = vq.full_text_search(full_text_query(t.clone(), fuzzy.as_ref())?);
             }
             if let Some(ref f) = filter {
                 vq = vq.only_if(f.clone());
@@ -1405,7 +1717,7 @@ impl NamespaceManager {
             let t = text.unwrap();
             let mut q = tbl
                 .query()
-                .full_text_search(FullTextSearchQuery::new(t))
+                .full_text_search(full_text_query(t, fuzzy.as_ref())?)
                 .limit(k);
             if let Some(ref f) = filter {
                 q = q.only_if(f.clone());
@@ -1464,21 +1776,18 @@ impl NamespaceManager {
         })?;
 
         let tbl = self
-            .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
             .await?;
 
-        // Single-vector namespaces use the historical L2 default;
-        // multivector namespaces use cosine — Lance's
-        // late-interaction index only supports cosine. The API
-        // surface does not expose a metric override on
-        // `IndexRequest`, so this is a defaulting choice keyed on
-        // the namespace's vector kind, not an override of any
-        // caller input.
-        let metric = match info.kind {
-            VectorKind::Single => DistanceType::L2,
-            VectorKind::Multivector => DistanceType::Cosine,
-        };
-        let mut builder = IvfPqIndexBuilder::default().distance_type(metric);
+        let mut builder =
+            IvfPqIndexBuilder::default().distance_type(info.distance_metric.to_lance());
         if let Some(n) = num_partitions {
             builder = builder.num_partitions(n);
         }
@@ -1513,7 +1822,14 @@ impl NamespaceManager {
         })?;
 
         let tbl = self
-            .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
             .await?;
         tbl.create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
             .execute()
@@ -1567,7 +1883,14 @@ impl NamespaceManager {
         }
 
         let tbl = self
-            .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
             .await?;
         tbl.create_index(&[column], Index::BTree(BTreeIndexBuilder::default()))
             .execute()
@@ -1638,7 +1961,14 @@ impl NamespaceManager {
         })?;
 
         let tbl = self
-            .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
             .await?;
         let stats = tbl
             .optimize(OptimizeAction::default())
@@ -1688,7 +2018,8 @@ impl NamespaceManager {
         ns: &NamespaceId,
         limit: usize,
         order: ListOrder,
-        cursor: Option<(i64, u64)>,
+        cursor: Option<(i64, RowId)>,
+        filter: Option<String>,
     ) -> Result<ListPage, HevSearchError> {
         let limit = limit.clamp(1, LIST_MAX_LIMIT);
 
@@ -1717,7 +2048,14 @@ impl NamespaceManager {
         }
 
         let tbl = self
-            .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
             .await?;
         let dataset_wrapper = tbl
             .dataset()
@@ -1729,19 +2067,35 @@ impl NamespaceManager {
 
         let mut scan = dataset.scan();
 
+        let mut predicates = Vec::new();
+        if let Some(predicate) = filter {
+            predicates.push(format!("({predicate})"));
+        }
         if let Some((ts, id)) = cursor {
+            if id.id_type() != info.id_type {
+                return Err(HevSearchError::InvalidRequest(format!(
+                    "cursor id_type is {}, but namespace {ns} is {}",
+                    id.id_type().as_label(),
+                    info.id_type.as_label()
+                )));
+            }
+            let id_sql = id.to_sql_literal();
             let filter = match order {
                 ListOrder::Desc => format!(
                     "({INGESTED_AT_COLUMN} < to_timestamp_micros({ts})) \
-                     OR ({INGESTED_AT_COLUMN} = to_timestamp_micros({ts}) AND id < {id})"
+                     OR ({INGESTED_AT_COLUMN} = to_timestamp_micros({ts}) AND id < {id_sql})"
                 ),
                 ListOrder::Asc => format!(
                     "({INGESTED_AT_COLUMN} > to_timestamp_micros({ts})) \
-                     OR ({INGESTED_AT_COLUMN} = to_timestamp_micros({ts}) AND id > {id})"
+                     OR ({INGESTED_AT_COLUMN} = to_timestamp_micros({ts}) AND id > {id_sql})"
                 ),
             };
-            scan.filter(&filter)
-                .map_err(|e| HevSearchError::Backend(format!("scan.filter: {e}")))?;
+            predicates.push(format!("({filter})"));
+        }
+        if !predicates.is_empty() {
+            let predicate = predicates.join(" AND ");
+            scan.filter(&predicate)
+                .map_err(|e| HevSearchError::InvalidRequest(format!("list filter: {e}")))?;
         }
 
         let ordering = match order {
@@ -1776,7 +2130,7 @@ impl NamespaceManager {
         let next_cursor = if rows.len() > limit {
             rows.truncate(limit);
             rows.last()
-                .map(|r| encode_list_cursor(r.ingested_at_micros, r.id))
+                .map(|r| encode_list_cursor(r.ingested_at_micros, r.id.clone()))
         } else {
             None
         };
@@ -1805,7 +2159,14 @@ impl NamespaceManager {
         }
 
         let tbl = self
-            .get_or_open_table(ns, info.kind, info.dim, &info.attributes)
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
             .await?;
         let dataset_wrapper = tbl
             .dataset()
@@ -1929,6 +2290,8 @@ impl NamespaceManager {
             namespace: ns.to_string(),
             kind: schema.kind,
             vector_dim: schema.dim,
+            id_type: schema.id_type,
+            distance_metric: schema.distance_metric,
             row_count,
             fragment_count: manifest.fragments.len(),
             has_vector_index,
@@ -1936,6 +2299,18 @@ impl NamespaceManager {
             has_scalar_index,
             table_version: manifest.version,
         }))
+    }
+
+    /// Return the namespace's configured distance metric without
+    /// row-count or index metadata work.
+    pub async fn distance_metric(
+        &self,
+        ns: &NamespaceId,
+    ) -> Result<Option<DistanceMetric>, HevSearchError> {
+        Ok(self
+            .resolve_schema_info(ns)
+            .await?
+            .map(|info| info.distance_metric))
     }
 }
 
@@ -1964,29 +2339,99 @@ fn classify_index_types(types: impl Iterator<Item = IndexType>) -> (bool, bool, 
     (vector, fts, scalar)
 }
 
-/// Encode a `(timestamp_micros, id)` pair as a 32-character hex
-/// cursor. The encoding is implementation-defined and may change —
+fn full_text_query(
+    text: String,
+    fuzzy: Option<&FuzzyRequest>,
+) -> Result<FullTextSearchQuery, HevSearchError> {
+    match fuzzy {
+        Some(fuzzy) => Ok(FullTextSearchQuery::new_fuzzy(
+            text,
+            fuzzy.max_edit_distance.to_lance()?,
+        )),
+        None => Ok(FullTextSearchQuery::new(text)),
+    }
+}
+
+/// Encode a `(timestamp_micros, id)` pair as an opaque cursor. The
+/// encoding is implementation-defined and may change —
 /// clients must treat the returned string as an opaque token and
 /// round-trip it verbatim via [`decode_list_cursor`]. Parsing the
 /// bytes or constructing cursors by hand is not supported.
-pub fn encode_list_cursor(ts_micros: i64, id: u64) -> String {
-    format!("{:016x}{:016x}", ts_micros as u64, id)
+pub fn encode_list_cursor(ts_micros: i64, id: RowId) -> String {
+    match id {
+        RowId::U64(id) => format!("v1:u:{:016x}:{:016x}", ts_micros as u64, id),
+        RowId::String(id) => format!(
+            "v1:s:{:016x}:{}",
+            ts_micros as u64,
+            hex_encode(id.as_bytes())
+        ),
+    }
 }
 
 /// Decode a cursor produced by [`encode_list_cursor`]. Returns an
 /// [`HevSearchError::InvalidRequest`] on malformed input so the API
 /// layer can return a 400 verbatim.
-pub fn decode_list_cursor(cursor: &str) -> Result<(i64, u64), HevSearchError> {
-    if cursor.len() != 32 || !cursor.chars().all(|c| c.is_ascii_hexdigit()) {
+pub fn decode_list_cursor(cursor: &str) -> Result<(i64, RowId), HevSearchError> {
+    // Backward-compatible decode for cursors emitted before string ids.
+    if cursor.len() == 32 && cursor.chars().all(|c| c.is_ascii_hexdigit()) {
+        let ts = u64::from_str_radix(&cursor[..16], 16)
+            .map_err(|e| HevSearchError::InvalidRequest(format!("cursor timestamp: {e}")))?;
+        let id = u64::from_str_radix(&cursor[16..], 16)
+            .map_err(|e| HevSearchError::InvalidRequest(format!("cursor id: {e}")))?;
+        return Ok((ts as i64, RowId::U64(id)));
+    }
+
+    let parts: Vec<&str> = cursor.split(':').collect();
+    if parts.len() != 4 || parts[0] != "v1" {
         return Err(HevSearchError::InvalidRequest(format!(
-            "malformed cursor {cursor:?}: expected 32 hex characters"
+            "malformed cursor {cursor:?}"
         )));
     }
-    let ts = u64::from_str_radix(&cursor[..16], 16)
+    let ts = u64::from_str_radix(parts[2], 16)
         .map_err(|e| HevSearchError::InvalidRequest(format!("cursor timestamp: {e}")))?;
-    let id = u64::from_str_radix(&cursor[16..], 16)
-        .map_err(|e| HevSearchError::InvalidRequest(format!("cursor id: {e}")))?;
+    let id = match parts[1] {
+        "u" => RowId::U64(
+            u64::from_str_radix(parts[3], 16)
+                .map_err(|e| HevSearchError::InvalidRequest(format!("cursor id: {e}")))?,
+        ),
+        "s" => {
+            let bytes = hex_decode(parts[3])?;
+            let id = String::from_utf8(bytes)
+                .map_err(|e| HevSearchError::InvalidRequest(format!("cursor id: {e}")))?;
+            RowId::String(id)
+        }
+        _ => {
+            return Err(HevSearchError::InvalidRequest(format!(
+                "malformed cursor {cursor:?}: bad id type"
+            )));
+        }
+    };
     Ok((ts as i64, id))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn hex_decode(s: &str) -> Result<Vec<u8>, HevSearchError> {
+    if s.len() % 2 != 0 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(HevSearchError::InvalidRequest(
+            "cursor id is not hex".into(),
+        ));
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for idx in (0..s.len()).step_by(2) {
+        let byte = u8::from_str_radix(&s[idx..idx + 2], 16)
+            .map_err(|e| HevSearchError::InvalidRequest(format!("cursor id: {e}")))?;
+        out.push(byte);
+    }
+    Ok(out)
 }
 
 /// Result of a compaction operation, exposing the fragment delta.
@@ -2017,10 +2462,20 @@ async fn read_schema_info_from_table(
         .await
         .map_err(|e| HevSearchError::Backend(format!("read schema: {e}")))?;
     let mut dim_kind: Option<(usize, VectorKind)> = None;
+    let mut id_type: Option<RowIdType> = None;
     let mut has_ingested_at = false;
     let mut attributes = BTreeMap::new();
     for field in schema.fields() {
         match field.name().as_str() {
+            "id" => match field.data_type() {
+                DataType::UInt64 => id_type = Some(RowIdType::U64),
+                DataType::Utf8 => id_type = Some(RowIdType::String),
+                other => {
+                    return Err(HevSearchError::Backend(format!(
+                        "table schema 'id' column has unsupported type {other:?}"
+                    )));
+                }
+            },
             "vector" => match field.data_type() {
                 DataType::FixedSizeList(_, size) => {
                     dim_kind = Some((*size as usize, VectorKind::Single));
@@ -2040,7 +2495,7 @@ async fn read_schema_info_from_table(
                     has_ingested_at = true;
                 }
             }
-            "id" | "text" => {}
+            "text" => {}
             name => {
                 if let Some(ty) = AttributeType::from_arrow(field.data_type()) {
                     attributes.insert(name.to_string(), ty);
@@ -2053,9 +2508,18 @@ async fn read_schema_info_from_table(
             "table schema 'vector' column is neither FixedSizeList nor List<FixedSizeList>".into(),
         )
     })?;
+    let distance_metric = match schema.metadata().get(DISTANCE_METRIC_METADATA_KEY) {
+        Some(metric) => DistanceMetric::from_label(metric)?,
+        None => DistanceMetric::default_for_kind(kind),
+    };
+    distance_metric.validate_for_kind(kind)?;
+    let id_type = id_type
+        .ok_or_else(|| HevSearchError::Backend("table schema missing 'id' column".into()))?;
     Ok(NamespaceSchemaInfo {
         dim,
         kind,
+        id_type,
+        distance_metric,
         has_ingested_at,
         attributes,
     })
@@ -2118,21 +2582,31 @@ fn list_of_fixed_size_float_dim(dt: &DataType) -> Option<usize> {
 /// the background import.
 pub fn validate_arrow_import_schema(
     schema: &Schema,
-) -> Result<(VectorKind, usize, bool, BTreeMap<String, AttributeType>), HevSearchError> {
-    match schema.column_with_name("id") {
-        Some((_, f)) if f.data_type() == &DataType::UInt64 => {}
+) -> Result<
+    (
+        VectorKind,
+        usize,
+        RowIdType,
+        bool,
+        BTreeMap<String, AttributeType>,
+    ),
+    HevSearchError,
+> {
+    let id_type = match schema.column_with_name("id") {
+        Some((_, f)) if f.data_type() == &DataType::UInt64 => RowIdType::U64,
+        Some((_, f)) if f.data_type() == &DataType::Utf8 => RowIdType::String,
         Some((_, f)) => {
             return Err(HevSearchError::InvalidRequest(format!(
-                "import: column `id` must be UInt64, got {:?}",
+                "import: column `id` must be UInt64 or Utf8, got {:?}",
                 f.data_type()
             )));
         }
         None => {
             return Err(HevSearchError::InvalidRequest(
-                "import: required column `id` (UInt64) is missing".into(),
+                "import: required column `id` (UInt64 or Utf8) is missing".into(),
             ));
         }
-    }
+    };
 
     if schema.column_with_name(INGESTED_AT_COLUMN).is_some() {
         return Err(HevSearchError::InvalidRequest(format!(
@@ -2187,7 +2661,14 @@ pub fn validate_arrow_import_schema(
     // Float32, nullable) so `Table::add` accepts the column without a
     // cast. The dim probes above are lenient on child naming; this is
     // the strict gate.
-    let canonical = NamespaceManager::schema_for_kind(kind, dim, false, &BTreeMap::new());
+    let canonical = NamespaceManager::schema_for_kind(
+        kind,
+        dim,
+        id_type,
+        DistanceMetric::default_for_kind(kind),
+        false,
+        &BTreeMap::new(),
+    );
     let canonical_vec = canonical.field(1).data_type();
     let vec_name = match kind {
         VectorKind::Single => "vector",
@@ -2245,7 +2726,7 @@ pub fn validate_arrow_import_schema(
         attributes.insert(name.to_string(), ty);
     }
 
-    Ok((kind, dim, has_text, attributes))
+    Ok((kind, dim, id_type, has_text, attributes))
 }
 
 /// Classify a `Table::add` failure: an Arrow error means the client's
@@ -2479,7 +2960,29 @@ fn rows_to_batch(
     include_ingested_at: bool,
 ) -> Result<RecordBatch, HevSearchError> {
     let n = rows.len();
-    let ids = UInt64Array::from_iter_values(rows.iter().map(|r| r.id));
+    let ids: ArrayRef = match schema.field(0).data_type() {
+        DataType::UInt64 => Arc::new(UInt64Array::from_iter_values(rows.iter().map(
+            |r| match &r.id {
+                RowId::U64(id) => *id,
+                RowId::String(_) => unreachable!("validated id_type before batch build"),
+            },
+        ))),
+        DataType::Utf8 => {
+            let mut builder = StringBuilder::with_capacity(rows.len(), rows.len() * 16);
+            for row in &rows {
+                match &row.id {
+                    RowId::String(id) => builder.append_value(id),
+                    RowId::U64(_) => unreachable!("validated id_type before batch build"),
+                }
+            }
+            Arc::new(builder.finish())
+        }
+        other => {
+            return Err(HevSearchError::Backend(format!(
+                "batch build: unsupported id type {other:?}"
+            )));
+        }
+    };
 
     let vectors: ArrayRef = match kind {
         VectorKind::Single => {
@@ -2525,11 +3028,7 @@ fn rows_to_batch(
     }
     let texts = text_builder.finish();
 
-    let mut columns: Vec<ArrayRef> = vec![
-        Arc::new(ids) as ArrayRef,
-        vectors,
-        Arc::new(texts) as ArrayRef,
-    ];
+    let mut columns: Vec<ArrayRef> = vec![ids, vectors, Arc::new(texts) as ArrayRef];
 
     if include_ingested_at {
         // Stamp every row in the batch with the same server-side
@@ -2706,7 +3205,9 @@ fn extract_row_vector(
         VectorKind::Single => {
             let vectors = batch
                 .column_by_name("vector")
-                .ok_or_else(|| HevSearchError::Backend(format!("{context}: missing vector column")))?
+                .ok_or_else(|| {
+                    HevSearchError::Backend(format!("{context}: missing vector column"))
+                })?
                 .as_any()
                 .downcast_ref::<FixedSizeListArray>()
                 .ok_or_else(|| {
@@ -2726,7 +3227,9 @@ fn extract_row_vector(
             // bag — the response intentionally omits it.
             let _ = batch
                 .column_by_name("vector")
-                .ok_or_else(|| HevSearchError::Backend(format!("{context}: missing vector column")))?
+                .ok_or_else(|| {
+                    HevSearchError::Backend(format!("{context}: missing vector column"))
+                })?
                 .as_any()
                 .downcast_ref::<ListArray>()
                 .ok_or_else(|| {
@@ -2745,12 +3248,7 @@ fn batches_to_list_rows(
 ) -> Result<Vec<ListRow>, HevSearchError> {
     let mut out = Vec::new();
     for batch in batches {
-        let ids = batch
-            .column_by_name("id")
-            .ok_or_else(|| HevSearchError::Backend("list: missing id column".into()))?
-            .as_any()
-            .downcast_ref::<UInt64Array>()
-            .ok_or_else(|| HevSearchError::Backend("list: id not UInt64".into()))?;
+        let ids = extract_row_ids(batch, "list")?;
         let texts = batch
             .column_by_name("text")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -2773,7 +3271,7 @@ fn batches_to_list_rows(
                 }
             });
             out.push(ListRow {
-                id: ids.value(row),
+                id: ids[row].clone(),
                 vector,
                 text,
                 ingested_at_micros: ingested_at.value(row),
@@ -2791,12 +3289,7 @@ fn batches_to_results(
 ) -> Result<Vec<QueryResult>, HevSearchError> {
     let mut out = Vec::new();
     for batch in batches {
-        let ids = batch
-            .column_by_name("id")
-            .ok_or_else(|| HevSearchError::Backend("query result: missing id column".into()))?
-            .as_any()
-            .downcast_ref::<UInt64Array>()
-            .ok_or_else(|| HevSearchError::Backend("query result: id not UInt64".into()))?;
+        let ids = extract_row_ids(batch, "query result")?;
         let scores = find_score_column(batch).ok_or_else(|| {
             HevSearchError::Backend(
                 "query result: no score column (_distance, _score, or _relevance_score)".into(),
@@ -2840,7 +3333,7 @@ fn batches_to_results(
                 }
             });
             out.push(QueryResult {
-                id: ids.value(row),
+                id: ids[row].clone(),
                 score: scores.value(row),
                 vector,
                 text,
@@ -2850,6 +3343,25 @@ fn batches_to_results(
         }
     }
     Ok(out)
+}
+
+fn extract_row_ids(batch: &RecordBatch, context: &str) -> Result<Vec<RowId>, HevSearchError> {
+    let column = batch
+        .column_by_name("id")
+        .ok_or_else(|| HevSearchError::Backend(format!("{context}: missing id column")))?;
+    if let Some(ids) = column.as_any().downcast_ref::<UInt64Array>() {
+        return Ok((0..ids.len())
+            .map(|row| RowId::U64(ids.value(row)))
+            .collect());
+    }
+    if let Some(ids) = column.as_any().downcast_ref::<StringArray>() {
+        return Ok((0..ids.len())
+            .map(|row| RowId::String(ids.value(row).to_string()))
+            .collect());
+    }
+    Err(HevSearchError::Backend(format!(
+        "{context}: id not UInt64 or Utf8"
+    )))
 }
 
 fn extract_scalar_attributes(
@@ -2966,9 +3478,12 @@ fn facet_values_at(array: &ArrayRef, row: usize) -> Result<Vec<serde_json::Value
             return Ok(Vec::new());
         }
         let elems = a.value(row);
-        let strs = elems.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-            HevSearchError::InvalidRequest("facet list field must be a list of strings".into())
-        })?;
+        let strs = elems
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                HevSearchError::InvalidRequest("facet list field must be a list of strings".into())
+            })?;
         let mut out = Vec::with_capacity(strs.len());
         for i in 0..strs.len() {
             if !strs.is_null(i) {
@@ -3037,11 +3552,28 @@ mod tests {
             (i64::MAX, u64::MAX),
             (1_700_000_000_000_000, 42),
         ] {
-            let encoded = encode_list_cursor(ts, id);
-            assert_eq!(encoded.len(), 32);
+            let id = RowId::U64(id);
+            let encoded = encode_list_cursor(ts, id.clone());
             let (ts2, id2) = decode_list_cursor(&encoded).expect("decode");
             assert_eq!((ts, id), (ts2, id2));
         }
+    }
+
+    #[test]
+    fn string_cursor_round_trip() {
+        let id = RowId::String("set#openfda#42".to_string());
+        let encoded = encode_list_cursor(1_700_000_000_000_000, id.clone());
+        let (ts, decoded) = decode_list_cursor(&encoded).expect("decode");
+        assert_eq!(ts, 1_700_000_000_000_000);
+        assert_eq!(decoded, id);
+    }
+
+    #[test]
+    fn legacy_numeric_cursor_round_trip() {
+        let encoded = format!("{:016x}{:016x}", 1_700_000_000_000_000_u64, 42_u64);
+        let (ts, id) = decode_list_cursor(&encoded).expect("decode");
+        assert_eq!(ts, 1_700_000_000_000_000);
+        assert_eq!(id, RowId::U64(42));
     }
 
     #[test]
@@ -3074,16 +3606,28 @@ mod tests {
 
     #[test]
     fn import_schema_validation() {
-        let single_vec =
-            NamespaceManager::schema_for_kind(VectorKind::Single, 4, false, &BTreeMap::new())
-                .field(1)
-                .data_type()
-                .clone();
-        let multi_vec =
-            NamespaceManager::schema_for_kind(VectorKind::Multivector, 4, false, &BTreeMap::new())
-                .field(1)
-                .data_type()
-                .clone();
+        let single_vec = NamespaceManager::schema_for_kind(
+            VectorKind::Single,
+            4,
+            RowIdType::U64,
+            DistanceMetric::L2,
+            false,
+            &BTreeMap::new(),
+        )
+        .field(1)
+        .data_type()
+        .clone();
+        let multi_vec = NamespaceManager::schema_for_kind(
+            VectorKind::Multivector,
+            4,
+            RowIdType::U64,
+            DistanceMetric::Cosine,
+            false,
+            &BTreeMap::new(),
+        )
+        .field(1)
+        .data_type()
+        .clone();
 
         // Happy: single-vector, no text.
         let s = Schema::new(vec![
@@ -3092,18 +3636,30 @@ mod tests {
         ]);
         assert_eq!(
             validate_arrow_import_schema(&s).unwrap(),
-            (VectorKind::Single, 4, false, BTreeMap::new())
+            (
+                VectorKind::Single,
+                4,
+                RowIdType::U64,
+                false,
+                BTreeMap::new()
+            )
         );
 
-        // Happy: multivector with text.
+        // Happy: multivector with string ids and text.
         let s = Schema::new(vec![
-            Field::new("id", DataType::UInt64, false),
+            Field::new("id", DataType::Utf8, false),
             Field::new("vectors", multi_vec.clone(), false),
             Field::new("text", DataType::Utf8, true),
         ]);
         assert_eq!(
             validate_arrow_import_schema(&s).unwrap(),
-            (VectorKind::Multivector, 4, true, BTreeMap::new())
+            (
+                VectorKind::Multivector,
+                4,
+                RowIdType::String,
+                true,
+                BTreeMap::new()
+            )
         );
 
         let s = Schema::new(vec![
@@ -3112,7 +3668,7 @@ mod tests {
             Field::new("section", DataType::Utf8, true),
             Field::new("priority", DataType::Int64, true),
         ]);
-        let (_, _, _, attrs) = validate_arrow_import_schema(&s).unwrap();
+        let (_, _, _, _, attrs) = validate_arrow_import_schema(&s).unwrap();
         assert_eq!(attrs.get("section"), Some(&AttributeType::Utf8));
         assert_eq!(attrs.get("priority"), Some(&AttributeType::Int64));
 

@@ -79,7 +79,7 @@ fn unit(axis: usize) -> Vec<f32> {
 
 fn multi(subs: Vec<Vec<f32>>) -> UpsertRow {
     UpsertRow {
-        id: 0,
+        id: hevsearch_core::RowId::U64(0),
         vector: Vec::new(),
         vectors: Some(subs),
         text: None,
@@ -88,7 +88,7 @@ fn multi(subs: Vec<Vec<f32>>) -> UpsertRow {
 }
 
 fn with_id(mut row: UpsertRow, id: u64) -> UpsertRow {
-    row.id = id;
+    row.id = hevsearch_core::RowId::U64(id);
     row
 }
 
@@ -352,7 +352,7 @@ async fn mixed_inner_dim_rejected() {
     // Two sub-vectors of different lengths inside one row must fail
     // with a per-row diagnostic before the batch build.
     let mut bad = multi(vec![unit(0), vec![1.0, 0.0]]);
-    bad.id = 1;
+    bad.id = hevsearch_core::RowId::U64(1);
     let err = manager
         .upsert(&ns, vec![bad])
         .await

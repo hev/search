@@ -9,8 +9,8 @@ use std::sync::Arc;
 use hevsearch_core::cache::NamespaceCache;
 use hevsearch_core::metrics::test_metrics;
 use hevsearch_core::{
-    HevSearchError, NamespaceId, NamespaceManager, NamespaceService, QueryCacheSource, QueryRequest,
-    SemanticCacheRequest, StorageRoot, UpsertRow,
+    HevSearchError, NamespaceId, NamespaceManager, NamespaceService, QueryCacheSource,
+    QueryRequest, SemanticCacheRequest, StorageRoot, UpsertRow,
 };
 use tempfile::TempDir;
 
@@ -29,6 +29,7 @@ fn request(filter: Option<&str>) -> QueryRequest {
         k: 10,
         nprobes: None,
         text: None,
+        fuzzy: None,
         filter: filter.map(str::to_string),
         include_vector: false,
         semantic_cache: None,

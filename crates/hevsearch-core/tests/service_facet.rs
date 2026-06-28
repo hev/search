@@ -73,21 +73,21 @@ async fn local_service() -> (
             &ns,
             vec![
                 UpsertRow {
-                    id: 1,
+                    id: hevsearch_core::RowId::U64(1),
                     vector: unit_vector(0),
                     vectors: None,
                     text: None,
                     attributes: attr("warnings", "oral"),
                 },
                 UpsertRow {
-                    id: 2,
+                    id: hevsearch_core::RowId::U64(2),
                     vector: unit_vector(1),
                     vectors: None,
                     text: None,
                     attributes: attr("dosage", "iv"),
                 },
                 UpsertRow {
-                    id: 3,
+                    id: hevsearch_core::RowId::U64(3),
                     vector: unit_vector(2),
                     vectors: None,
                     text: None,
@@ -139,7 +139,7 @@ async fn facet_repeats_hit_cache_and_filters_do_not_collide() {
         .upsert(
             &ns,
             vec![UpsertRow {
-                id: 4,
+                id: hevsearch_core::RowId::U64(4),
                 vector: unit_vector(3),
                 vectors: None,
                 text: None,
@@ -195,9 +195,14 @@ async fn string_list_attribute_facets_per_element_and_filters_with_array_has() {
         Arc::clone(&metrics),
     ));
     let cache = Arc::new(
-        NamespaceCache::new(16 * 1024 * 1024, cache_dir.path(), 64 * 1024 * 1024, Arc::clone(&metrics))
-            .await
-            .expect("cache"),
+        NamespaceCache::new(
+            16 * 1024 * 1024,
+            cache_dir.path(),
+            64 * 1024 * 1024,
+            Arc::clone(&metrics),
+        )
+        .await
+        .expect("cache"),
     );
     let service = NamespaceService::new(Arc::clone(&manager), cache, Arc::clone(&metrics));
     let ns = NamespaceId::new("service-facet-list").unwrap();
@@ -205,7 +210,13 @@ async fn string_list_attribute_facets_per_element_and_filters_with_array_has() {
     let with_genres = |id: u64, axis: usize, genres: serde_json::Value| {
         let mut attributes = serde_json::Map::new();
         attributes.insert("genres".into(), genres);
-        UpsertRow { id, vector: unit_vector(axis), vectors: None, text: None, attributes }
+        UpsertRow {
+            id: hevsearch_core::RowId::U64(id),
+            vector: unit_vector(axis),
+            vectors: None,
+            text: None,
+            attributes,
+        }
     };
     service
         .upsert(
@@ -221,7 +232,14 @@ async fn string_list_attribute_facets_per_element_and_filters_with_array_has() {
 
     // Per-element counts: Fantasy 2, Fiction 2, Science Fiction 1.
     let all = service
-        .facet(&ns, &FacetRequest { filter: None, fields: vec!["genres".into()], top: Some(10) })
+        .facet(
+            &ns,
+            &FacetRequest {
+                filter: None,
+                fields: vec!["genres".into()],
+                top: Some(10),
+            },
+        )
         .await
         .expect("facet genres");
     let counts: HashMap<String, u64> = all.facets[0]

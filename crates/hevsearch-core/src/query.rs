@@ -58,6 +58,10 @@ pub struct QueryRequest {
     /// When set without any vector field, triggers FTS-only search.
     #[serde(default)]
     pub text: Option<String>,
+    /// Optional typo-tolerant FTS controls. Applies to FTS-only and
+    /// hybrid queries. Omitted means exact BM25 matching.
+    #[serde(default)]
+    pub fuzzy: Option<FuzzyRequest>,
     /// Optional DataFusion SQL predicate, using the same dialect as
     /// `/list` filters. LanceDB applies this as a prefilter before
     /// nearest-neighbour search, so vector queries return up to `k`
@@ -88,6 +92,39 @@ pub struct QueryRequest {
     /// does not split otherwise-identical entries.
     #[serde(default)]
     pub semantic_cache: Option<SemanticCacheRequest>,
+}
+
+/// Fuzzy full-text matching controls.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FuzzyRequest {
+    /// Maximum edit distance: `0`, `1`, `2`, or `"auto"`.
+    pub max_edit_distance: FuzzyMaxEditDistance,
+}
+
+/// Fuzzy edit-distance cap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FuzzyMaxEditDistance {
+    /// Fixed maximum edit distance.
+    Fixed(u32),
+    /// Automatic per-token edit distance. Only `"auto"` is accepted.
+    Auto(String),
+}
+
+impl FuzzyMaxEditDistance {
+    /// Convert to the Lance fuzziness parameter.
+    pub fn to_lance(&self) -> Result<Option<u32>, crate::HevSearchError> {
+        match self {
+            Self::Fixed(n) if *n <= 2 => Ok(Some(*n)),
+            Self::Fixed(n) => Err(crate::HevSearchError::InvalidRequest(format!(
+                "fuzzy.max_edit_distance must be 0, 1, 2, or \"auto\", got {n}"
+            ))),
+            Self::Auto(value) if value == "auto" => Ok(None),
+            Self::Auto(value) => Err(crate::HevSearchError::InvalidRequest(format!(
+                "fuzzy.max_edit_distance must be 0, 1, 2, or \"auto\", got {value:?}"
+            ))),
+        }
+    }
 }
 
 /// Request payload for `POST /ns/{namespace}/facet`.
@@ -352,6 +389,7 @@ mod tests {
             k: 10,
             nprobes: None,
             text: None,
+            fuzzy: None,
             filter: None,
             include_vector: true,
             semantic_cache: None,

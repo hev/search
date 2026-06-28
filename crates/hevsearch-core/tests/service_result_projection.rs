@@ -4,7 +4,7 @@
 //!
 //! 1. Default queries still return the stored vector and now carry
 //!    the row's `_ingested_at` timestamp (parity with `/list`).
-//! 2. `include_vector: false` omits the stored vector while id,
+//! 2. `include_vector: false` omits the stored vector while id: hevsearch_core::RowId::U64(id),
 //!    score, text, and timestamp survive — and the flag splits the
 //!    exact-cache key, so full and vector-light payloads never
 //!    collide and both hit independently on repeat.
@@ -91,6 +91,7 @@ fn request(vector: Vec<f32>, include_vector: bool) -> QueryRequest {
         k: 10,
         nprobes: None,
         text: None,
+        fuzzy: None,
         filter: None,
         include_vector,
         semantic_cache: None,
@@ -143,7 +144,7 @@ async fn build_service() -> (
             &ns,
             (0..3)
                 .map(|i| UpsertRow {
-                    id: i as u64 + 1,
+                    id: hevsearch_core::RowId::U64(i as u64 + 1),
                     vector: unit_vector(i),
                     vectors: None,
                     text: Some(format!("row {}", i + 1)),

@@ -25,7 +25,8 @@ use std::time::Duration;
 
 use hevsearch_core::metrics::test_metrics;
 use hevsearch_core::{
-    decode_list_cursor, ListOrder, ListRow, NamespaceId, NamespaceManager, StorageRoot, UpsertRow,
+    decode_list_cursor, ListOrder, ListRow, NamespaceId, NamespaceManager, RowId, StorageRoot,
+    UpsertRow,
 };
 
 const DIM: usize = 4;
@@ -86,14 +87,14 @@ async fn list_paginates_in_strict_ingest_order() {
     // `_ingested_at` timestamp. The sleep must exceed the clock
     // resolution we stamp at (microseconds) — 5ms is more than enough
     // while keeping the test quick.
-    let mut expected_ids: Vec<u64> = Vec::new();
+    let mut expected_ids: Vec<RowId> = Vec::new();
     for batch_idx in 0..BATCHES {
         let base = (batch_idx * ROWS_PER_BATCH) as u64;
         let rows: Vec<UpsertRow> = (0..ROWS_PER_BATCH)
             .map(|i| (base + i as u64, unit_vector(i)).into())
             .collect();
         for row in &rows {
-            expected_ids.push(row.id);
+            expected_ids.push(row.id.clone());
         }
         manager.upsert(&ns, rows).await.expect("upsert batch");
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -102,10 +103,10 @@ async fn list_paginates_in_strict_ingest_order() {
 
     // Page through the namespace in descending order.
     let mut collected: Vec<ListRow> = Vec::new();
-    let mut cursor: Option<(i64, u64)> = None;
+    let mut cursor: Option<(i64, RowId)> = None;
     loop {
         let page = manager
-            .list(&ns, PAGE_LIMIT, ListOrder::Desc, cursor)
+            .list(&ns, PAGE_LIMIT, ListOrder::Desc, cursor, None)
             .await
             .expect("list page");
         assert!(
@@ -128,7 +129,7 @@ async fn list_paginates_in_strict_ingest_order() {
         "paginated total ({}) != upserted total ({total})",
         collected.len()
     );
-    let seen: HashSet<u64> = collected.iter().map(|r| r.id).collect();
+    let seen: HashSet<RowId> = collected.iter().map(|r| r.id.clone()).collect();
     assert_eq!(
         seen.len(),
         total,
@@ -143,8 +144,8 @@ async fn list_paginates_in_strict_ingest_order() {
     // keep them stable and monotonically decreasing.
     for window in collected.windows(2) {
         let (a, b) = (&window[0], &window[1]);
-        let a_key = (a.ingested_at_micros, a.id);
-        let b_key = (b.ingested_at_micros, b.id);
+        let a_key = (a.ingested_at_micros, a.id.clone());
+        let b_key = (b.ingested_at_micros, b.id.clone());
         assert!(
             a_key > b_key,
             "ordering violated at page boundary: {a_key:?} should be > {b_key:?}"
@@ -153,10 +154,10 @@ async fn list_paginates_in_strict_ingest_order() {
 
     // Ascending pass — verify the endpoint's symmetric behaviour.
     let mut asc_collected: Vec<ListRow> = Vec::new();
-    let mut cursor: Option<(i64, u64)> = None;
+    let mut cursor: Option<(i64, RowId)> = None;
     loop {
         let page = manager
-            .list(&ns, PAGE_LIMIT, ListOrder::Asc, cursor)
+            .list(&ns, PAGE_LIMIT, ListOrder::Asc, cursor, None)
             .await
             .expect("list page (asc)");
         asc_collected.extend(page.rows);
@@ -167,8 +168,8 @@ async fn list_paginates_in_strict_ingest_order() {
     }
     assert_eq!(asc_collected.len(), total);
     for window in asc_collected.windows(2) {
-        let a_key = (window[0].ingested_at_micros, window[0].id);
-        let b_key = (window[1].ingested_at_micros, window[1].id);
+        let a_key = (window[0].ingested_at_micros, window[0].id.clone());
+        let b_key = (window[1].ingested_at_micros, window[1].id.clone());
         assert!(
             a_key < b_key,
             "ascending order violated: {a_key:?} must be < {b_key:?}"
@@ -188,7 +189,7 @@ async fn list_empty_namespace_returns_empty_page() {
     let ns = NamespaceId::new(unique_namespace("issue22-empty")).unwrap();
 
     let page = manager
-        .list(&ns, 50, ListOrder::Desc, None)
+        .list(&ns, 50, ListOrder::Desc, None, None)
         .await
         .expect("list on fresh namespace must not error");
     assert!(page.rows.is_empty());

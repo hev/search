@@ -12,11 +12,48 @@ use serde_json::Value;
 
 use crate::vector::VectorKind;
 
+/// Per-namespace vector distance metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DistanceMetric {
+    /// Euclidean distance.
+    L2,
+    /// Cosine distance.
+    Cosine,
+    /// Dot-product distance.
+    Dot,
+}
+
+/// Stable row identifier.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RowId {
+    /// Back-compatible numeric row id.
+    U64(u64),
+    /// Arbitrary UTF-8 row id.
+    String(String),
+}
+
+impl std::fmt::Display for RowId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::U64(id) => write!(f, "{id}"),
+            Self::String(id) => f.write_str(id),
+        }
+    }
+}
+
+impl PartialEq<u64> for RowId {
+    fn eq(&self, other: &u64) -> bool {
+        matches!(self, Self::U64(id) if id == other)
+    }
+}
+
 /// A single search hit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryResult {
     /// Stable row id from the underlying Lance table.
-    pub id: u64,
+    pub id: RowId,
     /// Similarity score — the metric (cosine, L2, BM25, hybrid
     /// relevance) is determined by the query type; the cache does
     /// not interpret it.
@@ -105,7 +142,7 @@ pub enum ListOrder {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListRow {
     /// Stable row id from the underlying Lance table.
-    pub id: u64,
+    pub id: RowId,
     /// The stored vector for this row. Width matches the
     /// namespace's dimension.
     pub vector: Vec<f32>,
@@ -147,6 +184,11 @@ pub struct NamespaceInfo {
     /// Vector dimension. For multivector namespaces this is the inner
     /// sub-vector width.
     pub vector_dim: usize,
+    /// Row id type fixed by the namespace's first write: `"u64"` or
+    /// `"string"`.
+    pub id_type: RowIdType,
+    /// Distance metric fixed by the namespace's first write.
+    pub distance_metric: DistanceMetric,
     /// Live row count (`Table::count_rows`). Upsert is keyed by `id`
     /// (latest-write-wins), so re-sending an existing id replaces the
     /// row rather than adding one; this is the count of distinct live
@@ -164,4 +206,14 @@ pub struct NamespaceInfo {
     /// Current Lance table version. Advances on every commit; this is
     /// the value the result cache derives its generation from.
     pub table_version: u64,
+}
+
+/// Per-namespace row id column type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowIdType {
+    /// Unsigned 64-bit integer ids.
+    U64,
+    /// UTF-8 string ids.
+    String,
 }

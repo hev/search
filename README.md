@@ -72,7 +72,7 @@ for hit in db.search("fox", vector=[1.0, 0.0, 0.0, 0.0], limit=3):
 
 `tenant="customer-42"` on any call selects a physically separate namespace, the same isolation the server provides. Wheels cover Linux x86_64 and aarch64 and macOS, on Python 3.10 and newer; the package versions independently of the server on its own `hevsearch-v*` tags (current: `hevsearch 0.1.0`). Runnable examples, including image search with CLIP embeddings on object storage, live in [`examples/`](examples/).
 
-The v0.1 scope is embedded use only: the package does not connect to a running hev search server, every row carries a vector (`text` rides along for full-text and hybrid search), and deletes are namespace-level rather than per row.
+The v0.1 Python package scope is embedded use only: it does not connect to a running hev search server, and every row carries a vector (`text` rides along for full-text and hybrid search). The REST API supports both namespace delete and per-row delete; embedded package delete helpers remain narrower.
 
 ## Architecture
 
@@ -265,13 +265,14 @@ If `HEVSEARCH_ADMIN_API_KEY` is unset, the read/write key authorises admin route
 | :--- | :--- | :--- | :--- |
 | `/health` | `GET` | open | Liveness check |
 | `/metrics` | `GET` | metrics or open | Prometheus exposition format |
-| `/ns/{ns}` | `GET` | read/write | Namespace metadata (row count, fragment count, indexes, table version); 404 if it has no data yet |
+| `/ns/{ns}` | `GET` | read/write | Namespace metadata (vector kind, id type, distance metric, row count, fragment count, indexes, table version); 404 if it has no data yet |
 | `/ns/{ns}` | `DELETE` | admin | Removes all data (object storage + cache) for a namespace |
+| `/ns/{ns}/delete` | `POST` | admin | Delete rows by id (`{"ids":[...]}`) or by DataFusion SQL filter (`{"filter":"..."}`) |
 | `/ns/{ns}/upsert` | `POST` | read/write | Insert or update vectors and data (latest-write-wins by `id`) |
 | `/ns/{ns}/import` | `POST` | read/write | Bulk-ingest an Arrow IPC stream (binary, insert-only, async 202). For large first loads; bypasses the JSON body limit |
-| `/ns/{ns}/query` | `POST` | read/write | Vector, FTS, or hybrid search |
+| `/ns/{ns}/query` | `POST` | read/write | Vector, FTS, fuzzy FTS, or hybrid search |
 | `/ns/{ns}/facet` | `POST` | read/write | Facet counts over scalar fields for the full filtered set |
-| `/ns/{ns}/list` | `GET` | read/write | Cursor-paginated list ordered by `_ingested_at` |
+| `/ns/{ns}/list` | `GET` | read/write | Cursor-paginated list ordered by `_ingested_at`, optionally scoped by a DataFusion SQL `filter` |
 | `/ns/{ns}/warmup` | `POST` | read/write | Non-blocking cache pre-warm hint |
 | `/ns/{ns}/index` | `POST` | admin | Build IVF_PQ vector index (async, returns 202) |
 | `/ns/{ns}/fts-index` | `POST` | admin | Build BM25 full-text search index (async, returns 202) |
@@ -309,13 +310,13 @@ Each namespace is one of two **vector kinds**, fixed by the shape of the first u
 - **Single-vector** (the default). One dense vector per row. Used for CLIP, OpenAI `text-embedding-3-*`, sentence-transformers (anything that pools a piece of content into a single embedding).
 - **Multivector**. A variable-length bag of small vectors per row, scored with MaxSim (for each query sub-vector, find its best match anywhere in the document, then sum the matches). This is what ColBERT, ColPali, and ColQwen2 produce, and what compositional queries like *"a man with a logo on his shirt"* need: each query element finds its own best match independently, instead of the whole query collapsing into one summary vector that smears the concepts together.
 
-The wire shape determines the kind. A single-vector upsert uses `vector: [f32, ...]`; a multivector upsert uses `vectors: [[f32, ...], [f32, ...], ...]`. Queries follow the same convention:
+The wire shape determines the kind. A single-vector upsert uses `vector: [f32, ...]`; a multivector upsert uses `vectors: [[f32, ...], [f32, ...], ...]`. The first write also fixes `distance_metric`: `l2`, `cosine`, or `dot` for single-vector namespaces (default `l2`), and `cosine` only for multivector namespaces. Set it as a top-level JSON field on `/upsert`, or as `?distance_metric=cosine` on `/import`. Queries follow the same convention:
 
 ```bash
 # single-vector upsert + query
 curl -X POST http://localhost:3000/ns/photos/upsert \
      -H 'Content-Type: application/json' \
-     -d '{"rows": [{"id": 1, "vector": [0.1, 0.2, 0.3, 0.4]}]}'
+     -d '{"distance_metric": "cosine", "rows": [{"id": 1, "vector": [0.1, 0.2, 0.3, 0.4]}]}'
 curl -X POST http://localhost:3000/ns/photos/query \
      -H 'Content-Type: application/json' \
      -d '{"vector": [0.1, 0.2, 0.3, 0.4], "k": 5}'
@@ -329,11 +330,15 @@ curl -X POST http://localhost:3000/ns/photos-mv/query \
      -d '{"vectors": [[0.1, 0.2, 0.3, 0.4]], "k": 5}'
 ```
 
+FTS and hybrid queries can opt into typo-tolerant matching with
+`"fuzzy": {"max_edit_distance": 0|1|2|"auto"}`. Omitting `fuzzy` keeps exact BM25
+matching.
+
 The handler returns 400 if the payload shape does not match the namespace's kind, for example a `vector:` payload sent to a multivector namespace, or vice versa. The error response names the expected shape.
 
 **Constraints to know before adopting multivector:**
 
-- **Cosine only.** Lance's late-interaction index supports cosine distance exclusively. hev search does not expose a per-request metric option on the API surface; `create_index` constructs the IVF_PQ builder with cosine internally for multivector namespaces and with L2 for single-vector namespaces.
+- **Cosine only.** Lance's late-interaction index supports cosine distance exclusively, so multivector namespaces reject `distance_metric` values other than `cosine`.
 - **Storage is materially larger.** A single-vector CLIP entry is ~2 KB per row. A multivector ColPali entry is closer to ~500 KB per row (around 1030 sub-vectors × 128 floats). Budget S3 footprint and index-build wall-clock time accordingly.
 - **Build an index for tractable latency.** Lance answers multivector queries on an un-indexed namespace via brute-force scan, fine for tiny development corpora but painfully slow on anything real. Build the IVF_PQ index (`POST /ns/{ns}/index`) after the first batch of upserts. Same trade-off as single-vector queries.
 - **The result cache does not accelerate novel multivector queries.** Every tokenised query is unique, so result-cache hit rate is near zero here; it still accelerates exact repeats (useful for benchmarks, not production retrieval). The object cache, if enabled, still helps by serving the underlying byte reads from NVMe.

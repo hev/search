@@ -322,6 +322,7 @@ async fn main() -> anyhow::Result<()> {
             k: 10,
             nprobes: None,
             text: None,
+            fuzzy: None,
             filter: None,
             include_vector: true,
             semantic_cache: None,
@@ -335,6 +336,7 @@ async fn main() -> anyhow::Result<()> {
             k: 10,
             nprobes: Some(cfg.nprobes),
             text: None,
+            fuzzy: None,
             filter: None,
             include_vector: true,
             semantic_cache: None,
@@ -437,8 +439,12 @@ async fn main() -> anyhow::Result<()> {
         metric_value(&metrics_text, "hevsearch_cache_misses_total", &linear_label).unwrap_or(0.0);
     let linear_hits =
         metric_value(&metrics_text, "hevsearch_cache_hits_total", &linear_label).unwrap_or(0.0);
-    let indexed_misses =
-        metric_value(&metrics_text, "hevsearch_cache_misses_total", &indexed_label).unwrap_or(0.0);
+    let indexed_misses = metric_value(
+        &metrics_text,
+        "hevsearch_cache_misses_total",
+        &indexed_label,
+    )
+    .unwrap_or(0.0);
     let indexed_hits =
         metric_value(&metrics_text, "hevsearch_cache_hits_total", &indexed_label).unwrap_or(0.0);
 

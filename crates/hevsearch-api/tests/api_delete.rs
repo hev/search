@@ -103,3 +103,84 @@ async fn delete_removes_namespace_and_invalidates_cache() {
         "post-delete query must see an empty namespace — no stale cache, no leftover S3 state"
     );
 }
+
+#[tokio::test]
+#[ignore]
+async fn row_delete_by_id_and_filter_updates_reads() {
+    let (app, _tmp) = build_app().await;
+    let ns = unique_namespace("row-delete-test");
+
+    let upsert_body = json!({
+        "rows": [
+            {"id": "set-a#warnings#0", "vector": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "attributes": {"section": "warnings", "route": "oral"}},
+            {"id": "set-a#dosage#1", "vector": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "attributes": {"section": "dosage", "route": "oral"}},
+            {"id": "set-b#warnings#2", "vector": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], "attributes": {"section": "warnings", "route": "iv"}}
+        ]
+    });
+    let (status, _) = post_json(app.clone(), format!("/ns/{ns}/upsert"), upsert_body).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/delete"),
+        json!({"ids": ["set-a#dosage#1"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["deleted"], 1);
+
+    let query_body = json!({
+        "vector": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "k": 10
+    });
+    let (status, body) =
+        post_json(app.clone(), format!("/ns/{ns}/query"), query_body.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<&str> = body["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert!(!ids.contains(&"set-a#dosage#1"));
+
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/delete"),
+        json!({"filter": "section = 'warnings'"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["deleted"], 2);
+
+    let (status, body) = post_json(app.clone(), format!("/ns/{ns}/query"), query_body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["results"].as_array().unwrap().len(), 0);
+
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/delete"),
+        json!({"ids": [], "filter": "id = 'x'"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("exactly one"));
+
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/delete"),
+        json!({"filter": "section = "}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("delete filter"));
+
+    let missing = unique_namespace("row-delete-missing");
+    let (status, _) = post_json(
+        app,
+        format!("/ns/{missing}/delete"),
+        json!({"ids": ["missing"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

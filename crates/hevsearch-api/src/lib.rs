@@ -105,6 +105,7 @@ pub fn router(state: AppState) -> Router {
 
     let admin = Router::new()
         .route("/ns/{namespace}", delete(handlers::delete))
+        .route("/ns/{namespace}/delete", post(handlers::delete_rows))
         .route("/ns/{namespace}/index", post(handlers::create_index))
         .route(
             "/ns/{namespace}/fts-index",

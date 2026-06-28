@@ -127,9 +127,13 @@ async fn wait_for_index_build(
     let label = format!(r#"kind="{kind}",namespace="{ns}""#);
     loop {
         let body = metrics.encode().unwrap();
-        let count = metric_value(&body, "hevsearch_index_build_duration_seconds_count", &label)
-            .map(|v| v as u64)
-            .unwrap_or(0);
+        let count = metric_value(
+            &body,
+            "hevsearch_index_build_duration_seconds_count",
+            &label,
+        )
+        .map(|v| v as u64)
+        .unwrap_or(0);
         if count >= expected || start.elapsed() >= deadline {
             return count;
         }

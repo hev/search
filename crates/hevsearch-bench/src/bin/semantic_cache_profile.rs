@@ -387,6 +387,7 @@ fn vector_query(
         k,
         nprobes: Some(nprobes),
         text: None,
+        fuzzy: None,
         filter: None,
         include_vector: true,
         semantic_cache: semantic_threshold.map(|threshold| SemanticCacheRequest {

@@ -166,8 +166,12 @@ async fn compact_reduces_fragments_after_many_upserts() {
     // 5. Verify the compaction_duration is recorded (_sum > 0).
     let body = metrics.encode().unwrap();
     let ns_label = format!(r#"namespace="{ns}""#);
-    let sum =
-        metric_value(&body, "hevsearch_compaction_duration_seconds_sum", &ns_label).unwrap_or(0.0);
+    let sum = metric_value(
+        &body,
+        "hevsearch_compaction_duration_seconds_sum",
+        &ns_label,
+    )
+    .unwrap_or(0.0);
     assert!(
         sum > 0.0,
         "compaction_duration_seconds_sum must be > 0, got {sum}"

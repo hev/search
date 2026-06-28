@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use hevsearch_core::cache::NamespaceCache;
 use hevsearch_core::{
-    CoreMetrics, FacetRequest, HevSearchError as CoreError, NamespaceId, NamespaceManager, NamespaceService,
-    QueryRequest, QueryResult, StorageRoot, UpsertRow,
+    CoreMetrics, FacetRequest, HevSearchError as CoreError, NamespaceId, NamespaceManager,
+    NamespaceService, QueryRequest, QueryResult, StorageRoot, UpsertRow,
 };
 use pyo3::conversion::IntoPyObjectExt;
 use pyo3::create_exception;
@@ -169,10 +169,7 @@ impl Lifecycle {
     /// against another thread needing the GIL to drop its guard).
     /// Returns `None` if the client is closed; the read guard guarantees
     /// `close()` is not running concurrently.
-    fn run<T>(
-        &self,
-        f: impl FnOnce() -> Result<T, CoreError>,
-    ) -> Result<Option<T>, CoreError> {
+    fn run<T>(&self, f: impl FnOnce() -> Result<T, CoreError>) -> Result<Option<T>, CoreError> {
         let _r = self.gate.read().unwrap_or_else(|p| p.into_inner());
         if self.closed.load(Ordering::Acquire) {
             return Ok(None);
