@@ -85,6 +85,7 @@ fn row(id: u64, vector: Vec<f32>, text: &str) -> UpsertRow {
         vector,
         vectors: None,
         text: Some(text.to_string()),
+        attributes: serde_json::Map::new(),
     }
 }
 
@@ -236,6 +237,7 @@ async fn multivector_reupsert_replaces_not_appends() {
         vector: Vec::new(),
         vectors: Some(bag),
         text: None,
+        attributes: serde_json::Map::new(),
     };
 
     manager
@@ -275,6 +277,7 @@ async fn multivector_reupsert_replaces_not_appends() {
             Vec::new(),
             Some(vec![unit_vector(2)]),
             10,
+            None,
             None,
             None,
             true,

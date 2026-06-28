@@ -61,6 +61,31 @@ def test_search_filter(db):
     assert [h.id for h in hits] == [2, 3]
 
 
+def test_facet(db):
+    db.add(
+        [
+            {
+                "id": 1,
+                "vector": [1.0, 0.0, 0.0, 0.0],
+                "attributes": {"section": "warnings", "route": "oral"},
+            },
+            {
+                "id": 2,
+                "vector": [0.0, 1.0, 0.0, 0.0],
+                "attributes": {"section": "dosage", "route": "oral"},
+            },
+            {
+                "id": 3,
+                "vector": [0.0, 0.0, 1.0, 0.0],
+                "attributes": {"section": "warnings"},
+            },
+        ]
+    )
+    facets = db.facet(["section", "route"], filter="id >= 1", top=10)
+    assert facets["section"][0] == {"value": "warnings", "count": 2}
+    assert facets["route"][0] == {"value": "oral", "count": 2}
+
+
 def test_tenant_isolation(db):
     db.add([{"id": 10, "vector": [1.0, 0.0, 0.0, 0.0], "text": "a"}], tenant="acme")
     db.add([{"id": 20, "vector": [1.0, 0.0, 0.0, 0.0], "text": "b"}], tenant="globex")

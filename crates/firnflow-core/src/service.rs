@@ -26,9 +26,10 @@ use crate::cache::{NamespaceCache, QueryHash, SemanticCache, SemanticLookup};
 use crate::manager::{CompactResult, NamespaceManager, UpsertRow};
 use crate::metrics::CoreMetrics;
 use crate::query::{
-    effective_semantic_threshold, validate_semantic_cache_request, QueryRequest, DEFAULT_NPROBES,
+    effective_semantic_threshold, validate_facet_request, validate_semantic_cache_request,
+    FacetRequest, QueryRequest, DEFAULT_NPROBES,
 };
-use crate::{FirnflowError, NamespaceId, QueryResultSet};
+use crate::{FacetResultSet, FirnflowError, NamespaceId, QueryResultSet};
 
 /// Where a query result came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,6 +381,43 @@ impl NamespaceService {
         })
     }
 
+    /// Compute facet counts through the exact cache.
+    pub async fn facet(
+        &self,
+        ns: &NamespaceId,
+        req: &FacetRequest,
+    ) -> Result<FacetResultSet, FirnflowError> {
+        let top = validate_facet_request(req)?;
+        let mut fields = req.fields.clone();
+        fields.sort();
+        let hash = hash_facet_for_cache(req.filter.as_ref(), &fields, top)?;
+        let generation = self.manager.generation(ns).await?;
+        self.cache.set_generation(ns, generation);
+        let (hit, captured_generation) = self.cache.try_get(ns, hash).await;
+        if let Some(bytes) = hit {
+            match decode_facet_payload(&bytes) {
+                Ok(decoded) => return Ok(decoded),
+                Err(e) => {
+                    tracing::warn!(
+                        namespace = %ns,
+                        error = %e,
+                        "cached facet payload failed to decode; treating as a miss"
+                    );
+                }
+            }
+        }
+
+        self.metrics.record_s3_request(ns, "facet");
+        let result = self
+            .manager
+            .facet(ns, req.filter.clone(), &fields, top)
+            .await?;
+        let bytes = encode_facet_payload(&result)?;
+        self.cache
+            .populate_with_generation(ns, captured_generation, hash, bytes);
+        Ok(result)
+    }
+
     /// Build an IVF_PQ index on the namespace's vector column.
     ///
     /// Records `firnflow_index_build_duration_seconds{namespace, kind}`
@@ -502,6 +540,31 @@ pub fn hash_query_for_cache(req: &QueryRequest) -> Result<QueryHash, FirnflowErr
     Ok(QueryHash::of(&bytes))
 }
 
+#[doc(hidden)]
+/// Hash cacheable facet fields.
+pub fn hash_facet_for_cache(
+    filter: Option<&String>,
+    sorted_fields: &[String],
+    top: usize,
+) -> Result<QueryHash, FirnflowError> {
+    #[derive(Serialize)]
+    struct Canonical<'a> {
+        kind: &'static str,
+        filter: Option<&'a String>,
+        fields: &'a [String],
+        top: usize,
+    }
+    let canonical = Canonical {
+        kind: "facet",
+        filter,
+        fields: sorted_fields,
+        top,
+    };
+    let bytes = bincode::serde::encode_to_vec(&canonical, config::standard())
+        .map_err(|e| FirnflowError::Backend(format!("encode facet key: {e}")))?;
+    Ok(QueryHash::of(&bytes))
+}
+
 fn encode_payload(result: &QueryResultSet) -> Result<Vec<u8>, FirnflowError> {
     bincode::serde::encode_to_vec(result, config::standard())
         .map_err(|e| FirnflowError::Backend(format!("encode result: {e}")))
@@ -511,6 +574,18 @@ fn decode_payload(bytes: &[u8]) -> Result<QueryResultSet, FirnflowError> {
     let (decoded, _): (QueryResultSet, usize) =
         bincode::serde::decode_from_slice(bytes, config::standard())
             .map_err(|e| FirnflowError::Backend(format!("decode result: {e}")))?;
+    Ok(decoded)
+}
+
+fn encode_facet_payload(result: &FacetResultSet) -> Result<Vec<u8>, FirnflowError> {
+    bincode::serde::encode_to_vec(result, config::standard())
+        .map_err(|e| FirnflowError::Backend(format!("encode facet result: {e}")))
+}
+
+fn decode_facet_payload(bytes: &[u8]) -> Result<FacetResultSet, FirnflowError> {
+    let (decoded, _): (FacetResultSet, usize) =
+        bincode::serde::decode_from_slice(bytes, config::standard())
+            .map_err(|e| FirnflowError::Backend(format!("decode facet result: {e}")))?;
     Ok(decoded)
 }
 

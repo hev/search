@@ -14,13 +14,14 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use firnflow_core::cache::NamespaceCache;
 use firnflow_core::{
-    CoreMetrics, FirnflowError, NamespaceId, NamespaceManager, NamespaceService, QueryRequest,
-    QueryResult, StorageRoot, UpsertRow,
+    CoreMetrics, FacetRequest, FirnflowError, NamespaceId, NamespaceManager, NamespaceService,
+    QueryRequest, QueryResult, StorageRoot, UpsertRow,
 };
+use pyo3::conversion::IntoPyObjectExt;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyAny, PyDict, PyList};
 use tokio::runtime::Runtime;
 
 /// Embedded result-cache sizes (RAM tier, NVMe tier). Modest defaults
@@ -271,6 +272,10 @@ fn parse_documents(documents: &Bound<'_, PyList>) -> PyResult<Vec<UpsertRow>> {
             }
             None => None,
         };
+        let attributes = match dict.get_item("attributes")? {
+            Some(v) => parse_attributes(&v)?,
+            None => serde_json::Map::new(),
+        };
         // Each row needs exactly one vector payload: a single `vector`
         // or a multivector `vectors` bag, never both and never neither.
         match (vector.is_empty(), vectors.is_some()) {
@@ -292,9 +297,41 @@ fn parse_documents(documents: &Bound<'_, PyList>) -> PyResult<Vec<UpsertRow>> {
             vector,
             vectors,
             text,
+            attributes,
         });
     }
     Ok(rows)
+}
+
+fn parse_attributes(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<serde_json::Map<String, serde_json::Value>> {
+    let dict = value
+        .downcast::<PyDict>()
+        .map_err(|_| ValidationError::new_err("document 'attributes' must be a dict"))?;
+    let mut out = serde_json::Map::new();
+    for (key, value) in dict.iter() {
+        let key: String = key
+            .extract()
+            .map_err(|_| ValidationError::new_err("attribute names must be strings"))?;
+        let scalar = if value.is_none() {
+            serde_json::Value::Null
+        } else if let Ok(v) = value.extract::<bool>() {
+            serde_json::Value::Bool(v)
+        } else if let Ok(v) = value.extract::<i64>() {
+            serde_json::Value::from(v)
+        } else if let Ok(v) = value.extract::<f64>() {
+            serde_json::Value::from(v)
+        } else if let Ok(v) = value.extract::<String>() {
+            serde_json::Value::from(v)
+        } else {
+            return Err(ValidationError::new_err(
+                "attribute values must be str, int, float, bool, or None",
+            ));
+        };
+        out.insert(key, scalar);
+    }
+    Ok(out)
 }
 
 /// Ensure a BM25 full-text index exists for a namespace before a text
@@ -442,6 +479,64 @@ fn op_search(
     }
 }
 
+fn op_facet(
+    service: &Arc<NamespaceService>,
+    lifecycle: &Arc<Lifecycle>,
+    py: Python<'_>,
+    ns: &NamespaceId,
+    fields: Vec<String>,
+    filter: Option<String>,
+    top: Option<usize>,
+) -> PyResult<Py<PyDict>> {
+    let req = FacetRequest {
+        filter,
+        fields,
+        top,
+    };
+    let service = service.clone();
+    let lifecycle = lifecycle.clone();
+    let ns_owned = ns.clone();
+    let result = py
+        .allow_threads(move || lifecycle.run(|| runtime().block_on(service.facet(&ns_owned, &req))))
+        .map_err(to_py_err)?;
+    let Some(result) = result else {
+        return Err(closed_py_err());
+    };
+
+    let out = PyDict::new(py);
+    for facet in result.facets {
+        let buckets = PyList::empty(py);
+        for bucket in facet.buckets {
+            let item = PyDict::new(py);
+            item.set_item("value", json_to_py(py, bucket.value)?)?;
+            item.set_item("count", bucket.count)?;
+            buckets.append(item)?;
+        }
+        out.set_item(facet.field, buckets)?;
+    }
+    Ok(out.into())
+}
+
+fn json_to_py(py: Python<'_>, value: serde_json::Value) -> PyResult<Py<PyAny>> {
+    match value {
+        serde_json::Value::Null => Ok(py.None()),
+        serde_json::Value::Bool(v) => v.into_py_any(py),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i.into_py_any(py)
+            } else if let Some(u) = n.as_u64() {
+                u.into_py_any(py)
+            } else {
+                n.as_f64().unwrap_or_default().into_py_any(py)
+            }
+        }
+        serde_json::Value::String(v) => v.into_py_any(py),
+        _ => Err(ValidationError::new_err(
+            "facet bucket value is not a scalar",
+        )),
+    }
+}
+
 /// A handle to one named collection. Search and write methods take an
 /// optional `tenant=` that selects a physically separate namespace.
 #[pyclass]
@@ -536,6 +631,21 @@ impl Collection {
             filter,
             include_vectors,
         )
+    }
+
+    /// Compute facet counts over this collection.
+    #[pyo3(signature = (fields, *, tenant=None, filter=None, top=None))]
+    fn facet(
+        &self,
+        py: Python<'_>,
+        fields: Vec<String>,
+        tenant: Option<String>,
+        filter: Option<String>,
+        top: Option<usize>,
+    ) -> PyResult<Py<PyDict>> {
+        self.lifecycle.check_open()?;
+        let ns = compose_namespace(&self.collection, tenant.as_deref())?;
+        op_facet(&self.service, &self.lifecycle, py, &ns, fields, filter, top)
     }
 }
 
@@ -653,6 +763,21 @@ impl Client {
             filter,
             include_vectors,
         )
+    }
+
+    /// Compute facet counts over the default collection.
+    #[pyo3(signature = (fields, *, tenant=None, filter=None, top=None))]
+    fn facet(
+        &self,
+        py: Python<'_>,
+        fields: Vec<String>,
+        tenant: Option<String>,
+        filter: Option<String>,
+        top: Option<usize>,
+    ) -> PyResult<Py<PyDict>> {
+        self.lifecycle.check_open()?;
+        let ns = compose_namespace(DEFAULT_COLLECTION, tenant.as_deref())?;
+        op_facet(&self.service, &self.lifecycle, py, &ns, fields, filter, top)
     }
 
     /// Flush the result cache's NVMe write buffer and release it. After

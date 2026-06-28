@@ -83,6 +83,7 @@ fn multi(subs: Vec<Vec<f32>>) -> UpsertRow {
         vector: Vec::new(),
         vectors: Some(subs),
         text: None,
+        attributes: serde_json::Map::new(),
     }
 }
 
@@ -171,6 +172,7 @@ async fn upsert_then_query_returns_multivector_hits() {
             3,
             None,
             None,
+            None,
             true,
         )
         .await
@@ -207,6 +209,7 @@ async fn upsert_then_query_returns_multivector_hits() {
             Vec::new(),
             Some(vec![unit(0), unit(1)]),
             3,
+            None,
             None,
             None,
             true,
@@ -296,6 +299,7 @@ async fn multi_payload_rejected_on_single_namespace() {
             Vec::new(),
             Some(vec![unit(0), unit(1)]),
             2,
+            None,
             None,
             None,
             true,
@@ -390,6 +394,7 @@ async fn create_index_forces_cosine_on_multivector() {
             Vec::new(),
             Some(vec![unit(0), unit(1)]),
             5,
+            None,
             None,
             None,
             true,

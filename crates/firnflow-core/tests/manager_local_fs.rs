@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use firnflow_core::metrics::test_metrics;
 use firnflow_core::{FirnflowError, NamespaceId, NamespaceManager, StorageRoot, UpsertRow};
+use serde_json::json;
 use tempfile::TempDir;
 
 const DIM: usize = 8;
@@ -87,18 +88,21 @@ async fn local_fs_fts_text_search() {
             vector: unit_vector(0),
             vectors: None,
             text: Some("the quick brown fox".into()),
+            attributes: serde_json::Map::new(),
         },
         UpsertRow {
             id: 2,
             vector: unit_vector(1),
             vectors: None,
             text: Some("a lazy dog sleeps".into()),
+            attributes: serde_json::Map::new(),
         },
         UpsertRow {
             id: 3,
             vector: unit_vector(2),
             vectors: None,
             text: Some("the fox runs fast".into()),
+            attributes: serde_json::Map::new(),
         },
     ];
     manager.upsert(&ns, rows).await.expect("local upsert");
@@ -208,18 +212,21 @@ async fn local_fs_query_filter_narrows_fts_and_hybrid_results() {
             vector: unit_vector(0),
             vectors: None,
             text: Some("fox warning".into()),
+            attributes: serde_json::Map::new(),
         },
         UpsertRow {
             id: 2,
             vector: unit_vector(1),
             vectors: None,
             text: Some("fox dosing".into()),
+            attributes: serde_json::Map::new(),
         },
         UpsertRow {
             id: 3,
             vector: unit_vector(2),
             vectors: None,
             text: Some("dog warning".into()),
+            attributes: serde_json::Map::new(),
         },
     ];
     manager.upsert(&ns, rows).await.expect("local upsert");
@@ -259,6 +266,136 @@ async fn local_fs_query_filter_narrows_fts_and_hybrid_results() {
         .expect("filtered hybrid query");
     let hybrid_ids: Vec<u64> = hybrid.results.iter().map(|r| r.id).collect();
     assert_eq!(hybrid_ids, vec![2]);
+}
+
+#[tokio::test]
+async fn local_fs_facet_counts_attributes_with_filter_null_and_truncation() {
+    let dir = TempDir::new().unwrap();
+    let manager = local_manager(&dir);
+    let ns = NamespaceId::new("embedded-facet").unwrap();
+
+    let attr = |section: serde_json::Value, route: Option<&str>| {
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("section".into(), section);
+        if let Some(route) = route {
+            attributes.insert("route".into(), json!(route));
+        }
+        attributes
+    };
+    manager
+        .upsert(
+            &ns,
+            vec![
+                UpsertRow {
+                    id: 1,
+                    vector: unit_vector(0),
+                    vectors: None,
+                    text: Some("warning oral".into()),
+                    attributes: attr(json!("warnings"), Some("oral")),
+                },
+                UpsertRow {
+                    id: 2,
+                    vector: unit_vector(1),
+                    vectors: None,
+                    text: Some("dosage oral".into()),
+                    attributes: attr(json!("dosage"), Some("oral")),
+                },
+                UpsertRow {
+                    id: 3,
+                    vector: unit_vector(2),
+                    vectors: None,
+                    text: Some("warning missing".into()),
+                    attributes: attr(json!("warnings"), None),
+                },
+            ],
+        )
+        .await
+        .expect("upsert");
+
+    let result = manager
+        .facet(
+            &ns,
+            Some("id >= 1".into()),
+            &["section".into(), "route".into()],
+            1,
+        )
+        .await
+        .expect("facet");
+
+    let section = result.facets.iter().find(|f| f.field == "section").unwrap();
+    assert!(section.truncated);
+    assert_eq!(section.buckets[0].value, json!("warnings"));
+    assert_eq!(section.buckets[0].count, 2);
+
+    let route = result.facets.iter().find(|f| f.field == "route").unwrap();
+    assert!(route.truncated);
+    assert_eq!(route.buckets[0].value, json!("oral"));
+    assert_eq!(route.buckets[0].count, 2);
+
+    let narrowed = manager
+        .facet(
+            &ns,
+            Some("section = 'dosage'".into()),
+            &["section".into()],
+            10,
+        )
+        .await
+        .expect("filtered facet");
+    assert_eq!(narrowed.facets[0].buckets.len(), 1);
+    assert_eq!(narrowed.facets[0].buckets[0].value, json!("dosage"));
+    assert_eq!(narrowed.facets[0].buckets[0].count, 1);
+
+    manager
+        .create_scalar_index(&ns, "section")
+        .await
+        .expect("attribute scalar index");
+}
+
+#[tokio::test]
+async fn local_fs_facet_rejects_bad_filter_and_non_facetable_field() {
+    let dir = TempDir::new().unwrap();
+    let manager = local_manager(&dir);
+    let ns = NamespaceId::new("embedded-facet-errors").unwrap();
+    let mut attributes = serde_json::Map::new();
+    attributes.insert("section".into(), json!("warnings"));
+    manager
+        .upsert(
+            &ns,
+            vec![UpsertRow {
+                id: 1,
+                vector: unit_vector(0),
+                vectors: None,
+                text: Some("warning".into()),
+                attributes,
+            }],
+        )
+        .await
+        .expect("upsert");
+
+    let err = manager
+        .facet(&ns, Some("section =".into()), &["section".into()], 10)
+        .await
+        .expect_err("malformed facet filter must fail");
+    assert!(matches!(err, FirnflowError::InvalidRequest(_)));
+
+    let err = manager
+        .facet(&ns, None, &["vector".into()], 10)
+        .await
+        .expect_err("vector is not facetable");
+    assert!(matches!(err, FirnflowError::InvalidRequest(_)));
+}
+
+#[tokio::test]
+async fn local_fs_facet_empty_namespace_returns_empty() {
+    let dir = TempDir::new().unwrap();
+    let manager = local_manager(&dir);
+    let ns = NamespaceId::new("embedded-facet-empty").unwrap();
+
+    let result = manager
+        .facet(&ns, None, &["id".into()], 10)
+        .await
+        .expect("empty facet");
+    assert!(result.facets.is_empty());
 }
 
 #[tokio::test]

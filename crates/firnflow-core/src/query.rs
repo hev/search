@@ -5,6 +5,8 @@
 //! serde derives and are what the axum handlers parse straight from
 //! request bodies.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 /// Default number of IVF partitions to probe per query when an
@@ -86,6 +88,54 @@ pub struct QueryRequest {
     /// does not split otherwise-identical entries.
     #[serde(default)]
     pub semantic_cache: Option<SemanticCacheRequest>,
+}
+
+/// Request payload for `POST /ns/{namespace}/facet`.
+///
+/// Facets are computed over the whole set matching `filter`, not over
+/// a vector query's returned top-k. The filter dialect is the same
+/// DataFusion SQL predicate accepted by `/query` and `/list`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FacetRequest {
+    /// Optional DataFusion SQL predicate.
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// Scalar fields to aggregate.
+    pub fields: Vec<String>,
+    /// Maximum buckets to return per field. Defaults at the service
+    /// boundary when omitted.
+    #[serde(default)]
+    pub top: Option<usize>,
+}
+
+/// Default bucket cap for facets.
+pub const DEFAULT_FACET_TOP: usize = 100;
+/// Maximum bucket cap accepted by the facet endpoint.
+pub const MAX_FACET_TOP: usize = 1000;
+
+/// Pure shape validation for a facet request. Column existence and
+/// facetable-ness are checked by the manager against the live schema.
+pub fn validate_facet_request(req: &FacetRequest) -> Result<usize, crate::FirnflowError> {
+    if req.fields.is_empty() {
+        return Err(crate::FirnflowError::InvalidRequest(
+            "facet fields must not be empty".into(),
+        ));
+    }
+    let mut seen = HashSet::with_capacity(req.fields.len());
+    for field in &req.fields {
+        if !seen.insert(field) {
+            return Err(crate::FirnflowError::InvalidRequest(format!(
+                "duplicate facet field '{field}'"
+            )));
+        }
+    }
+    let top = req.top.unwrap_or(DEFAULT_FACET_TOP);
+    if top == 0 || top > MAX_FACET_TOP {
+        return Err(crate::FirnflowError::InvalidRequest(format!(
+            "facet top must be in 1..={MAX_FACET_TOP}, got {top}"
+        )));
+    }
+    Ok(top)
 }
 
 /// Per-request controls for opt-in semantic caching.
@@ -419,5 +469,35 @@ mod tests {
             }
             other => panic!("expected InvalidRequest, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn facet_request_validation() {
+        let mut req = FacetRequest {
+            filter: None,
+            fields: vec!["section".into()],
+            top: None,
+        };
+        assert_eq!(validate_facet_request(&req).unwrap(), DEFAULT_FACET_TOP);
+
+        req.fields.clear();
+        assert!(matches!(
+            validate_facet_request(&req),
+            Err(FirnflowError::InvalidRequest(_))
+        ));
+
+        req.fields.push("section".into());
+        req.top = Some(0);
+        assert!(matches!(
+            validate_facet_request(&req),
+            Err(FirnflowError::InvalidRequest(_))
+        ));
+
+        req.top = Some(10);
+        req.fields.push("section".into());
+        assert!(matches!(
+            validate_facet_request(&req),
+            Err(FirnflowError::InvalidRequest(_))
+        ));
     }
 }
