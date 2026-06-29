@@ -8,8 +8,8 @@ It is a hard fork of [firnflow](https://github.com/gordonmurray/firnflow) by Gor
 
 hev search is the **engine**. It is designed to run behind **[hev layer](https://hevlayer.com)**, the gateway that fronts it — Layer is its only client, reachable over a `NetworkPolicy`. This split is the main difference from stock firnflow:
 
-- **Layer owns the edge** — authentication, per-tenant authorization, rate limiting, the inbound (Turbopuffer-shaped) API, and embedding. **Multi-tenancy lives at the gateway**: Layer's scoped keys bind a caller to its namespace(s).
-- **hev search owns the engine** — vector / FTS / hybrid search, LanceDB storage on object storage, the index lifecycle, and the caches. The only tenancy concept it keeps is physical: a namespace is an isolated object-storage prefix.
+- **Layer owns the edge** — authn and authz, semantic caching, rate limiting, and the API contract and clients.
+- **hev search owns the engine** — vector / FTS / hybrid search, LanceDB storage on object storage, and index caching. The only tenancy concept it keeps is physical: a namespace is an isolated object-storage prefix.
 
 The engine itself is an open, trusted internal service — it does no auth of its own. Don't expose it directly; put Layer (or another authenticating gateway) in front.
 
@@ -98,24 +98,6 @@ HEVSEARCH_S3_SECRET_KEY=minioadmin
 ```
 
 `HEVSEARCH_STORAGE_URI` takes an optional prefix (`s3://shared-bucket/tenants/acme`) when several deployments share one bucket; namespace tables live at `{root}/{namespace}/`. Correctness depends on the store offering linearizable compare-and-swap (`If-None-Match: *`) for Lance's commit protocol. Other S3-family backends and native GCS have been validated against this contract — see [the docs](https://hevsearch.com/configuration.html) for their config and the full compatibility matrix.
-
-## Python package
-
-hev search also ships as [`hevsearch` on PyPI](https://pypi.org/project/hevsearch/) for embedded use — vector, BM25, and hybrid search in your Python process, no server:
-
-```bash
-pip install hevsearch
-```
-
-```python
-import hevsearch
-db = hevsearch.connect("./hevsearch_data")  # local folder, or storage_url="s3://bucket"
-db.add([{"id": 1, "vector": [1.0, 0.0, 0.0, 0.0], "text": "the quick brown fox"}])
-for hit in db.search("fox", vector=[1.0, 0.0, 0.0, 0.0], limit=3):
-    print(hit.id, hit.score, hit.text)
-```
-
-Runnable examples live in [`examples/`](examples/).
 
 ## Development
 
