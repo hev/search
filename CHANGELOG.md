@@ -7,10 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-29
+
+> **Version line reset.** This is the first release published as **hev search**. The bare `v0.1.0`…`v0.9.2` tags belong to the firnflow origin, so the engine's own line starts fresh in a separate tag namespace: this release is tagged **`search-v0.1.0`** (the Python wheel keeps its own `hevsearch-v*` scheme). The crate `version` is `0.1.0`. This is deliberate and not a downgrade — `search-v0.1.0` carries everything through firnflow's `v0.9.2` plus the additions below.
+
 ### Added
+- **Arbitrary / string row ids.** A row `id` may now be an arbitrary UTF-8 string, not only a `u64`. The `id` field on `/upsert`, `/import`, query / list / facet results, and the new per-row delete accepts either a JSON number or a string (internally `RowId` is an untagged `U64 | String`). A namespace's id type is fixed by its first write and reported by `GET /ns/{namespace}` as `id_type`; mixing types in a namespace is rejected (a numeric id sent to a string-id namespace, or the reverse, errors). This unblocks natural-key corpora — `gr-12345` book ids, `{set_id}#{section}#{i}` document ids — that previously had to be mapped onto surrogate integers. RFC 0005.
+- **Per-row delete.** `POST /ns/{namespace}/delete` removes individual rows, distinct from `DELETE /ns/{namespace}`, which drops the whole namespace. The body carries exactly one selector — `{"ids": [...]}` to delete by row id, or `{"filter": "<DataFusion SQL predicate>"}` to delete every row matching a predicate — and the response reports `{"deleted": <n>}`, the number of live rows removed by the delete commit. Admin-tier. RFC 0003.
+- **Configurable distance metric.** A namespace's vector distance metric is now selectable and fixed by its first write: set `distance_metric` to `l2`, `cosine`, or `dot` as a top-level field on `/upsert` or as `?distance_metric=` on `/import`. Single-vector namespaces default to `l2`; multivector namespaces accept only `cosine` (Lance's late-interaction index supports cosine exclusively). The choice is immutable — a later write that tries to change it is rejected — and is reported by `GET /ns/{namespace}` as `distance_metric` and carried on query results. RFC 0006.
 - Rows may carry scalar `attributes` (`Int64`, `Float64`, `Boolean`, `Utf8`) through JSON `/upsert`, Arrow `/import`, query/list results, and filters. Attribute names must be SQL-friendly identifiers and may not collide with system columns.
 - `POST /ns/{namespace}/facet` returns value-count buckets for scalar fields over the full filtered set, not the returned top-k. Buckets include `null` for missing values, are capped by per-field `top` with a `truncated` flag, and use the same generation-based exact cache as query results. The embedded Python package mirrors this with `facet(fields=[...], filter=..., top=...)`.
 - `POST /ns/{namespace}/query` accepts an optional `filter` string, a DataFusion SQL predicate applied through LanceDB before vector ranking, full-text scoring, or hybrid fusion. Filtered vector queries return up to `k` neighbours satisfying the predicate rather than filtering an already-selected top-k. The field participates in the exact-cache key, malformed predicates return `400 InvalidRequest`, and `semantic_cache.enabled` rejects filtered requests in v1. The embedded Python package mirrors this with `search(filter=...)`. Part 1 of #84.
+- `GET /ns/{namespace}` now also reports `id_type` and `distance_metric`, alongside the existing vector kind / dimension, live row count, fragment count, built index kinds, and table version.
 
 ## [0.9.2] - 2026-06-19
 

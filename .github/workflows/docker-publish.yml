@@ -11,8 +11,11 @@ name: Publish Docker image
 
 on:
   push:
+    # hev search tags its releases `search-v*` (e.g. search-v0.1.0). The bare
+    # `v0.1.0..v0.9.2` line belongs to the firnflow origin, so the engine's own
+    # releases live in a separate tag namespace. (The wheel uses `hevsearch-v*`.)
     tags:
-      - 'v*'
+      - 'search-v*'
 
 env:
   ECR_REGISTRY: 186219257916.dkr.ecr.us-east-1.amazonaws.com
@@ -45,8 +48,8 @@ jobs:
         with:
           images: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=match,pattern=search-v(\d+\.\d+\.\d+),group=1
+            type=match,pattern=search-v(\d+\.\d+),group=1
             type=raw,value=latest
 
       - uses: depot/setup-action@v1

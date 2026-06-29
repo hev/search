@@ -3220,7 +3220,7 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "hevsearch-api"
-version = "0.9.2"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -3245,7 +3245,7 @@ dependencies = [
 
 [[package]]
 name = "hevsearch-bench"
-version = "0.9.2"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode 2.0.1",
@@ -3256,7 +3256,7 @@ dependencies = [
 
 [[package]]
 name = "hevsearch-core"
-version = "0.9.2"
+version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
