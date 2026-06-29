@@ -1,6 +1,6 @@
 # RFC 0002: Remove auth, rate limiting, and proxy-header trust
 
-Tracking issue: _TBD_
+Tracking issue: [hev/search#1](https://github.com/hev/search/issues/1)
 
 > **Status:** draft, proposal. **The flagship subtractive removal.** The engine
 > runs *behind* Layer, reachable only by the Layer gateway (data path) and the
