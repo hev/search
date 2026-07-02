@@ -112,8 +112,9 @@ pub enum FuzzyMaxEditDistance {
 }
 
 impl FuzzyMaxEditDistance {
-    /// Convert to the Lance fuzziness parameter.
-    pub fn to_lance(&self) -> Result<Option<u32>, crate::HevSearchError> {
+    /// The edit-distance cap: `Some(n)` for a fixed maximum, `None` for
+    /// `"auto"` (the length-keyed ladder alone decides per token).
+    pub fn cap(&self) -> Result<Option<u32>, crate::HevSearchError> {
         match self {
             Self::Fixed(n) if *n <= 2 => Ok(Some(*n)),
             Self::Fixed(n) => Err(crate::HevSearchError::InvalidRequest(format!(

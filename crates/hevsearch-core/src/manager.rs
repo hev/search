@@ -52,7 +52,10 @@ use dashmap::DashMap;
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::ColumnOrdering;
 use lance::dataset::{WriteMode, WriteParams};
-use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder, FullTextSearchQuery};
+use lancedb::index::scalar::{
+    BTreeIndexBuilder, BooleanQuery, FtsIndexBuilder, FtsQuery, FullTextSearchQuery, MatchQuery,
+    Occur,
+};
 use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::index::{Index, IndexType};
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
@@ -2339,17 +2342,77 @@ fn classify_index_types(types: impl Iterator<Item = IndexType>) -> (bool, bool, 
     (vector, fts, scalar)
 }
 
+/// The length-keyed `auto` edit-distance ladder (RFC 0004, mirroring the
+/// Turbopuffer `min_query_chars >= 3 * (distance + 1)` rule Layer's
+/// `HybridText` documents): tokens of 1–5 chars match exactly, 6–8 chars
+/// tolerate one edit, 9+ tolerate two.
+fn ladder_distance(token_chars: usize) -> u32 {
+    match token_chars {
+        0..=5 => 0,
+        6..=8 => 1,
+        _ => 2,
+    }
+}
+
+/// Tokenize a query string for the per-token fuzzy expansion: lowercase,
+/// split on non-alphanumeric boundaries, dedupe preserving order. This only
+/// has to agree with Lance's `simple` base tokenizer well enough to key the
+/// ladder off token length; the index analyzer still owns matching for the
+/// exact (distance-0) clauses.
+fn fuzzy_query_tokens(text: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    for raw in text.split(|c: char| !c.is_alphanumeric()) {
+        if raw.is_empty() {
+            continue;
+        }
+        let token = raw.to_lowercase();
+        if !tokens.contains(&token) {
+            tokens.push(token);
+        }
+    }
+    tokens
+}
+
+/// Build the Lance FTS query for a request. Without `fuzzy` (or with an
+/// effective edit distance of zero everywhere) this is the plain BM25 match
+/// over the whole text. With fuzzy, expand to one `should` clause per query
+/// token, each carrying its own **bounded** edit distance —
+/// `min(ladder(token length), cap)` — so short tokens stay exact instead of
+/// match-flooding the corpus. Passing a single uniform nonzero fuzziness to
+/// Lance (the previous `new_fuzzy` wiring) applied that distance to every
+/// token, so 1–2 char tokens expanded to essentially the whole term
+/// dictionary and every query returned the same match-all list (hev/search#6).
 fn full_text_query(
     text: String,
     fuzzy: Option<&FuzzyRequest>,
 ) -> Result<FullTextSearchQuery, HevSearchError> {
-    match fuzzy {
-        Some(fuzzy) => Ok(FullTextSearchQuery::new_fuzzy(
-            text,
-            fuzzy.max_edit_distance.to_lance()?,
-        )),
-        None => Ok(FullTextSearchQuery::new(text)),
+    let cap = match fuzzy {
+        None => return Ok(FullTextSearchQuery::new(text)),
+        Some(fuzzy) => fuzzy.max_edit_distance.cap()?,
+    };
+    if cap == Some(0) {
+        // Exact-only: identical to the no-fuzzy BM25 path.
+        return Ok(FullTextSearchQuery::new(text));
     }
+    let tokens = fuzzy_query_tokens(&text);
+    let distances: Vec<u32> = tokens
+        .iter()
+        .map(|token| ladder_distance(token.chars().count()).min(cap.unwrap_or(2)))
+        .collect();
+    if tokens.is_empty() || distances.iter().all(|d| *d == 0) {
+        // Nothing gains an edit budget under the ladder; keep the single
+        // match query so scoring is byte-identical to the exact path.
+        return Ok(FullTextSearchQuery::new(text));
+    }
+    let mut boolean = BooleanQuery::new(std::iter::empty::<(Occur, FtsQuery)>());
+    for (token, distance) in tokens.into_iter().zip(distances) {
+        boolean = boolean.with_should(
+            MatchQuery::new(token)
+                .with_fuzziness(Some(distance))
+                .into(),
+        );
+    }
+    Ok(FullTextSearchQuery::new_query(boolean.into()))
 }
 
 /// Encode a `(timestamp_micros, id)` pair as an opaque cursor. The
@@ -3543,6 +3606,109 @@ fn facet_value_sort_key(value: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::query::{FuzzyMaxEditDistance, FuzzyRequest};
+
+    fn fuzzy(max: FuzzyMaxEditDistance) -> FuzzyRequest {
+        FuzzyRequest {
+            max_edit_distance: max,
+        }
+    }
+
+    #[test]
+    fn ladder_keys_distance_off_token_length() {
+        assert_eq!(ladder_distance(1), 0);
+        assert_eq!(ladder_distance(5), 0);
+        assert_eq!(ladder_distance(6), 1);
+        assert_eq!(ladder_distance(8), 1);
+        assert_eq!(ladder_distance(9), 2);
+        assert_eq!(ladder_distance(40), 2);
+    }
+
+    #[test]
+    fn fuzzy_tokens_lowercase_split_dedupe() {
+        assert_eq!(
+            fuzzy_query_tokens("A Quest, to destroy the RING ring!"),
+            vec!["a", "quest", "to", "destroy", "the", "ring"]
+        );
+        assert!(fuzzy_query_tokens("  ,.! ").is_empty());
+    }
+
+    #[test]
+    fn exact_and_fixed_zero_fuzzy_stay_single_match() {
+        for fz in [None, Some(fuzzy(FuzzyMaxEditDistance::Fixed(0)))] {
+            let q = full_text_query("kubernetes timeout".to_string(), fz.as_ref()).unwrap();
+            match q.query {
+                FtsQuery::Match(m) => {
+                    assert_eq!(m.terms, "kubernetes timeout");
+                    assert_eq!(m.fuzziness, Some(0));
+                }
+                other => panic!("expected plain match query, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn auto_fuzzy_expands_per_token_with_bounded_distances() {
+        let q = full_text_query(
+            "a quest to destroy a magic ring".to_string(),
+            Some(&fuzzy(FuzzyMaxEditDistance::Auto("auto".to_string()))),
+        )
+        .unwrap();
+        let FtsQuery::Boolean(boolean) = q.query else {
+            panic!("expected boolean query");
+        };
+        assert!(boolean.must.is_empty() && boolean.must_not.is_empty());
+        let clauses: Vec<(String, Option<u32>)> = boolean
+            .should
+            .iter()
+            .map(|clause| match clause {
+                FtsQuery::Match(m) => (m.terms.clone(), m.fuzziness),
+                other => panic!("expected match clause, got {other:?}"),
+            })
+            .collect();
+        // Short tokens (< 6 chars) stay exact; "destroy" (7) gets d=1.
+        assert_eq!(
+            clauses,
+            vec![
+                ("a".to_string(), Some(0)),
+                ("quest".to_string(), Some(0)),
+                ("to".to_string(), Some(0)),
+                ("destroy".to_string(), Some(1)),
+                ("magic".to_string(), Some(0)),
+                ("ring".to_string(), Some(0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn fixed_cap_bounds_the_ladder() {
+        let q = full_text_query(
+            "kubernets conection".to_string(),
+            Some(&fuzzy(FuzzyMaxEditDistance::Fixed(1))),
+        )
+        .unwrap();
+        let FtsQuery::Boolean(boolean) = q.query else {
+            panic!("expected boolean query");
+        };
+        for clause in &boolean.should {
+            let FtsQuery::Match(m) = clause else {
+                panic!("expected match clause");
+            };
+            // 9-char tokens ladder to 2 but the fixed cap holds them at 1.
+            assert_eq!(m.fuzziness, Some(1));
+        }
+    }
+
+    #[test]
+    fn all_short_tokens_degrade_to_plain_match() {
+        let q = full_text_query(
+            "the red cat".to_string(),
+            Some(&fuzzy(FuzzyMaxEditDistance::Auto("auto".to_string()))),
+        )
+        .unwrap();
+        assert!(matches!(q.query, FtsQuery::Match(_)));
+    }
 
     #[test]
     fn cursor_round_trip() {

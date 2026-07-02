@@ -1,9 +1,22 @@
 # RFC 0004: Fuzzy / typo-tolerant full-text search
 
-Tracking issue: _TBD_
+Tracking issue: hev/search#6
 
-> **Status:** draft, proposal. **Additive engine capability — the matching half of
-> the lexical-parity story.** The engine's full-text search is **BM25 only**
+> **Status:** implemented. The `fuzzy.max_edit_distance` control (`0`/`1`/`2`/
+> `"auto"`) shipped on `/query` via Option A (Lance `MatchQuery` fuzziness).
+> The first wiring handed Lance one **uniform** nonzero distance for the whole
+> query, which applied it to every token — 1–2 char tokens expanded to
+> essentially the whole term dictionary and every fuzzy query returned the same
+> match-all list (hev/search#6, found by the `shelf` cutover). The fix keeps
+> Option A but expands **per token** with the length-keyed ladder below
+> (1–5 chars exact, 6–8 → d=1, 9+ → d=2; a fixed value caps the ladder) as a
+> `BooleanQuery` of per-token `MatchQuery` clauses. Remaining open item: the
+> analyzer-parity gap (RFC 0001) — fuzzy operates on the query's token surface,
+> and until alyze lands the index side stems/stops with Lance's default
+> analyzer, so stemmed terms can sit farther than their surface edit distance.
+>
+> Original framing (kept for the record): **Additive engine capability — the
+> matching half of the lexical-parity story.** The engine's full-text search is **BM25 only**
 > (`FullTextSearchQuery::new(text)`, `manager.rs:1388`/`:1408`): a query token
 > matches only stored terms it equals exactly. It has no typo tolerance. Layer
 > fronts this engine with a Turbopuffer-shaped wire (`../layer/docs/rfcs/0086-…`,

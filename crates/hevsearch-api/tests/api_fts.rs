@@ -253,3 +253,138 @@ async fn vector_fts_and_hybrid_queries() {
         results[0]["vector"]
     );
 }
+
+/// hev/search#4: fuzzy FTS with edit distance >= 1 / `auto` must be
+/// token-specific, not match-all. The old wiring handed Lance one uniform
+/// nonzero fuzziness for the whole query, so 1–2 char tokens expanded to
+/// essentially the entire term dictionary and every fuzzy query returned
+/// the same list. The fix expands per token with a length-keyed ladder
+/// (1–5 chars exact, 6–8 d=1, 9+ d=2), capped by a fixed distance.
+#[tokio::test]
+#[ignore]
+async fn fuzzy_fts_is_bounded_and_token_specific() {
+    let (app, _tmp, metrics) = build_app_with_metrics().await;
+    let ns = unique_namespace("fuzzy-test");
+    let upsert_body = json!({
+        "rows": [
+            {"id": 1, "vector": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+             "text": "kubernetes connection timeout troubleshooting"},
+            {"id": 2, "vector": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+             "text": "a fast red car drives through the city streets"},
+            {"id": 3, "vector": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+             "text": "the lazy cat sleeps on the warm windowsill"},
+            {"id": 4, "vector": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+             "text": "gardening tips for tomatoes and peppers"},
+        ]
+    });
+    let (status, _) = post_json(app.clone(), format!("/ns/{ns}/upsert"), upsert_body).await;
+    assert_eq!(status, StatusCode::OK, "upsert must succeed");
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/ns/{ns}/fts-index"))
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let count = wait_for_index(&metrics, &ns, "fts", 1, Duration::from_secs(30)).await;
+    assert_eq!(count, 1, "FTS index build must complete");
+
+    let ids = |body: &Value| -> Vec<u64> {
+        body["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .map(|r| r["id"].as_u64().unwrap())
+            .collect()
+    };
+
+    // Misspelled long token at auto: "kubernets" (9 chars, d=2) must
+    // retrieve the "kubernetes" doc.
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({"text": "kubernets", "k": 4, "fuzzy": {"max_edit_distance": "auto"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let kubernets_ids = ids(&body);
+    assert!(
+        kubernets_ids.contains(&1),
+        "fuzzy auto must surface the kubernetes doc, got {kubernets_ids:?}"
+    );
+    assert!(
+        !kubernets_ids.contains(&4),
+        "fuzzy auto must not match-all: gardening doc matched, got {kubernets_ids:?}"
+    );
+
+    // fuzziness 0 stays exact: the misspelling retrieves nothing. The probe
+    // avoids "kubernets" — the index analyzer stems, so "kubernets" and
+    // "kubernetes" collapse to the same term and match even exactly (the
+    // RFC 0001 analyzer-parity gap); "kubernetz" does not stem-collide.
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({"text": "kubernetz", "k": 4, "fuzzy": {"max_edit_distance": 0}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        ids(&body).is_empty(),
+        "exact-only fuzzy must not retrieve a misspelling"
+    );
+
+    // Token specificity: different fuzzy tokens must not return the same
+    // byte-identical list (the match-all signature).
+    let (status, body_a) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({"text": "windowsil", "k": 4, "fuzzy": {"max_edit_distance": "auto"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let windowsill_ids = ids(&body_a);
+    assert!(
+        windowsill_ids.contains(&3),
+        "fuzzy auto must surface the windowsill doc, got {windowsill_ids:?}"
+    );
+    assert_ne!(
+        windowsill_ids, kubernets_ids,
+        "different fuzzy tokens must not return identical lists"
+    );
+
+    // Short tokens ladder to exact even at auto: "cst" (3 chars) must not
+    // fuzzy-flood; it matches nothing rather than everything.
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({"text": "cst", "k": 4, "fuzzy": {"max_edit_distance": "auto"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        ids(&body).is_empty(),
+        "3-char tokens must stay exact under the auto ladder"
+    );
+
+    // Hybrid + fuzzy in one call: vector for id=2 plus a misspelled long
+    // token for id=1 fuses both.
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({
+            "vector": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "text": "kubernets",
+            "k": 4,
+            "fuzzy": {"max_edit_distance": "auto"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "hybrid fuzzy query status");
+    let hybrid_ids = ids(&body);
+    assert!(
+        hybrid_ids.contains(&1) && hybrid_ids.contains(&2),
+        "hybrid fuzzy must fuse vector and fuzzy-text hits, got {hybrid_ids:?}"
+    );
+}
