@@ -1,13 +1,13 @@
 # RFC 0004: Fuzzy / typo-tolerant full-text search
 
-Tracking issue: hev/search#6
+Tracking issue: hev/search#4
 
 > **Status:** implemented. The `fuzzy.max_edit_distance` control (`0`/`1`/`2`/
 > `"auto"`) shipped on `/query` via Option A (Lance `MatchQuery` fuzziness).
 > The first wiring handed Lance one **uniform** nonzero distance for the whole
 > query, which applied it to every token — 1–2 char tokens expanded to
 > essentially the whole term dictionary and every fuzzy query returned the same
-> match-all list (hev/search#6, found by the `shelf` cutover). The fix keeps
+> match-all list (hev/search#4, found by the `shelf` cutover). The fix keeps
 > Option A but expands **per token** with the length-keyed ladder below
 > (1–5 chars exact, 6–8 → d=1, 9+ → d=2; a fixed value caps the ladder) as a
 > `BooleanQuery` of per-token `MatchQuery` clauses. Remaining open item: the

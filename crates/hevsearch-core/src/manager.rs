@@ -2381,7 +2381,7 @@ fn fuzzy_query_tokens(text: &str) -> Vec<String> {
 /// match-flooding the corpus. Passing a single uniform nonzero fuzziness to
 /// Lance (the previous `new_fuzzy` wiring) applied that distance to every
 /// token, so 1–2 char tokens expanded to essentially the whole term
-/// dictionary and every query returned the same match-all list (hev/search#6).
+/// dictionary and every query returned the same match-all list (hev/search#4).
 fn full_text_query(
     text: String,
     fuzzy: Option<&FuzzyRequest>,
