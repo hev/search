@@ -39,6 +39,7 @@ pub use state::{build_state, AppState};
 ///   `HEVSEARCH_METRICS_TOKEN` is configured (preserving the
 ///   pre-0.5.0 default-public behaviour).
 /// * **Read/Write** — `upsert`, `query`, `list`, `warmup`, the
+///   `GET /ns` namespace-enumeration endpoint, the
 ///   `GET /ns/{namespace}` metadata endpoint, and the
 ///   `GET /operations/{id}` background-operation status endpoint. Stacks
 ///   `require_write` and the per-principal limiter inside a single
@@ -74,6 +75,10 @@ pub fn router(state: AppState) -> Router {
         .route("/ns/{namespace}/facet", post(handlers::facet))
         .route("/ns/{namespace}/list", get(handlers::list))
         .route("/ns/{namespace}/warmup", post(handlers::warmup))
+        // GET /ns (enumerate namespaces) is read-tier: it exposes only
+        // names, the same information a caller with the write key can
+        // already probe per-namespace via GET /ns/{namespace}.
+        .route("/ns", get(handlers::list_namespaces))
         // GET /ns/{namespace} (namespace metadata) shares its path with
         // the admin-tier DELETE; axum merges the two method routers
         // since the methods differ, and each keeps its own auth layer.

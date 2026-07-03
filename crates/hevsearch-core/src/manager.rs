@@ -2304,6 +2304,36 @@ impl NamespaceManager {
         }))
     }
 
+    /// Enumerate every namespace under the storage root, sorted
+    /// ascending. A namespace is any first-level directory beneath the
+    /// root prefix — one `list_with_delimiter` round-trip against the
+    /// object store, no table opens. A freshly-deleted namespace whose
+    /// prefix still lists empty disappears naturally (delimiter listing
+    /// only reports prefixes that contain at least one object).
+    ///
+    /// Not recorded in `hevsearch_s3_requests_total`: that counter is
+    /// labelled per-namespace and this is a root-level operation.
+    pub async fn list_namespaces(&self) -> Result<Vec<String>, HevSearchError> {
+        let store = self.build_object_store()?;
+        let prefix = self
+            .storage_root
+            .prefix()
+            .map(ObjectStorePath::from);
+
+        let listing = store
+            .list_with_delimiter(prefix.as_ref())
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("list namespaces: {e}")))?;
+
+        let mut namespaces: Vec<String> = listing
+            .common_prefixes
+            .iter()
+            .filter_map(|p| p.parts().last().map(|part| part.as_ref().to_string()))
+            .collect();
+        namespaces.sort_unstable();
+        Ok(namespaces)
+    }
+
     /// Return the namespace's configured distance metric without
     /// row-count or index metadata work.
     pub async fn distance_metric(

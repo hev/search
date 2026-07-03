@@ -7,6 +7,7 @@
 //! * `POST   /ns/{namespace}/facet`
 //! * `POST   /ns/{namespace}/delete`
 //! * `GET    /ns/{namespace}/list`
+//! * `GET    /ns`
 //! * `GET    /ns/{namespace}`
 //! * `DELETE /ns/{namespace}`
 //! * `POST   /ns/{namespace}/warmup`
@@ -832,6 +833,26 @@ pub async fn list(
         .list(&ns, limit, order, cursor, params.filter)
         .await?;
     Ok(Json(page))
+}
+
+/// Body of `GET /ns`: every namespace under the storage root, sorted
+/// ascending. Names only — per-namespace metadata (row count, dim,
+/// index flags) stays on `GET /ns/{namespace}` so listing is a single
+/// object-store round-trip regardless of namespace count.
+#[derive(Debug, Serialize)]
+pub struct NamespaceList {
+    pub namespaces: Vec<String>,
+}
+
+/// Enumerate all namespaces under the storage root. Like the
+/// per-namespace info endpoint, this bypasses the foyer cache and hits
+/// the object store directly — it is namespace state, not a query
+/// result. An empty deployment returns `{"namespaces": []}`, not 404.
+pub async fn list_namespaces(
+    State(state): State<AppState>,
+) -> Result<Json<NamespaceList>, ApiError> {
+    let namespaces = state.manager.list_namespaces().await?;
+    Ok(Json(NamespaceList { namespaces }))
 }
 
 /// Return operational metadata for a namespace: vector kind and

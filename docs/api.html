@@ -51,7 +51,7 @@
     <h2>Authentication</h2>
     <p>When <code>HEVSEARCH_API_KEY</code> is configured, every protected endpoint requires <code>Authorization: Bearer &lt;token&gt;</code>. Two tiers exist:</p>
     <ul>
-      <li><strong>Read/write</strong> (<code>HEVSEARCH_API_KEY</code>) — <code>upsert</code>, <code>query</code>, <code>list</code>, <code>warmup</code>, <code>GET /ns/{namespace}</code>, and <code>GET /operations/{id}</code>.</li>
+      <li><strong>Read/write</strong> (<code>HEVSEARCH_API_KEY</code>) — <code>upsert</code>, <code>query</code>, <code>list</code>, <code>warmup</code>, <code>GET /ns</code>, <code>GET /ns/{namespace}</code>, and <code>GET /operations/{id}</code>.</li>
       <li><strong>Admin</strong> (<code>HEVSEARCH_ADMIN_API_KEY</code>) — <code>delete</code>, <code>index</code>, <code>fts-index</code>, <code>scalar-index</code>, <code>compact</code>. The admin key also satisfies read/write routes. If no admin key is configured, the read/write key authorises admin routes too (single-key fallback).</li>
     </ul>
     <p><code>/health</code> is always public. <code>/metrics</code> is public unless <code>HEVSEARCH_METRICS_TOKEN</code> is set, in which case the same Bearer header is required. Token comparisons are constant-time (<code>subtle::ConstantTimeEq</code>). See <a href="configuration.html#authentication">configuration</a> for the full env-var list, including the optional <code>HEVSEARCH_RATE_LIMIT_RPS</code> / <code>HEVSEARCH_PREAUTH_IP_LIMIT_RPS</code> rate-limit knobs.</p>
@@ -423,6 +423,33 @@ curl -X POST http://localhost:3000/ns/demo/import \
 
         <p>Filtered page, oldest matching rows first:</p>
         <pre><code>curl 'http://localhost:3000/ns/demo/list?limit=50&amp;order=asc&amp;filter=section%20%3D%20%27warnings%27'</code></pre>
+      </div>
+    </div>
+
+    <!-- GET /ns -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/ns</span>
+        <span class="endpoint-desc">List namespaces</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Enumerates every namespace under the storage root, sorted ascending. Names only — fetch per-namespace metadata with <code>GET /ns/{namespace}</code>. One object-store listing round-trip regardless of namespace count; it never opens a table.</p>
+        <p>An empty deployment returns an empty array, not 404.</p>
+
+        <h4>Response (200)</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>namespaces</code></td><td>array of string</td><td>Namespace names, sorted ascending</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Example</h4>
+        <pre><code>curl http://localhost:3000/ns</code></pre>
+        <pre><code>{
+  "namespaces": ["demo", "docs", "products"]
+}</code></pre>
       </div>
     </div>
 
