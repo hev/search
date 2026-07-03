@@ -80,6 +80,21 @@ curl http://localhost:3000/metrics | grep s3_requests
 
 (`hevsearch_s3_requests_total` counts requests against whichever backend is configured.)
 
+## CLI
+
+`cli/` ships `hev`, a Go operator CLI for the same internal REST surface — an interactive TUI browser for humans and clean JSON output for scripts and agents:
+
+```bash
+cd cli && make install   # drops `hev` in $GOBIN
+
+hev                      # TUI: browse namespaces → documents → full JSON
+hev ls                   # list namespaces (pipe it and you get JSON)
+hev query -n demo "brown fox" -k 5 --filter "section = 'warnings'"
+hev index create -n demo --wait
+```
+
+Endpoint resolution: `--url` > `HEVSEARCH_URL` > the active profile in `~/.hevsearch/config.toml` (`hev env add`) > `http://localhost:3000`. To reach an engine running behind hev layer's `NetworkPolicy`, port-forward the engine Service (`kubectl port-forward svc/hevsearch 3001:3000`) and keep it as a profile — the CLI is the operator/admin path, not the inbound wire. See `cli/README.md` for the full command tree.
+
 ## Storage backend
 
 Backend choice is operator config, not a recompile. Point hev search at a bucket with `HEVSEARCH_STORAGE_URI`. The supported, validated path is **AWS S3** (and S3-compatible MinIO for local dev):
