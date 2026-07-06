@@ -2966,9 +2966,12 @@ fn facet_values_at(array: &ArrayRef, row: usize) -> Result<Vec<serde_json::Value
             return Ok(Vec::new());
         }
         let elems = a.value(row);
-        let strs = elems.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-            FirnflowError::InvalidRequest("facet list field must be a list of strings".into())
-        })?;
+        let strs = elems
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                FirnflowError::InvalidRequest("facet list field must be a list of strings".into())
+            })?;
         let mut out = Vec::with_capacity(strs.len());
         for i in 0..strs.len() {
             if !strs.is_null(i) {

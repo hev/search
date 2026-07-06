@@ -41,6 +41,7 @@ fn make_result_set(n: usize) -> QueryResultSet {
             ),
             text: None,
             ingested_at_micros: Some(1_700_000_000_000_000 + i as i64),
+            attributes: Default::default(),
         })
         .collect();
     QueryResultSet {
