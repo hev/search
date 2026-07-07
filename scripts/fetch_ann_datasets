@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Fetch the ground-truth ANN datasets the recall harness (RFC 0011)
+# consumes. Datasets are cached out of band, never vendored — the
+# harness takes paths via HEVSEARCH_BENCH_{BASE,QUERY,GT}_* env vars.
+#
+# Usage: scripts/fetch_ann_datasets [sift1m|gist1m] [dest-dir]
+set -euo pipefail
+
+dataset="${1:-sift1m}"
+dest="${2:-datasets}"
+
+case "$dataset" in
+  sift1m) url="ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz" ;;
+  gist1m) url="ftp://ftp.irisa.fr/local/texmex/corpus/gist.tar.gz" ;;
+  *) echo "unknown dataset: $dataset (sift1m|gist1m)" >&2; exit 1 ;;
+esac
+
+name="${url##*/}"
+mkdir -p "$dest"
+archive="$dest/$name"
+
+if [ ! -f "$archive" ]; then
+  echo "fetching $url ..."
+  curl -fL --retry 3 -o "$archive" "$url"
+else
+  echo "using cached $archive"
+fi
+
+tar -xzf "$archive" -C "$dest"
+echo "extracted to $dest/"
+echo
+echo "run the sweep with, e.g.:"
+base_dir="$dest/${dataset%1m}"
+echo "  HEVSEARCH_BENCH_BASE_FVECS=$base_dir/${dataset%1m}_base.fvecs \\"
+echo "  HEVSEARCH_BENCH_QUERY_FVECS=$base_dir/${dataset%1m}_query.fvecs \\"
+echo "  HEVSEARCH_BENCH_GT_IVECS=$base_dir/${dataset%1m}_groundtruth.ivecs \\"
+echo "  ./scripts/cargo run --release -p hevsearch-bench --bin recall_sweep"

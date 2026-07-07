@@ -18,3 +18,4 @@ tokio.workspace = true
 anyhow.workspace = true
 tempfile = "3"
 bincode.workspace = true
+serde_json.workspace = true
