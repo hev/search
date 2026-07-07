@@ -24,6 +24,11 @@ license = "Apache-2.0"
 lancedb = { version = "=0.29.0", features = ["aws", "gcs"] }
 lance = "=6.0.0"
 
+# alyze — turbopuffer's `word_v4` analyzer (RFC 0001). The analyzer config
+# IS the index format: a bump changes tokenization across existing indexes
+# and requires a reindex, so this pin is a read-the-changelog event.
+alyze = "=0.1.5"
+
 # Arrow — pinned to the major that lance 6.0.0 requires (^58).
 # lancedb 0.29.0's workspace pins arrow* = "58.0.0" exactly; matching
 # the minor keeps the dependency graph on what upstream tested.

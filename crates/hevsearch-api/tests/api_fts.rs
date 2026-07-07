@@ -319,14 +319,14 @@ async fn fuzzy_fts_is_bounded_and_token_specific() {
         "fuzzy auto must not match-all: gardening doc matched, got {kubernets_ids:?}"
     );
 
-    // fuzziness 0 stays exact: the misspelling retrieves nothing. The probe
-    // avoids "kubernets" — the index analyzer stems, so "kubernets" and
-    // "kubernetes" collapse to the same term and match even exactly (the
-    // RFC 0001 analyzer-parity gap); "kubernetz" does not stem-collide.
+    // fuzziness 0 stays exact: the misspelling retrieves nothing. With the
+    // RFC 0001 alyze analyzer stemming is off, so "kubernets" no longer
+    // stem-collides with "kubernetes" — the surface misspelling itself is
+    // the probe, exactly the simpler truth the analyzer swap buys.
     let (status, body) = post_json(
         app.clone(),
         format!("/ns/{ns}/query"),
-        json!({"text": "kubernetz", "k": 4, "fuzzy": {"max_edit_distance": 0}}),
+        json!({"text": "kubernets", "k": 4, "fuzzy": {"max_edit_distance": 0}}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -386,5 +386,129 @@ async fn fuzzy_fts_is_bounded_and_token_specific() {
     assert!(
         hybrid_ids.contains(&1) && hybrid_ids.contains(&2),
         "hybrid fuzzy must fuse vector and fuzzy-text hits, got {hybrid_ids:?}"
+    );
+}
+
+/// RFC 0001: the engine analyzer (alyze `word_v4`) owns the linguistics
+/// — LanceDB is a passthrough whitespace splitter over the derived
+/// `text_tok` column. The observable truth-changes vs. the old built-in
+/// analyzer: stop words are indexed (no stop-word removal), morphological
+/// variants do not collapse (no stemming), and `text_tok` never leaks
+/// into result payloads or attributes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn alyze_analyzer_word_v4_truth_changes() {
+    let (app, _tmp, metrics) = build_app_with_metrics().await;
+    let ns = unique_namespace("alyze-test");
+    let upsert_body = json!({
+        "rows": [
+            {"id": 1, "vector": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+             "text": "the quick brown fox jumps over one lazy dog"},
+            {"id": 2, "vector": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+             "text": "a fast red car drives through city streets"},
+        ]
+    });
+    let (status, _) = post_json(app.clone(), format!("/ns/{ns}/upsert"), upsert_body).await;
+    assert_eq!(status, StatusCode::OK, "upsert must succeed");
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/ns/{ns}/fts-index"))
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let count = wait_for_index(&metrics, &ns, "fts", 1, Duration::from_secs(30)).await;
+    assert_eq!(count, 1, "FTS index build must complete");
+
+    let ids = |body: &Value| -> Vec<u64> {
+        body["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .map(|r| r["id"].as_u64().unwrap())
+            .collect()
+    };
+
+    // Stop words are indexed now: "the" appears only in doc 1.
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({"text": "the", "k": 4}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        ids(&body),
+        vec![1],
+        "stop words must be indexed under word_v4 (no stop-word removal)"
+    );
+
+    // No stemming: "jump" must not match "jumps".
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({"text": "jump", "k": 4}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        ids(&body).is_empty(),
+        "morphological variants must not collapse (stemming is off)"
+    );
+
+    // The exact surface form still matches, case-insensitively.
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({"text": "JUMPS", "k": 4}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ids(&body), vec![1], "lowercasing still applies");
+
+    // `text_tok` is engine-internal: never in payloads or attributes.
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({"text": "lazy", "k": 4}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for row in body["results"].as_array().expect("results array") {
+        assert!(row.get("text_tok").is_none(), "text_tok leaked into hit");
+        assert!(
+            row["attributes"]
+                .as_object()
+                .map(|a| !a.contains_key("text_tok"))
+                .unwrap_or(true),
+            "text_tok leaked into attributes"
+        );
+    }
+
+    // A punctuation-only query analyzes to zero tokens and returns
+    // empty instead of erroring.
+    let (status, body) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/query"),
+        json!({"text": "!!! ...", "k": 4}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ids(&body).is_empty(), "zero-token query must return empty");
+
+    // Callers cannot supply `text_tok` themselves — reserved.
+    let (status, _) = post_json(
+        app.clone(),
+        format!("/ns/{ns}/upsert"),
+        json!({"rows": [{"id": 9, "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                          "attributes": {"text_tok": "sneaky"}, "text": "x"}]}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "text_tok must be rejected as a reserved attribute name"
     );
 }

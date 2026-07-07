@@ -444,9 +444,12 @@ pub async fn create_index(
     ))
 }
 
-/// Build a BM25 full-text search index on the namespace's `text`
-/// column. Same 202-with-`operation_id` pattern as the vector index
-/// build; poll `GET /operations/{operation_id}` for completion.
+/// Build a BM25 full-text search index on the namespace's analyzed
+/// text surface (the reserved `text_tok` column, RFC 0001). Doubles as
+/// the explicit reindex/backfill path for namespaces created before
+/// `text_tok` existed. Same 202-with-`operation_id` pattern as the
+/// vector index build; poll `GET /operations/{operation_id}` for
+/// completion.
 pub async fn create_fts_index(
     State(state): State<AppState>,
     Path(namespace): Path<String>,

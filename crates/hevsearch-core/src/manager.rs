@@ -80,6 +80,16 @@ use crate::{HevSearchError, NamespaceId, QueryResult, QueryResultSet, StorageRoo
 
 const TABLE_NAME: &str = "data";
 const DISTANCE_METRIC_METADATA_KEY: &str = "hevsearch.distance_metric";
+/// Schema-metadata key recording the analyzer configuration the FTS
+/// index was built with (RFC 0001's manifest capture): written when
+/// the passthrough `text_tok` index is created, so a rebuild can
+/// detect a config that desynced from the write path.
+const FTS_ANALYZER_METADATA_KEY: &str = "hevsearch.fts_analyzer";
+/// Reserved column holding the alyze `word_v4` analysis of `text`
+/// (space-joined tokens; RFC 0001). This is the surface the FTS index
+/// is built over; `text` stays verbatim for payloads. Server-derived
+/// on every write — never supplied by callers.
+const TEXT_TOK_COLUMN: &str = "text_tok";
 const DISTANCE_COLUMN: &str = "_distance";
 const SCORE_COLUMN: &str = "_score";
 const RELEVANCE_COLUMN: &str = "_relevance_score";
@@ -111,6 +121,7 @@ const RESERVED_ATTRIBUTE_COLUMNS: &[&str] = &[
     "vector",
     "vectors",
     "text",
+    TEXT_TOK_COLUMN,
     INGESTED_AT_COLUMN,
     DISTANCE_COLUMN,
     SCORE_COLUMN,
@@ -403,6 +414,12 @@ struct NamespaceSchemaInfo {
     id_type: RowIdType,
     distance_metric: DistanceMetric,
     has_ingested_at: bool,
+    /// Whether the table carries the reserved `text_tok` column (the
+    /// alyze-analyzed FTS surface, RFC 0001). `false` for tables
+    /// created before the column existed; those keep their legacy
+    /// shape (FTS over `text` with LanceDB's built-in analyzer) until
+    /// the fts-index maintenance path backfills them.
+    has_text_tok: bool,
     attributes: BTreeMap<String, AttributeType>,
 }
 
@@ -673,6 +690,7 @@ impl NamespaceManager {
         id_type: RowIdType,
         distance_metric: DistanceMetric,
         with_ingested_at: bool,
+        with_text_tok: bool,
         attributes: &BTreeMap<String, AttributeType>,
     ) -> Arc<Schema> {
         let inner_item = Arc::new(Field::new("item", DataType::Float32, true));
@@ -692,6 +710,9 @@ impl NamespaceManager {
             Field::new("vector", vector_type, false),
             Field::new("text", DataType::Utf8, true),
         ];
+        if with_text_tok {
+            fields.push(Field::new(TEXT_TOK_COLUMN, DataType::Utf8, true));
+        }
         if with_ingested_at {
             fields.push(Field::new(
                 INGESTED_AT_COLUMN,
@@ -786,10 +807,17 @@ impl NamespaceManager {
             Ok(tbl) => tbl,
             Err(_) => {
                 // Fresh namespace: always create with the current
-                // schema, which includes `_ingested_at`.
-                let schema =
-                    Self::schema_for_kind(kind, dim, id_type, distance_metric, true, attributes);
-                let empty = rows_to_batch(&schema, kind, dim, Vec::new(), true)?;
+                // schema, which includes `_ingested_at` and `text_tok`.
+                let schema = Self::schema_for_kind(
+                    kind,
+                    dim,
+                    id_type,
+                    distance_metric,
+                    true,
+                    true,
+                    attributes,
+                );
+                let empty = rows_to_batch(&schema, kind, dim, Vec::new(), true, true)?;
                 let reader: Box<dyn RecordBatchReader + Send> =
                     Box::new(RecordBatchIterator::new(vec![Ok(empty)], schema));
                 conn.create_table(TABLE_NAME, reader)
@@ -941,6 +969,7 @@ impl NamespaceManager {
                         id_type,
                         distance_metric,
                         has_ingested_at: true,
+                        has_text_tok: true,
                         attributes: request_attributes.clone(),
                     },
                     true,
@@ -1009,9 +1038,17 @@ impl NamespaceManager {
             info.id_type,
             info.distance_metric,
             info.has_ingested_at,
+            info.has_text_tok,
             &info.attributes,
         );
-        let batch = rows_to_batch(&schema, info.kind, info.dim, rows, info.has_ingested_at)?;
+        let batch = rows_to_batch(
+            &schema,
+            info.kind,
+            info.dim,
+            rows,
+            info.has_ingested_at,
+            info.has_text_tok,
+        )?;
         let reader: Box<dyn RecordBatchReader + Send> =
             Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
         let mut merge = tbl.merge_insert(&["id"]);
@@ -1174,6 +1211,7 @@ impl NamespaceManager {
                         id_type,
                         distance_metric,
                         has_ingested_at: true,
+                        has_text_tok: true,
                         attributes: import_attributes,
                     },
                     BTreeMap::new(),
@@ -1211,6 +1249,7 @@ impl NamespaceManager {
             info.id_type,
             info.distance_metric,
             true,
+            info.has_text_tok,
             &info.attributes,
         );
 
@@ -1244,6 +1283,7 @@ impl NamespaceManager {
             id_idx,
             vec_idx,
             text_idx,
+            with_text_tok: info.has_text_tok,
             attr_indices,
             ts_micros: current_micros(),
             rows: Arc::clone(&rows),
@@ -1625,6 +1665,28 @@ impl NamespaceManager {
             ));
         }
 
+        // Analyze the query with the engine analyzer when the table
+        // carries `text_tok` (RFC 0001): the same `word_v4` pipeline
+        // that produced the indexed surface, so write- and query-side
+        // tokenization agree byte-for-byte. Legacy tables (no
+        // `text_tok`) keep the raw string against LanceDB's built-in
+        // analyzer. `None` after analysis (punctuation-only input)
+        // means the FTS leg can match nothing: FTS-only queries return
+        // empty, hybrid queries drop the FTS leg and stay vector-only.
+        let fts_target: Option<FtsTarget> = match &text {
+            None => None,
+            Some(t) if info.has_text_tok => {
+                crate::analyzer::tokenized(t).map(FtsTarget::Analyzed)
+            }
+            Some(t) => Some(FtsTarget::Legacy(t.clone())),
+        };
+        if has_text && fts_target.is_none() && shape.is_none() {
+            return Ok(QueryResultSet {
+                query_id: String::new(),
+                results: Vec::new(),
+            });
+        }
+
         let nprobes = nprobes.unwrap_or(DEFAULT_NPROBES);
         let tbl = self
             .get_or_open_table(
@@ -1699,8 +1761,8 @@ impl NamespaceManager {
                 .distance_type(info.distance_metric.to_lance())
                 .nprobes(nprobes)
                 .limit(k);
-            if let Some(ref t) = text {
-                vq = vq.full_text_search(full_text_query(t.clone(), fuzzy.as_ref())?);
+            if let Some(target) = fts_target {
+                vq = vq.full_text_search(full_text_query(target, fuzzy.as_ref())?);
             }
             if let Some(ref f) = filter {
                 vq = vq.only_if(f.clone());
@@ -1717,10 +1779,10 @@ impl NamespaceManager {
             })?
         } else {
             // FTS-only
-            let t = text.unwrap();
+            let target = fts_target.expect("guarded by the empty-analysis check above");
             let mut q = tbl
                 .query()
-                .full_text_search(full_text_query(t, fuzzy.as_ref())?)
+                .full_text_search(full_text_query(target, fuzzy.as_ref())?)
                 .limit(k);
             if let Some(ref f) = filter {
                 q = q.only_if(f.clone());
@@ -1814,15 +1876,35 @@ impl NamespaceManager {
         Ok(())
     }
 
-    /// Build a BM25 full-text search index on the namespace's `text`
-    /// column. Requires that at least some rows have been upserted
-    /// with non-null `text` values.
+    /// Build a BM25 full-text search index on the namespace's
+    /// analyzed text surface. Requires that at least some rows have
+    /// been upserted with non-null `text` values.
+    ///
+    /// Since RFC 0001 the engine owns the linguistics: the index is
+    /// built over the reserved `text_tok` column (the alyze `word_v4`
+    /// analysis of `text`, derived on every write) with LanceDB
+    /// reduced to a passthrough whitespace splitter — no lowercasing,
+    /// stemming, stop-word removal, or ASCII folding of its own. The
+    /// analyzer id is recorded in the table's schema metadata so a
+    /// rebuild can't silently desync from the write path.
+    ///
+    /// This endpoint is also the explicit backfill/reindex path for
+    /// namespaces created before `text_tok` existed: when the column
+    /// is missing, it is added and populated from `text` here, then
+    /// indexed. Until an operator calls this, a legacy namespace keeps
+    /// serving its old `text`-indexed FTS unchanged (read-compat).
     pub async fn create_fts_index(&self, ns: &NamespaceId) -> Result<(), HevSearchError> {
-        let info = self.resolve_schema_info(ns).await?.ok_or_else(|| {
+        let mut info = self.resolve_schema_info(ns).await?.ok_or_else(|| {
             HevSearchError::InvalidRequest(format!(
                 "cannot create FTS index on namespace {ns}: no data has been upserted yet"
             ))
         })?;
+
+        if !info.has_text_tok {
+            self.backfill_text_tok(ns, &info).await?;
+            info.has_text_tok = true;
+            self.schema_info.insert(ns.clone(), info.clone());
+        }
 
         let tbl = self
             .get_or_open_table(
@@ -1834,12 +1916,132 @@ impl NamespaceManager {
                 &info.attributes,
             )
             .await?;
-        tbl.create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
+        // Passthrough builder: alyze already did the analysis at
+        // write time; Lance must add no linguistics of its own or the
+        // two sides of the index disagree (RFC 0001's invariant).
+        let passthrough = FtsIndexBuilder::default()
+            .base_tokenizer("whitespace".into())
+            .lower_case(false)
+            .stem(false)
+            .remove_stop_words(false)
+            .ascii_folding(false)
+            .max_token_length(None);
+        tbl.create_index(&[TEXT_TOK_COLUMN], Index::FTS(passthrough))
             .execute()
             .await
             .map_err(|e| HevSearchError::Backend(format!("create_fts_index: {e}")))?;
 
+        // Record the analyzer configuration next to the index (the
+        // manifest capture): a future rebuild reads this to detect a
+        // pinned-analyzer change that would require re-deriving
+        // `text_tok` first.
+        if let Some(native) = tbl.as_native() {
+            native
+                .replace_schema_metadata(vec![(
+                    FTS_ANALYZER_METADATA_KEY.to_string(),
+                    crate::analyzer::ANALYZER_ID.to_string(),
+                )])
+                .await
+                .map_err(|e| {
+                    HevSearchError::Backend(format!("record fts analyzer metadata: {e}"))
+                })?;
+        }
+
         // Same manifest-bump rationale as `create_index`.
+        self.evict_handle(ns);
+        Ok(())
+    }
+
+    /// Backfill the reserved `text_tok` column on a namespace created
+    /// before RFC 0001: scan `(id, text)`, analyze each row with the
+    /// engine analyzer, and merge the new column in on `id`. One-shot
+    /// maintenance run under [`create_fts_index`]; rows upserted after
+    /// the backfill derive `text_tok` on the write path as usual.
+    /// Rows written concurrently *during* the backfill may end up with
+    /// a null `text_tok` — re-run the fts-index build to repair.
+    async fn backfill_text_tok(
+        &self,
+        ns: &NamespaceId,
+        info: &NamespaceSchemaInfo,
+    ) -> Result<(), HevSearchError> {
+        let tbl = self
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
+            .await?;
+
+        // Full scan of the analysis inputs. `text_tok` for every row
+        // is derived in memory; namespaces are demo/design-preview
+        // scale today and the column pair is small. Chunked commits
+        // can come later if a workload outgrows this.
+        let batches: Vec<RecordBatch> = tbl
+            .query()
+            .select(Select::columns(&["id", "text"]))
+            .execute()
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("backfill scan: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("backfill collect: {e}")))?;
+
+        let merged: Vec<RecordBatch> = batches
+            .iter()
+            .map(|batch| {
+                let id = batch
+                    .column_by_name("id")
+                    .expect("projected above")
+                    .clone();
+                let text = batch
+                    .column_by_name("text")
+                    .expect("projected above")
+                    .clone();
+                let text_tok = derive_text_tok(&text);
+                let schema = Arc::new(Schema::new(vec![
+                    Field::new("id", id.data_type().clone(), false),
+                    Field::new(TEXT_TOK_COLUMN, DataType::Utf8, true),
+                ]));
+                RecordBatch::try_new(schema, vec![id, text_tok])
+            })
+            .collect::<Result<_, _>>()
+            .map_err(|e| HevSearchError::Backend(format!("backfill batch: {e}")))?;
+
+        if merged.is_empty() {
+            // Empty table: just add the null column so the schema
+            // carries `text_tok` for future writes.
+            tbl.add_columns(
+                NewColumnTransform::SqlExpressions(vec![(
+                    TEXT_TOK_COLUMN.to_string(),
+                    "CAST(NULL AS STRING)".to_string(),
+                )]),
+                None,
+            )
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("backfill add column: {e}")))?;
+            self.evict_handle(ns);
+            return Ok(());
+        }
+
+        let schema = merged[0].schema();
+        let reader = RecordBatchIterator::new(merged.into_iter().map(Ok), schema);
+        // `NativeTable::merge` joins the new column in on `id` as one
+        // Lance commit; rows absent from the right side get null.
+        let native = tbl.as_native().ok_or_else(|| {
+            HevSearchError::Backend("backfill requires a native lance table".into())
+        })?;
+        let mut native = native.clone();
+        native
+            .merge(reader, "id", "id")
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("backfill merge: {e}")))?;
+
+        // The merge committed a new manifest; drop the pooled handle
+        // so subsequent operations (including the index build that
+        // follows) see the new schema.
         self.evict_handle(ns);
         Ok(())
     }
@@ -2384,47 +2586,93 @@ fn ladder_distance(token_chars: usize) -> u32 {
     }
 }
 
-/// Tokenize a query string for the per-token fuzzy expansion: lowercase,
-/// split on non-alphanumeric boundaries, dedupe preserving order. This only
-/// has to agree with Lance's `simple` base tokenizer well enough to key the
-/// ladder off token length; the index analyzer still owns matching for the
-/// exact (distance-0) clauses.
-fn fuzzy_query_tokens(text: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = Vec::new();
-    for raw in text.split(|c: char| !c.is_alphanumeric()) {
-        if raw.is_empty() {
-            continue;
-        }
-        let token = raw.to_lowercase();
-        if !tokens.contains(&token) {
-            tokens.push(token);
+/// The FTS surface a query targets. `Analyzed` carries the alyze
+/// `word_v4` analysis of the caller's query (space-joined tokens,
+/// RFC 0001) and runs against the `text_tok` passthrough index;
+/// `Legacy` carries the raw query string against a pre-RFC-0001 table
+/// whose index was built over `text` with LanceDB's built-in analyzer.
+enum FtsTarget {
+    Analyzed(String),
+    Legacy(String),
+}
+
+impl FtsTarget {
+    fn text(&self) -> &str {
+        match self {
+            Self::Analyzed(t) | Self::Legacy(t) => t,
         }
     }
-    tokens
+
+    /// The indexed column this target queries. `None` for legacy
+    /// tables — Lance resolves the single FTS-indexed column itself.
+    fn column(&self) -> Option<&'static str> {
+        match self {
+            Self::Analyzed(_) => Some(TEXT_TOK_COLUMN),
+            Self::Legacy(_) => None,
+        }
+    }
+
+    /// Tokens for the per-token fuzzy expansion, deduped preserving
+    /// order. The analyzed target splits its own token surface — the
+    /// ladder then keys off the *alyze* token, the same unit the index
+    /// stores. The legacy fallback approximates Lance's `simple`
+    /// tokenizer (lowercase, split on non-alphanumeric); it only has
+    /// to agree well enough to key the ladder off token length.
+    fn fuzzy_tokens(&self) -> Vec<String> {
+        let mut tokens: Vec<String> = Vec::new();
+        match self {
+            Self::Analyzed(t) => {
+                for token in t.split(' ') {
+                    if !token.is_empty() && !tokens.iter().any(|x| x == token) {
+                        tokens.push(token.to_string());
+                    }
+                }
+            }
+            Self::Legacy(t) => {
+                for raw in t.split(|c: char| !c.is_alphanumeric()) {
+                    if raw.is_empty() {
+                        continue;
+                    }
+                    let token = raw.to_lowercase();
+                    if !tokens.contains(&token) {
+                        tokens.push(token);
+                    }
+                }
+            }
+        }
+        tokens
+    }
 }
 
 /// Build the Lance FTS query for a request. Without `fuzzy` (or with an
 /// effective edit distance of zero everywhere) this is the plain BM25 match
-/// over the whole text. With fuzzy, expand to one `should` clause per query
-/// token, each carrying its own **bounded** edit distance —
+/// over the whole (analyzed) text. With fuzzy, expand to one `should` clause
+/// per query token, each carrying its own **bounded** edit distance —
 /// `min(ladder(token length), cap)` — so short tokens stay exact instead of
 /// match-flooding the corpus. Passing a single uniform nonzero fuzziness to
 /// Lance (the previous `new_fuzzy` wiring) applied that distance to every
 /// token, so 1–2 char tokens expanded to essentially the whole term
 /// dictionary and every query returned the same match-all list (hev/search#4).
 fn full_text_query(
-    text: String,
+    target: FtsTarget,
     fuzzy: Option<&FuzzyRequest>,
 ) -> Result<FullTextSearchQuery, HevSearchError> {
+    let plain = |target: &FtsTarget| {
+        let mut q = MatchQuery::new(target.text().to_string());
+        if let Some(column) = target.column() {
+            q = q.with_column(Some(column.to_string()));
+        }
+        FullTextSearchQuery::new_query(q.into())
+    };
     let cap = match fuzzy {
-        None => return Ok(FullTextSearchQuery::new(text)),
+        None => return Ok(plain(&target)),
         Some(fuzzy) => fuzzy.max_edit_distance.cap()?,
     };
     if cap == Some(0) {
         // Exact-only: identical to the no-fuzzy BM25 path.
-        return Ok(FullTextSearchQuery::new(text));
+        return Ok(plain(&target));
     }
-    let tokens = fuzzy_query_tokens(&text);
+    let tokens = target.fuzzy_tokens();
     let distances: Vec<u32> = tokens
         .iter()
         .map(|token| ladder_distance(token.chars().count()).min(cap.unwrap_or(2)))
@@ -2432,12 +2680,14 @@ fn full_text_query(
     if tokens.is_empty() || distances.iter().all(|d| *d == 0) {
         // Nothing gains an edit budget under the ladder; keep the single
         // match query so scoring is byte-identical to the exact path.
-        return Ok(FullTextSearchQuery::new(text));
+        return Ok(plain(&target));
     }
+    let column = target.column();
     let mut boolean = BooleanQuery::new(std::iter::empty::<(Occur, FtsQuery)>());
     for (token, distance) in tokens.into_iter().zip(distances) {
         boolean = boolean.with_should(
             MatchQuery::new(token)
+                .with_column(column.map(str::to_string))
                 .with_fuzziness(Some(distance))
                 .into(),
         );
@@ -2557,6 +2807,7 @@ async fn read_schema_info_from_table(
     let mut dim_kind: Option<(usize, VectorKind)> = None;
     let mut id_type: Option<RowIdType> = None;
     let mut has_ingested_at = false;
+    let mut has_text_tok = false;
     let mut attributes = BTreeMap::new();
     for field in schema.fields() {
         match field.name().as_str() {
@@ -2589,6 +2840,11 @@ async fn read_schema_info_from_table(
                 }
             }
             "text" => {}
+            TEXT_TOK_COLUMN => {
+                if field.data_type() == &DataType::Utf8 {
+                    has_text_tok = true;
+                }
+            }
             name => {
                 if let Some(ty) = AttributeType::from_arrow(field.data_type()) {
                     attributes.insert(name.to_string(), ty);
@@ -2614,6 +2870,7 @@ async fn read_schema_info_from_table(
         id_type,
         distance_metric,
         has_ingested_at,
+        has_text_tok,
         attributes,
     })
 }
@@ -2760,6 +3017,7 @@ pub fn validate_arrow_import_schema(
         id_type,
         DistanceMetric::default_for_kind(kind),
         false,
+        false,
         &BTreeMap::new(),
     );
     let canonical_vec = canonical.field(1).data_type();
@@ -2848,6 +3106,9 @@ struct IngestReader {
     id_idx: usize,
     vec_idx: usize,
     text_idx: Option<usize>,
+    /// Whether the target table carries `text_tok`; when set, the
+    /// projection derives it from `text` with the engine analyzer.
+    with_text_tok: bool,
     attr_indices: Vec<(String, usize)>,
     ts_micros: i64,
     rows: Arc<AtomicU64>,
@@ -2939,8 +3200,17 @@ impl IngestReader {
             std::iter::repeat_n(self.ts_micros, n),
         ));
 
-        let mut columns = vec![id, vector, text, ts];
-        for field in self.canonical.fields().iter().skip(4) {
+        let mut columns = vec![id, vector, text];
+        let mut fixed_cols = 3;
+        if self.with_text_tok {
+            // Server-derived analysis of `text` (RFC 0001) — the
+            // import stream never carries this column itself.
+            columns.push(derive_text_tok(&columns[2]));
+            fixed_cols += 1;
+        }
+        columns.push(ts);
+        fixed_cols += 1;
+        for field in self.canonical.fields().iter().skip(fixed_cols) {
             let attr = self
                 .attr_indices
                 .iter()
@@ -3045,12 +3315,37 @@ fn validate_row_against(
     Ok(())
 }
 
+/// Derive the `text_tok` column from a `text` column: each non-null
+/// value is analyzed with the engine analyzer (RFC 0001) and stored
+/// space-joined; null text — or text that analyzes to zero tokens —
+/// stays null.
+fn derive_text_tok(text: &ArrayRef) -> ArrayRef {
+    let texts = text
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("`text` column is Utf8 by schema construction");
+    let mut builder = StringBuilder::with_capacity(texts.len(), texts.len() * 64);
+    for row in 0..texts.len() {
+        let tok = if texts.is_null(row) {
+            None
+        } else {
+            crate::analyzer::tokenized(texts.value(row))
+        };
+        match tok {
+            Some(t) => builder.append_value(t),
+            None => builder.append_null(),
+        }
+    }
+    Arc::new(builder.finish())
+}
+
 fn rows_to_batch(
     schema: &Arc<Schema>,
     kind: VectorKind,
     dim: usize,
     rows: Vec<UpsertRow>,
     include_ingested_at: bool,
+    include_text_tok: bool,
 ) -> Result<RecordBatch, HevSearchError> {
     let n = rows.len();
     let ids: ArrayRef = match schema.field(0).data_type() {
@@ -3122,6 +3417,10 @@ fn rows_to_batch(
     let texts = text_builder.finish();
 
     let mut columns: Vec<ArrayRef> = vec![ids, vectors, Arc::new(texts) as ArrayRef];
+
+    if include_text_tok {
+        columns.push(derive_text_tok(&columns[2]));
+    }
 
     if include_ingested_at {
         // Stamp every row in the batch with the same server-side
@@ -3658,20 +3957,34 @@ mod tests {
     #[test]
     fn fuzzy_tokens_lowercase_split_dedupe() {
         assert_eq!(
-            fuzzy_query_tokens("A Quest, to destroy the RING ring!"),
+            FtsTarget::Legacy("A Quest, to destroy the RING ring!".to_string()).fuzzy_tokens(),
             vec!["a", "quest", "to", "destroy", "the", "ring"]
         );
-        assert!(fuzzy_query_tokens("  ,.! ").is_empty());
+        assert!(FtsTarget::Legacy("  ,.! ".to_string())
+            .fuzzy_tokens()
+            .is_empty());
+        // The analyzed target splits its own (already-analyzed) token
+        // surface: dedupe applies, case does not change (alyze
+        // lowercased upstream).
+        assert_eq!(
+            FtsTarget::Analyzed("a quest to destroy the ring ring".to_string()).fuzzy_tokens(),
+            vec!["a", "quest", "to", "destroy", "the", "ring"]
+        );
     }
 
     #[test]
     fn exact_and_fixed_zero_fuzzy_stay_single_match() {
         for fz in [None, Some(fuzzy(FuzzyMaxEditDistance::Fixed(0)))] {
-            let q = full_text_query("kubernetes timeout".to_string(), fz.as_ref()).unwrap();
+            let q = full_text_query(
+                FtsTarget::Legacy("kubernetes timeout".to_string()),
+                fz.as_ref(),
+            )
+            .unwrap();
             match q.query {
                 FtsQuery::Match(m) => {
                     assert_eq!(m.terms, "kubernetes timeout");
                     assert_eq!(m.fuzziness, Some(0));
+                    assert_eq!(m.column, None);
                 }
                 other => panic!("expected plain match query, got {other:?}"),
             }
@@ -3679,9 +3992,39 @@ mod tests {
     }
 
     #[test]
+    fn analyzed_target_pins_the_text_tok_column() {
+        // Plain path.
+        let q = full_text_query(FtsTarget::Analyzed("kubernetes timeout".to_string()), None)
+            .unwrap();
+        match q.query {
+            FtsQuery::Match(m) => {
+                assert_eq!(m.terms, "kubernetes timeout");
+                assert_eq!(m.column.as_deref(), Some(TEXT_TOK_COLUMN));
+                assert_eq!(m.fuzziness, Some(0));
+            }
+            other => panic!("expected plain match query, got {other:?}"),
+        }
+        // Fuzzy path: every per-token clause targets `text_tok` too.
+        let q = full_text_query(
+            FtsTarget::Analyzed("kubernetes timeout".to_string()),
+            Some(&fuzzy(FuzzyMaxEditDistance::Auto("auto".to_string()))),
+        )
+        .unwrap();
+        let FtsQuery::Boolean(boolean) = q.query else {
+            panic!("expected boolean query");
+        };
+        for clause in &boolean.should {
+            let FtsQuery::Match(m) = clause else {
+                panic!("expected match clause");
+            };
+            assert_eq!(m.column.as_deref(), Some(TEXT_TOK_COLUMN));
+        }
+    }
+
+    #[test]
     fn auto_fuzzy_expands_per_token_with_bounded_distances() {
         let q = full_text_query(
-            "a quest to destroy a magic ring".to_string(),
+            FtsTarget::Legacy("a quest to destroy a magic ring".to_string()),
             Some(&fuzzy(FuzzyMaxEditDistance::Auto("auto".to_string()))),
         )
         .unwrap();
@@ -3714,7 +4057,7 @@ mod tests {
     #[test]
     fn fixed_cap_bounds_the_ladder() {
         let q = full_text_query(
-            "kubernets conection".to_string(),
+            FtsTarget::Legacy("kubernets conection".to_string()),
             Some(&fuzzy(FuzzyMaxEditDistance::Fixed(1))),
         )
         .unwrap();
@@ -3733,7 +4076,7 @@ mod tests {
     #[test]
     fn all_short_tokens_degrade_to_plain_match() {
         let q = full_text_query(
-            "the red cat".to_string(),
+            FtsTarget::Legacy("the red cat".to_string()),
             Some(&fuzzy(FuzzyMaxEditDistance::Auto("auto".to_string()))),
         )
         .unwrap();
@@ -3808,6 +4151,7 @@ mod tests {
             RowIdType::U64,
             DistanceMetric::L2,
             false,
+            false,
             &BTreeMap::new(),
         )
         .field(1)
@@ -3818,6 +4162,7 @@ mod tests {
             4,
             RowIdType::U64,
             DistanceMetric::Cosine,
+            false,
             false,
             &BTreeMap::new(),
         )

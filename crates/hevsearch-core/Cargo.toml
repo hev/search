@@ -17,6 +17,7 @@ thiserror.workspace = true
 tracing.workspace = true
 lancedb.workspace = true
 lance.workspace = true
+alyze.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
 futures.workspace = true

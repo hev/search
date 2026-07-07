@@ -1,8 +1,20 @@
 # RFC 0001: alyze tokenizer for full-text search
 
-Tracking issue: _TBD_
+Tracking issue: [#5](https://github.com/hev/search/issues/5)
 
-> **Status:** draft, proposal. **The first RFC in the engine's own series.** Per
+> **Status:** implemented (Option A, #5). The engine pins `alyze = "=0.1.5"` and
+> owns the linguistics: `crates/hevsearch-core/src/analyzer.rs` is the single
+> `word_v4` analyzer shared by the write path (the reserved `text_tok` column,
+> derived on upsert/import) and the query path; the FTS index is built over
+> `text_tok` with the passthrough whitespace builder, the analyzer id is
+> recorded in the table's schema metadata (`hevsearch.fts_analyzer`), and
+> `POST /ns/{ns}/fts-index` doubles as the explicit backfill/reindex path for
+> pre-existing namespaces. Open questions resolved: shadow column (yes),
+> phrase/positions (deferred), token bound 39 bytes (mirrors the gateway
+> policy), backfill (explicit endpoint), default-on (no flag — legacy tables
+> keep serving their old index until reindexed).
+>
+> **The first RFC in the engine's own series.** Per
 > the user's instruction (2026-06-28), engine-specific RFCs are now collected
 > here in `docs/rfcs/`, numbered independently of Layer's `../layer/docs/rfcs/`
 > series. Layer's RFC 0086 (`kind: search`) is the *edge* view of this engine;
