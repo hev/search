@@ -515,8 +515,9 @@ impl NamespaceService {
         Ok(())
     }
 
-    /// Build a BM25 full-text search index on the namespace's `text`
-    /// column.
+    /// Build a BM25 full-text search index on the namespace's analyzed
+    /// text surface (`text_tok`, RFC 0001), backfilling the column on
+    /// pre-RFC-0001 namespaces first.
     pub async fn create_fts_index(&self, ns: &NamespaceId) -> Result<(), HevSearchError> {
         let start = Instant::now();
         self.metrics.record_s3_request(ns, "fts_index");
@@ -634,28 +635,31 @@ pub fn hash_facet_for_cache(
     Ok(QueryHash::of(&bytes))
 }
 
+// Query payloads are cached as JSON, not bincode: `RowId` is
+// `#[serde(untagged)]` (string ids, RFC 0005), and untagged enums need a
+// self-describing format — bincode encodes them but can never decode them
+// back, which silently turned every exact-cache hit into a decode-miss
+// (one extra backend round-trip per repeated query). Old bincode NVMe
+// entries decode-fail once and self-heal through the same fall-through.
 fn encode_payload(result: &QueryResultSet) -> Result<Vec<u8>, HevSearchError> {
-    bincode::serde::encode_to_vec(result, config::standard())
-        .map_err(|e| HevSearchError::Backend(format!("encode result: {e}")))
+    serde_json::to_vec(result).map_err(|e| HevSearchError::Backend(format!("encode result: {e}")))
 }
 
 fn decode_payload(bytes: &[u8]) -> Result<QueryResultSet, HevSearchError> {
-    let (decoded, _): (QueryResultSet, usize) =
-        bincode::serde::decode_from_slice(bytes, config::standard())
-            .map_err(|e| HevSearchError::Backend(format!("decode result: {e}")))?;
-    Ok(decoded)
+    serde_json::from_slice(bytes)
+        .map_err(|e| HevSearchError::Backend(format!("decode result: {e}")))
 }
 
+// JSON for the same reason as `encode_payload`: facet bucket values are
+// `serde_json::Value`, which needs a self-describing format to decode.
 fn encode_facet_payload(result: &FacetResultSet) -> Result<Vec<u8>, HevSearchError> {
-    bincode::serde::encode_to_vec(result, config::standard())
+    serde_json::to_vec(result)
         .map_err(|e| HevSearchError::Backend(format!("encode facet result: {e}")))
 }
 
 fn decode_facet_payload(bytes: &[u8]) -> Result<FacetResultSet, HevSearchError> {
-    let (decoded, _): (FacetResultSet, usize) =
-        bincode::serde::decode_from_slice(bytes, config::standard())
-            .map_err(|e| HevSearchError::Backend(format!("decode facet result: {e}")))?;
-    Ok(decoded)
+    serde_json::from_slice(bytes)
+        .map_err(|e| HevSearchError::Backend(format!("decode facet result: {e}")))
 }
 
 /// Compute the `query_type` label exactly the same way the previous

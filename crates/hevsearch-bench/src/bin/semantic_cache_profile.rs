@@ -572,7 +572,7 @@ fn metric_value(body: &str, metric: &str, label_needles: &[&str]) -> u64 {
 }
 
 fn overlap_count(a: &QueryResultSet, b: &QueryResultSet) -> usize {
-    let a_ids: HashSet<u64> = a.results.iter().map(|r| r.id).collect();
+    let a_ids: HashSet<&hevsearch_core::RowId> = a.results.iter().map(|r| &r.id).collect();
     b.results.iter().filter(|r| a_ids.contains(&r.id)).count()
 }
 

@@ -113,7 +113,12 @@ struct Hit {
 impl From<QueryResult> for Hit {
     fn from(r: QueryResult) -> Self {
         Hit {
-            id: r.id,
+            // The wheel's dev-facing API predates string row ids; a
+            // string id round-trips as its numeric parse or 0.
+            id: match r.id {
+                hevsearch_core::RowId::U64(v) => v,
+                hevsearch_core::RowId::String(ref s) => s.parse().unwrap_or(0),
+            },
             score: r.score,
             text: r.text,
             vector: r.vector,
@@ -290,7 +295,7 @@ fn parse_documents(documents: &Bound<'_, PyList>) -> PyResult<Vec<UpsertRow>> {
             _ => {}
         }
         rows.push(UpsertRow {
-            id,
+            id: hevsearch_core::RowId::U64(id),
             vector,
             vectors,
             text,
@@ -452,6 +457,7 @@ fn op_search(
         text: query,
         filter,
         include_vector: include_vectors,
+        fuzzy: None,
         semantic_cache: None,
     };
     let service = service.clone();
