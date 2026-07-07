@@ -65,12 +65,15 @@ async fn query_filter_narrows_results_over_the_wire() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let ids: Vec<u64> = body["results"]
+    // ids 2 and 3 are exactly equidistant from the query vector, so
+    // their relative order is a tie — compare as a set.
+    let mut ids: Vec<u64> = body["results"]
         .as_array()
         .expect("results array")
         .iter()
         .map(|r| r["id"].as_u64().unwrap())
         .collect();
+    ids.sort_unstable();
     assert_eq!(ids, vec![2, 3]);
     assert!(body["results"][0]["vector"].is_null());
 }

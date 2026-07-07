@@ -88,7 +88,6 @@ fn semantic_request(vector: Vec<f32>, threshold: Option<f32>) -> QueryRequest {
         fuzzy: None,
         filter: None,
         include_vector: true,
-        fuzzy: None,
         semantic_cache: Some(SemanticCacheRequest {
             enabled: true,
             min_similarity: threshold,
@@ -106,7 +105,6 @@ fn plain_request(vector: Vec<f32>) -> QueryRequest {
         fuzzy: None,
         filter: None,
         include_vector: true,
-        fuzzy: None,
         semantic_cache: None,
     }
 }
@@ -266,7 +264,6 @@ async fn k_mismatch_does_not_reuse() {
         fuzzy: None,
         filter: None,
         include_vector: true,
-        fuzzy: None,
         semantic_cache: Some(SemanticCacheRequest {
             enabled: true,
             min_similarity: Some(0.95),
@@ -285,7 +282,6 @@ async fn k_mismatch_does_not_reuse() {
         fuzzy: None,
         filter: None,
         include_vector: true,
-        fuzzy: None,
         semantic_cache: Some(SemanticCacheRequest {
             enabled: true,
             min_similarity: Some(0.95),
@@ -309,9 +305,9 @@ async fn ineligible_request_returns_400_at_service_boundary() {
         k: 5,
         nprobes: None,
         text: Some("anything".into()),
+        fuzzy: None,
         filter: None,
         include_vector: true,
-        fuzzy: None,
         semantic_cache: Some(SemanticCacheRequest {
             enabled: true,
             min_similarity: None,

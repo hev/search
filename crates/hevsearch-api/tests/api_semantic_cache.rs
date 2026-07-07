@@ -102,7 +102,7 @@ async fn api_semantic_cache_near_duplicate_hits_and_metric_ticks() {
     let (status, _) = post_json(
         app.clone(),
         format!("/ns/{ns}/upsert"),
-        json!({"rows": rows}),
+        json!({"rows": rows, "distance_metric": "cosine"}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -219,7 +219,7 @@ async fn api_query_without_semantic_field_round_trips() {
     let (status, _) = post_json(
         app.clone(),
         format!("/ns/{ns}/upsert"),
-        json!({"rows": rows}),
+        json!({"rows": rows, "distance_metric": "cosine"}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
