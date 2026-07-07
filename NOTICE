@@ -1,0 +1,12 @@
+hev search
+Copyright 2026 Adam Hevenor
+
+This product is a hard fork of firnflow:
+https://github.com/gordonmurray/firnflow
+
+firnflow
+Copyright 2026 Gordon Murray
+
+hev search retains the original Apache License, Version 2.0 license and
+copyright notice from firnflow. Modifications, rebranding, and subsequent
+engine development are Copyright 2026 Adam Hevenor.
