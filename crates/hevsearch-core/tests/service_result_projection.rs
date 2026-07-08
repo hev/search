@@ -90,6 +90,7 @@ fn request(vector: Vec<f32>, include_vector: bool) -> QueryRequest {
         vectors: None,
         k: 10,
         nprobes: None,
+        exact: false,
         text: None,
         fuzzy: None,
         filter: None,

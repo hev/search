@@ -169,6 +169,7 @@ async fn run_point(
             vectors: None,
             k,
             nprobes,
+            exact: false,
             text: None,
             fuzzy: None,
             filter: None,

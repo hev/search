@@ -26,8 +26,8 @@ use crate::cache::{NamespaceCache, QueryHash, SemanticCache, SemanticLookup};
 use crate::manager::{CompactResult, NamespaceManager, UpsertRow};
 use crate::metrics::CoreMetrics;
 use crate::query::{
-    effective_semantic_threshold, validate_facet_request, validate_semantic_cache_request,
-    FacetRequest, QueryRequest, DEFAULT_NPROBES,
+    effective_semantic_threshold, validate_facet_request, validate_query_request, FacetRequest,
+    QueryRequest, DEFAULT_NPROBES,
 };
 use crate::DistanceMetric;
 use crate::{FacetResultSet, HevSearchError, NamespaceId, QueryResultSet};
@@ -283,7 +283,7 @@ impl NamespaceService {
         req: &QueryRequest,
     ) -> Result<QueryOutcome, HevSearchError> {
         let start = Instant::now();
-        validate_semantic_cache_request(req)?;
+        validate_query_request(req)?;
 
         let query_hash = hash_query_for_cache(req)?;
 
@@ -419,6 +419,7 @@ impl NamespaceService {
                 req.vectors.clone(),
                 req.k,
                 req.nprobes,
+                req.exact,
                 req.text.clone(),
                 req.fuzzy.clone(),
                 req.filter.clone(),
@@ -587,6 +588,7 @@ pub fn hash_query_for_cache(req: &QueryRequest) -> Result<QueryHash, HevSearchEr
         vectors: &'a Option<Vec<Vec<f32>>>,
         k: usize,
         nprobes: Option<usize>,
+        exact: bool,
         text: &'a Option<String>,
         fuzzy: &'a Option<crate::query::FuzzyRequest>,
         filter: &'a Option<String>,
@@ -600,6 +602,7 @@ pub fn hash_query_for_cache(req: &QueryRequest) -> Result<QueryHash, HevSearchEr
         vectors: &req.vectors,
         k: req.k,
         nprobes: req.nprobes,
+        exact: req.exact,
         text: &req.text,
         fuzzy: &req.fuzzy,
         filter: &req.filter,
@@ -688,6 +691,7 @@ mod tests {
             vectors: None,
             k: 10,
             nprobes: None,
+            exact: false,
             text: None,
             fuzzy: None,
             filter: filter.map(str::to_string),
