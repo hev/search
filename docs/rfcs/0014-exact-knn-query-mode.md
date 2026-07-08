@@ -139,17 +139,12 @@ engine should validate contradictory query knobs and execute the requested
 plan. It should not add tenant policy, authorization, quota, or public exposure
 rules for exact scans; those belong in Layer if they are needed.
 
-## Open Question for Review
-
-- **Cost guardrail:** should v1 ship with no row-count guardrail under the
-  trusted-caller posture, or should it reject/require override above a
-  namespace-size threshold? Current code has the trusted internal service shape
-  and no exact-scan knob, so there is no existing guardrail behavior to mirror.
-  If v1 ships without a guardrail, a follow-up should decide whether
-  `namespace_info` exposes a rough exact-scan cost estimate for operators and
-  benches.
-
 ## Resolved Questions
+
+- **Cost guardrail (resolved 2026-07-08, hev on PR #19):** v1 ships with **no
+  row-count guardrail** under the trusted-caller posture. Layer is the only
+  data-path client and owns any caller-facing limits; the engine stays
+  knob-free until a workload demonstrates the need.
 
 - **Naming:** use `exact: true`. It is direct, matches common exact-search
   language, and avoids making ANN the conceptual default in the wire contract.
