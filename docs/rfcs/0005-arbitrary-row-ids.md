@@ -1,176 +1,209 @@
-# RFC 0005: Arbitrary (string) row ids
+# RFC 0005: Arbitrary string row ids
 
-Tracking issue: _TBD_
+Tracking issue: [hev/search#20](https://github.com/hev/search/issues/20)
 
-> **Status:** draft, proposal. **Additive engine capability — a foundational
-> impedance fix.** The engine keys every row by **`u64`** (`Row.id: u64`,
-> `manager.rs:344`; `Field::new("id", DataType::UInt64, false)`, `:605`). Layer's
-> document model — and the demo family it fronts — is **string-keyed**:
-> `asin-B08N5WRWNW`, `ticket-4117`, openFDA set ids. There is no faithful way to
-> carry a string id through a `search` namespace today. This sits on the **engine**
-> side of the split (it is the table's primary-key type — storage/index, not edge
-> auth/tenancy), so the fix is here. Hard fork: lands here, stays here, no upstream
-> PR (`AGENTS.md` § "This is a hard fork"). The edge twin is
-> `../layer/docs/rfcs/0086-hev-search-vectorstore-backend.md`.
+> **Status:** Accepted (2026-07-08). **Additive engine capability — a
+> foundational impedance fix.** This is engine-owned identity, not edge-owned
+> auth/tenancy/state. The hard fork lands and carries this capability locally;
+> there is no upstream PR.
 
 ## Summary
 
-Let a namespace key rows by an **arbitrary string** (`Utf8`) id, not only `u64`.
-The id type is **fixed per namespace at first write** — exactly the pattern the
-engine already uses to fix vector kind and dimension at first upsert — so existing
-`u64` namespaces are untouched and string-keyed namespaces become a first-class
-option. This removes the need for any gateway-side surrogate id map and lets
-Layer's string document model land on the engine unchanged.
+Rows may be keyed by either the existing `u64` id or by an arbitrary UTF-8 string
+id. The id type is fixed per namespace at first write/import, matching the
+engine's existing first-write shape rule for vector kind and dimension. Existing
+numeric-id namespaces and callers remain on the `u64` path; string-keyed
+namespaces become first-class, so Layer can send its document ids directly
+without maintaining a surrogate id map.
 
-## Background: `u64` is wired through everything
+This RFC is the foundational impedance fix for moving the demo family onto
+`kind: search`: ids such as `asin-B08N5WRWNW`, `ticket-4117`, and openFDA set ids
+must survive upsert, query, list, facet, delete, and import unchanged.
 
-The id is `u64` end to end, not just in the upsert body:
+## Why This Belongs In The Engine
 
-| Site | Code | Role |
+The row id is the table identity:
+
+| Site | Current engine reality | Role |
 |---|---|---|
-| Row struct | `manager.rs:344` (`pub id: u64`) | in-memory + result shape |
-| Table schema | `manager.rs:605` (`Field::new("id", DataType::UInt64, false)`) | on-disk primary column, non-null |
-| Upsert merge key | `manager.rs:865` (`merge_insert(&["id"])`) | latest-write-wins identity |
-| Auto id index | `manager.rs:926` (BTree on `id`) | merge-insert lookup speed |
-| List cursor | `manager.rs:1972` `encode_list_cursor(ts_micros: i64, id: u64)`; decode `:1987` (`u64::from_str_radix`) | the `(_ingested_at, id)` value-based pagination tiebreak |
-| Wire | `docs/api.html` (`rows[].id` is `u64`; results `id` is `u64`) | the documented contract |
+| Result model | `RowId::{U64, String}` and `RowIdType::{U64, String}` in `crates/hevsearch-core/src/result.rs` | in-memory, cache, and JSON result shape |
+| Table schema | `schema_for_kind(..., id_type, ...)` chooses `UInt64` or `Utf8` for the non-null `id` field | on-disk primary column |
+| Upsert merge key | `merge_insert(&["id"])` | latest-write-wins identity |
+| Auto id index | first write builds the `id` BTree best-effort | merge-insert lookup speed |
+| List cursor | `encode_list_cursor(ts, RowId)` / `decode_list_cursor` | value-based pagination tiebreak |
+| Import schema | Arrow `id` accepts `UInt64` or `Utf8` | bulk first-load identity |
+| Wire docs | `docs/api.html` documents `id_type`, string delete ids, and fixed namespace shape | public contract |
 
-So "support string ids" is not a parser tweak — it is the table's primary-key
-type, and it touches the schema, the merge identity, the scalar index, the
-pagination cursor, and every result body.
+A gateway-side map from string ids to numeric ids was rejected. Hashing can
+collide and corrupt latest-write-wins. A sequence allocator plus reverse map is a
+new stateful gateway component on the hot path. Both make Layer reimplement
+engine-owned identity. The clean boundary is: Layer supplies the caller's id; the
+engine stores, indexes, paginates, deletes, and returns that id.
 
-## Why this is the right layer (engine, not a gateway map)
+## Accepted Design
 
-A tempting edge workaround is for Layer to hash/sequence each string id to a `u64`
-and keep a reverse map (u64 → string) to reconstruct results. Rejected as the
-primary design:
+### Id type is fixed per namespace
 
-- **Hashing collides.** Two strings → one `u64` silently corrupts latest-write-wins
-  (one doc overwrites another). A collision-free sequence needs a persistent
-  allocator + reverse map — a stateful component on the gateway hot path, which the
-  stateless-gateway frame (`../layer/CLAUDE.md`) pushes back on.
-- **It reimplements identity the engine should own.** The primary key is an engine
-  concept; a gateway-side surrogate map is exactly the "don't make Layer
-  reimplement what the engine owns" smell (`CLAUDE.md`). The clean fix is the
-  engine accepting the id the caller actually has.
+- First JSON upsert into a fresh namespace fixes `id_type` from `rows[].id`:
+  a JSON number is `u64`, and a JSON string is `string`.
+- First Arrow import into a fresh namespace fixes `id_type` from the `id` column:
+  `UInt64` is `u64`, and `Utf8` is `string`.
+- Subsequent writes/imports with the wrong id type return `400`, the same shape
+  as vector kind/dimension mismatches.
+- `GET /ns/{namespace}` reports `id_type` alongside `kind`, `vector_dim`, and the
+  distance metric.
+- There is no in-place id-type migration. Changing id type is a
+  delete-and-recreate operation, just like changing vector kind/dimension.
 
-So the id type belongs in the engine. Layer stays the edge.
+### Row representation
 
-## Design
+The engine uses a single id enum:
 
-### Id type fixed per namespace at first write
+```rust
+pub enum RowId {
+    U64(u64),
+    String(String),
+}
 
-Mirror the existing first-write-fixes-the-shape rule (vector kind + dim are fixed
-by the first upsert into a fresh namespace — `manager.rs` `schema_for_kind`,
-`docs/api.html`). Add **id type** to that fixed shape:
+pub enum RowIdType {
+    U64,
+    String,
+}
+```
 
-- First upsert/import into a fresh namespace fixes `id_type ∈ { u64, string }`
-  from the JSON type of `rows[].id` (a number ⇒ `u64`, a string ⇒ `Utf8`).
-- Subsequent writes in the wrong id type → `400`, same as a vector-shape mismatch.
-- Default and back-compat: an integer id keeps the `u64` column exactly as today;
-  nothing changes for existing namespaces or integer-id callers.
-- `GET /ns/{ns}` reports `id_type` alongside `kind`/`vector_dim` so callers and the
-  operator can see it.
+`serde(untagged)` preserves the wire shape: numeric ids serialize as JSON
+numbers and string ids serialize as JSON strings. Query results, list rows,
+namespace metadata, delete requests, and cache payloads all carry `RowId` rather
+than lossy stringification.
 
-### What changes per site
+### Schema and write path
 
-1. **Schema** (`manager.rs:605`, `schema_for_kind`): the `id` field becomes
-   `Utf8` (non-null) for string namespaces; `UInt64` otherwise. String ids should
-   carry a bounded max length (e.g. reject ids over N bytes) so they stay
-   index-friendly — define N in the PR.
-2. **Row / result type** (`manager.rs:344` and the query/list/facet response
-   builders): `id: u64` becomes an id enum (`U64(u64) | Str(String)`) or the
-   handlers branch on `id_type`. Result JSON echoes the id in the type it was
-   written.
-3. **Merge key** (`manager.rs:865`): `merge_insert(&["id"])` already keys by the
-   `id` column; it works on `Utf8` unchanged — latest-write-wins by string id.
-4. **Auto id BTree** (`manager.rs:926`): a BTree over a `Utf8` column is supported;
-   keep building it on first write. Lookups stay indexed.
-5. **List cursor** (`manager.rs:1972`/`:1987`): today the cursor packs
-   `(i64 ts, u64 id)` as fixed-width hex. A `Utf8` id breaks the fixed-width pack;
-   re-encode as a length-prefixed / base64 `(ts, id_bytes)` token. The cursor stays
-   opaque (`docs/api.html`: "Format is implementation-defined — do not parse"), so
-   the encoding can change freely; only the engine reads it.
-6. **Delete predicates** (engine RFC 0003): `id IN (…)` must quote string ids
-   (`id IN ('asin-1','asin-2')`). The predicate builder branches on `id_type`.
-7. **Validation**: a string id is arbitrary user text (not subject to the
-   attribute-name "SQL-friendly identifier" rule, which governs *column* names);
-   only the length bound and non-null apply. Duplicate ids within one request stay
-   a `400`, as for `u64`.
+`schema_for_kind` receives the namespace `id_type` and creates the `id` column as
+`UInt64` for numeric namespaces or `Utf8` for string namespaces. Upsert still uses
+`merge_insert(&["id"])`, so latest-write-wins semantics are identical across id
+types. Duplicate ids within one upsert request are rejected before any write.
 
-### Import (Arrow) path
+The first write to a fresh namespace still attempts to build a BTree index on
+`id`. The accepted design relies on LanceDB supporting a BTree over `Utf8`, and
+the implementation keeps the build best-effort: if the post-write index build
+fails, the rows are already durable and the operator can rebuild the scalar index
+later.
 
-`/import`'s Arrow schema requires `id: UInt64` today (`docs/api.html`). Extend it to
-accept `id: Utf8` for string namespaces, fixed by / checked against the namespace's
-`id_type`, with the same "extra/mistyped column ⇒ 400 before work starts" rule.
+### Cursor format
 
-## Edge mapping (how Layer uses this)
+List pagination remains value-based on `(_ingested_at, id)` and remains opaque to
+clients. The accepted cursor format is:
 
-Layer's string document ids map **directly** to a `string`-id namespace — no
-surrogate, no reverse map, no gateway state. `nearest_to_id` (which takes string
-document ids), batch fetch, and result `id` echoes all carry the caller's strings
-through unchanged. Until this lands, the honest options for a `search` namespace
-are: restrict it to integer ids, or have Layer maintain a (stateful, lossy-if-hashed)
-id map — which is the current matrix constraint
-(`../layer/site/src/content/docs/kubernetes/store-support.mdx`, "Document id type:
-integer (`u64`) only").
+- `v1:u:{timestamp_hex}:{u64_id_hex}` for numeric ids.
+- `v1:s:{timestamp_hex}:{hex_utf8_id_bytes}` for string ids.
+- The legacy 32-hex-character numeric cursor remains decodable for compatibility.
 
-## Open questions (for the implementation PR)
+Clients must continue to round-trip the cursor verbatim.
 
-- **Enum vs. branch.** Represent the id as a Rust enum end to end, or branch on
-  `id_type` at the boundaries? Enum is cleaner; measure the churn.
-- **Max id length.** Pick the byte bound (BTree/index friendliness vs. real-world
-  ids like content hashes).
-- **Cursor re-encode.** Settle the new opaque `(ts, id)` token format; keep old
-  `u64` cursors decodable (or accept that a format bump invalidates in-flight
-  cursors — they are short-lived).
-- **Mixed-type migration.** No in-place id-type change on an existing namespace
-  (it is fixed, like vector kind); a switch is delete-and-recreate. Confirm that is
-  acceptable.
-- **Multivector + string id.** Orthogonal (id type and vector kind are independent
-  fixed properties); confirm both combine cleanly.
+### Import path
 
-## Testing
+`/import` accepts Arrow streams whose `id` column is either non-null `UInt64` or
+non-null `Utf8`. A fresh namespace inherits that id type; an existing namespace
+must match it. Schema validation still rejects missing, extra, or mistyped
+columns before work starts.
 
-- **Integration** (`crates/hevsearch-api/tests/`): a fresh namespace seeded with
-  string ids round-trips through upsert → query → list → facet with ids echoed as
-  strings; a wrong-type id on a fixed namespace → `400`; the auto BTree builds; the
-  list cursor paginates correctly across a string-id namespace; delete-by-id
-  (RFC 0003) quotes correctly. Existing `u64` tests stay green unchanged.
-- **Import**: an Arrow stream with `id: Utf8` ingests into a string namespace and
-  is rejected against a `u64` namespace.
+Import remains append-only: repeated ids create additional rows. Callers use
+`/import` for first-loads or known-new ids and `/upsert` for idempotent updates.
 
-## Alternatives considered
+### Delete and predicates
 
-- **Gateway-side surrogate map (hash or sequence).** Rejected — collisions corrupt
-  latest-write-wins (hash) or require a stateful allocator + reverse map on the
-  gateway hot path (sequence), reimplementing engine-owned identity (`CLAUDE.md`).
-- **Always `Utf8` (drop `u64`).** Simpler type-wise but a needless perf/space cost
-  for integer-id callers and a breaking change for every existing namespace.
-  Fixed-per-namespace keeps the fast `u64` path and adds the string path.
-- **A second reserved `_external_id` column, `u64` stays primary.** Then
-  latest-write-wins must key on `_external_id` anyway (or duplicates leak), so the
-  `u64` is a vestigial surrogate — collapses into "make the primary key the
-  caller's id," i.e. this RFC.
-- **Do nothing.** Leaves the demo family's string-keyed corpora unable to use the
-  owned engine without a lossy edge hack. Rejected.
+Row delete by id accepts numeric or string ids matching the namespace `id_type`.
+The predicate builder uses `RowId::to_sql_literal`, so string ids are quoted and
+escaped correctly before compiling `id IN (...)`.
 
-## Fork delta
+Free-form filters keep using the DataFusion/Lance predicate dialect. For string
+id namespaces, callers quote ids in filters exactly as they quote any other
+string scalar value.
 
-Pure **additive engine capability** on a hard fork — no upstream PR (`AGENTS.md`
-§ "This is a hard fork"). Record the schema/id-type deltas so a hand cherry-pick of
-an upstream change doesn't fight them. No subtractive edge removal.
+### Multivector compatibility
+
+Id type and vector kind are independent namespace properties. String ids work for
+both single-vector and multivector namespaces, including Arrow import schemas
+with `id: Utf8` plus `vectors: List<FixedSizeList<Float32, dim>>`.
+
+## Edge Mapping
+
+Layer maps its string document ids directly to string-id search namespaces. There
+is no hash, sequence allocator, reverse map, or gateway state. `nearest_to_id`,
+batch fetch, delete-by-id, and result echoing can all use the same document id
+once the corresponding Layer-side endpoints are wired.
+
+Until a namespace is string-id capable, the only honest alternatives are:
+restrict that namespace to integer ids, or make Layer maintain a stateful
+surrogate map. This RFC accepts the engine fix instead.
+
+## Testing And Evidence
+
+Current code and tests resolve the design questions as follows:
+
+| Question | Resolution | Evidence |
+|---|---|---|
+| Enum vs branch | Resolved: use `RowId` / `RowIdType` enums end to end. | `crates/hevsearch-core/src/result.rs` |
+| Schema choice | Resolved: `schema_for_kind` creates `id` as `UInt64` or `Utf8`. | `crates/hevsearch-core/src/manager.rs` |
+| Mixed-type writes | Resolved: fixed namespace `id_type`; wrong-type upsert/import/delete returns invalid request. | `upsert`, `import_arrow_with_distance_metric`, `delete_ids` |
+| Cursor re-encode | Resolved: versioned `v1:u` / `v1:s` cursor with legacy numeric decode. | `encode_list_cursor`, `decode_list_cursor`, cursor unit tests |
+| Import | Resolved: Arrow `id` may be `UInt64` or `Utf8`; existing namespace must match. | `validate_arrow_import_schema` |
+| Delete quoting | Resolved: delete-by-id builds `id IN (...)` from `RowId::to_sql_literal`. | `delete_ids`; string quote regression test |
+| Multivector + string id | Resolved: id type and vector kind are independent; import validation covers string-id multivector schemas. | `validate_arrow_import_schema` test with `id: Utf8` and `vectors` |
+
+Coverage that must remain present:
+
+- String ids round-trip through upsert, query, list pagination, facet, and
+  namespace info.
+- A numeric id written to a string-id namespace returns `400`.
+- String delete ids quote literals correctly, including embedded apostrophes.
+- Import accepts `id: Utf8` and rejects mismatched id types against existing
+  namespaces.
+- Existing numeric-id tests stay green unchanged.
+
+## Open Question For Review
+
+- **String id length bound.** Earlier text proposed a bounded max byte length for
+  index friendliness, but current code does not appear to enforce one. Accept the
+  unbounded `Utf8` behavior, or file a follow-up implementation issue to add a
+  specific byte limit and API error.
+
+## Alternatives Considered
+
+- **Gateway-side surrogate map, hash, or sequence.** Rejected. Hash collisions
+  corrupt identity; a sequence allocator and reverse map add gateway state and
+  duplicate engine-owned storage semantics.
+- **Always store ids as `Utf8`.** Rejected. It is simpler type-wise but needlessly
+  changes the storage/performance profile and wire contract for existing numeric
+  namespaces.
+- **Add `_external_id` while keeping numeric `id` primary.** Rejected. If
+  latest-write-wins keys on `_external_id`, then numeric `id` is vestigial; if it
+  does not, duplicate external ids leak.
+- **Do nothing.** Rejected. The demo family's string-keyed corpora cannot use the
+  owned search engine faithfully without an edge-side identity hack.
+
+## Fork Delta
+
+This is a pure additive engine capability in the hard fork. Keep it local. Manual
+upstream cherry-picks must not silently remove `RowId`, `RowIdType`, string
+`id_type` schema handling, string-id cursors, or string delete/import behavior.
 
 ## References
 
-- `crates/hevsearch-core/src/manager.rs:344` (`Row.id: u64`), `:605` (UInt64 id
-  field), `:865` (`merge_insert(&["id"])`), `:926` (auto id BTree), `:1972`/`:1987`
-  (list cursor `(ts, u64 id)` encode/decode), `schema_for_kind` (`:590`).
-- `docs/api.html` — `rows[].id` / results `id` as `u64`; `/import` Arrow `id:
-  UInt64`; the opaque-cursor and first-write-fixes-shape contracts.
-- engine RFC 0003 — per-row delete; `id IN (…)` must quote string ids.
-- `../layer/docs/rfcs/0086-hev-search-vectorstore-backend.md` — edge twin; the
-  string document model and the current `u64`-only constraint.
-- `CLAUDE.md` § "What the engine is NOT (Layer owns it)" / "Engine (keep) vs edge
-  (shed)"; `../layer/CLAUDE.md` § "Stateless Gateway Frame"; `AGENTS.md`
-  § "The engine/edge test".
+- [hev/search#20](https://github.com/hev/search/issues/20) — docs gate and
+  acceptance spec.
+- `crates/hevsearch-core/src/result.rs` — `RowId`, `RowIdType`, query/list/info
+  result structs.
+- `crates/hevsearch-core/src/manager.rs` — schema selection, upsert merge key,
+  id index build, import validation, delete predicates, cursors.
+- `crates/hevsearch-core/tests/manager_local_fs.rs` — string id round-trip and
+  delete quoting coverage.
+- `crates/hevsearch-api/tests/api_delete.rs` — API-level string delete coverage.
+- `docs/api.html` — public wire documentation for `id_type`, import, list
+  cursors, and delete ids.
+- `docs/rfcs/0003-row-delete.md` — row delete dependency.
+- `docs/rfcs/0007-point-fetch-and-nearest-to-id.md` — downstream `nearest_to_id`
+  dependency on string ids.
+- `../layer/docs/rfcs/0086-hev-search-vectorstore-backend.md` — Layer-side search
+  backend direction.
+- `CLAUDE.md` and `AGENTS.md` — engine/edge split and hard-fork posture.
