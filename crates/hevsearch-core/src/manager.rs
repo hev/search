@@ -1155,6 +1155,59 @@ impl NamespaceManager {
             .await
     }
 
+    /// Validate an Arrow import schema against the namespace's fixed
+    /// shape before the API accepts a background import operation.
+    ///
+    /// This catches existing-namespace kind/dim/id-type/metric
+    /// mismatches as a synchronous caller error (`400`) instead of
+    /// returning `202` and failing the operation later.
+    pub async fn validate_arrow_import_schema_for_namespace(
+        &self,
+        ns: &NamespaceId,
+        schema: &Schema,
+        requested_metric: Option<DistanceMetric>,
+    ) -> Result<(), HevSearchError> {
+        let (kind, dim, id_type, _has_text, import_attributes) =
+            validate_arrow_import_schema(schema)?;
+        match self.resolve_schema_info(ns).await? {
+            Some(info) => {
+                if info.kind != kind || info.dim != dim {
+                    return Err(HevSearchError::InvalidRequest(format!(
+                        "import: stream is {} dim {dim}, but namespace {ns} is {} dim {}",
+                        kind.as_label(),
+                        info.kind.as_label(),
+                        info.dim,
+                    )));
+                }
+                if info.id_type != id_type {
+                    return Err(HevSearchError::InvalidRequest(format!(
+                        "import: stream id_type is {}, but namespace {ns} is {}",
+                        id_type.as_label(),
+                        info.id_type.as_label()
+                    )));
+                }
+                if let Some(requested_metric) = requested_metric {
+                    requested_metric.validate_for_kind(info.kind)?;
+                    if requested_metric != info.distance_metric {
+                        return Err(HevSearchError::InvalidRequest(format!(
+                            "namespace {ns} distance_metric is {}, got {}",
+                            info.distance_metric.as_label(),
+                            requested_metric.as_label()
+                        )));
+                    }
+                }
+                let mut info = info;
+                reconcile_attribute_schema(&mut info, &import_attributes)?;
+            }
+            None => {
+                let distance_metric =
+                    requested_metric.unwrap_or_else(|| DistanceMetric::default_for_kind(kind));
+                distance_metric.validate_for_kind(kind)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Bulk-append an Arrow IPC stream, optionally fixing the
     /// namespace metric on first import.
     pub async fn import_arrow_with_distance_metric(

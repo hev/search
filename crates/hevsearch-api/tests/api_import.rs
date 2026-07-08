@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
-use arrow_array::{RecordBatch, UInt64Array};
+use arrow_array::{RecordBatch, StringArray, UInt64Array};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use axum::body::{to_bytes, Body};
@@ -86,6 +86,20 @@ fn single_schema() -> SchemaRef {
     ]))
 }
 
+fn string_id_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new(
+            "vector",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+    ]))
+}
+
 fn single_batch(schema: &SchemaRef, ids: &[u64]) -> RecordBatch {
     let id_arr = UInt64Array::from_iter_values(ids.iter().copied());
     let mut list = FixedSizeListBuilder::new(Float32Builder::new(), DIM as i32);
@@ -96,6 +110,23 @@ fn single_batch(schema: &SchemaRef, ids: &[u64]) -> RecordBatch {
             } else {
                 0.0
             });
+        }
+        list.append(true);
+    }
+    RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(id_arr), Arc::new(list.finish())],
+    )
+    .unwrap()
+}
+
+fn string_id_batch(schema: &SchemaRef, ids: &[&str]) -> RecordBatch {
+    let id_arr = StringArray::from_iter_values(ids.iter().copied());
+    let mut list = FixedSizeListBuilder::new(Float32Builder::new(), DIM as i32);
+    for (idx, _) in ids.iter().enumerate() {
+        for axis in 0..DIM {
+            list.values()
+                .append_value(if axis == idx % DIM { 1.0 } else { 0.0 });
         }
         list.append(true);
     }
@@ -117,6 +148,18 @@ fn arrow_ipc(schema: &SchemaRef, batches: &[RecordBatch]) -> Vec<u8> {
         w.finish().unwrap();
     }
     buf
+}
+
+async fn wait_for_operation(app: axum::Router, op_id: &str) -> Value {
+    for _ in 0..600 {
+        let (s, op) = get(app.clone(), format!("/operations/{op_id}")).await;
+        assert_eq!(s, StatusCode::OK);
+        match op["status"].as_str() {
+            Some("succeeded") | Some("failed") => return op,
+            _ => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    panic!("operation {op_id} did not finish in time");
 }
 
 #[tokio::test]
@@ -205,21 +248,8 @@ async fn import_arrow_stream_lands_in_one_commit() {
         .to_string();
     assert_eq!(accepted["kind"], "import");
 
-    // Poll the operation to completion.
-    let mut succeeded = false;
-    for _ in 0..600 {
-        let (s, op) = get(app.clone(), format!("/operations/{op_id}")).await;
-        assert_eq!(s, StatusCode::OK);
-        match op["status"].as_str() {
-            Some("succeeded") => {
-                succeeded = true;
-                break;
-            }
-            Some("failed") => panic!("import operation failed: {op}"),
-            _ => tokio::time::sleep(Duration::from_millis(100)).await,
-        }
-    }
-    assert!(succeeded, "import operation did not finish in time");
+    let op = wait_for_operation(app.clone(), &op_id).await;
+    assert_eq!(op["status"], "succeeded", "import operation failed: {op}");
 
     let (s, info) = get(app, format!("/ns/{ns}")).await;
     assert_eq!(s, StatusCode::OK, "namespace info: {info}");
@@ -227,5 +257,72 @@ async fn import_arrow_stream_lands_in_one_commit() {
         info["row_count"].as_u64().unwrap(),
         8,
         "all 8 rows imported"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn import_accepts_utf8_id_stream_and_rejects_existing_u64_namespace() {
+    let (state, _tmp) = test_state().await;
+    let app = router(state);
+    let ns = unique_namespace("import-string-ids");
+    let schema = string_id_schema();
+    let body = arrow_ipc(
+        &schema,
+        &[string_id_batch(
+            &schema,
+            &["asin-B08N5WRWNW", "ticket-4117", "openfda-set's-42"],
+        )],
+    );
+
+    let (status, accepted) =
+        post_bytes(app.clone(), format!("/ns/{ns}/import"), ARROW_CT, body).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "import returns 202: {accepted}"
+    );
+    let op_id = accepted["operation_id"].as_str().unwrap();
+    let op = wait_for_operation(app.clone(), op_id).await;
+    assert_eq!(op["status"], "succeeded", "string import failed: {op}");
+
+    let (s, info) = get(app.clone(), format!("/ns/{ns}")).await;
+    assert_eq!(s, StatusCode::OK, "namespace info: {info}");
+    assert_eq!(info["id_type"], "string");
+    assert_eq!(info["row_count"], 3);
+
+    let u64_ns = unique_namespace("import-u64-then-string");
+    let u64_schema = single_schema();
+    let u64_body = arrow_ipc(&u64_schema, &[single_batch(&u64_schema, &[1])]);
+    let (status, accepted) = post_bytes(
+        app.clone(),
+        format!("/ns/{u64_ns}/import"),
+        ARROW_CT,
+        u64_body,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "u64 import returns 202: {accepted}"
+    );
+    let op = wait_for_operation(app.clone(), accepted["operation_id"].as_str().unwrap()).await;
+    assert_eq!(op["status"], "succeeded", "u64 import failed: {op}");
+
+    let mismatch_body = arrow_ipc(&schema, &[string_id_batch(&schema, &["ticket-4117"])]);
+    let (status, accepted) = post_bytes(
+        app.clone(),
+        format!("/ns/{u64_ns}/import"),
+        ARROW_CT,
+        mismatch_body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{accepted}");
+    assert!(
+        accepted["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("stream id_type is string"),
+        "{accepted}"
     );
 }
