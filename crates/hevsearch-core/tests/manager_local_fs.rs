@@ -543,7 +543,7 @@ async fn local_fs_fuzzy_fts_matches_typo_query() {
                     id: RowId::U64(1),
                     vector: unit_vector(0),
                     vectors: None,
-                    text: Some("alpha connection timeout".into()),
+                    text: Some("kubernetes connection timeout".into()),
                     attributes: serde_json::Map::new(),
                 },
                 UpsertRow {
@@ -569,7 +569,7 @@ async fn local_fs_fuzzy_fts_matches_typo_query() {
             None,
             10,
             None,
-            Some("alpho".into()),
+            Some("kubernets".into()),
             None,
             false,
         )
@@ -587,7 +587,12 @@ async fn local_fs_fuzzy_fts_matches_typo_query() {
             None,
             10,
             None,
-            Some("alpho".into()),
+            // RFC 0001 moved FTS to unstemmed alyze `word_v4` tokens, and
+            // RFC 0004's fuzzy ladder keeps 1-5 char tokens exact. Use the
+            // longer RFC 0004 probe so a fixed edit distance still exercises
+            // genuine typo tolerance instead of the intentional short-token
+            // exact path.
+            Some("kubernets".into()),
             Some(FuzzyRequest {
                 max_edit_distance: FuzzyMaxEditDistance::Fixed(1),
             }),
