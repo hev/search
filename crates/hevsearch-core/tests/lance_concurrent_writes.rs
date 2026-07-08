@@ -281,7 +281,7 @@ async fn concurrent_writers_preserve_all_rows_aws() {
 /// namespace; total S3 footprint is bounded by (iterations × 800 rows).
 #[tokio::test]
 #[ignore]
-async fn concurrent_writers_100_runs_minio() {
+async fn concurrent_writers_stress_minio() {
     const RUNS: usize = 100;
     let bucket = env_or("HEVSEARCH_S3_BUCKET", "hevsearch-test");
     let uri_base = format!("s3://{bucket}");
@@ -296,7 +296,7 @@ async fn concurrent_writers_100_runs_minio() {
 
 #[tokio::test]
 #[ignore]
-async fn concurrent_writers_100_runs_aws() {
+async fn concurrent_writers_stress_aws() {
     if std::env::var("AWS_PROFILE").is_err() {
         eprintln!("SKIP: AWS_PROFILE not set; real-AWS run needs a configured CLI profile");
         return;
@@ -333,7 +333,7 @@ async fn concurrent_writers_preserve_all_rows_r2() {
 
 #[tokio::test]
 #[ignore]
-async fn concurrent_writers_100_runs_r2() {
+async fn concurrent_writers_stress_r2() {
     let Some(opts) = r2_storage_options() else {
         eprintln!("SKIP: R2_ENDPOINT/R2_ACCESS_KEY/R2_SECRET_KEY not set");
         return;
@@ -368,7 +368,7 @@ async fn concurrent_writers_preserve_all_rows_tigris() {
 
 #[tokio::test]
 #[ignore]
-async fn concurrent_writers_100_runs_tigris() {
+async fn concurrent_writers_stress_tigris() {
     let Some(opts) = tigris_storage_options() else {
         eprintln!("SKIP: TIGRIS_ENDPOINT/TIGRIS_ACCESS_KEY/TIGRIS_SECRET_KEY not set");
         return;
@@ -403,7 +403,7 @@ async fn concurrent_writers_preserve_all_rows_b2() {
 
 #[tokio::test]
 #[ignore]
-async fn concurrent_writers_100_runs_b2() {
+async fn concurrent_writers_stress_b2() {
     let Some(opts) = b2_storage_options() else {
         eprintln!("SKIP: B2_ENDPOINT/B2_ACCESS_KEY/B2_SECRET_KEY not set");
         return;
@@ -438,7 +438,7 @@ async fn concurrent_writers_preserve_all_rows_spaces() {
 
 #[tokio::test]
 #[ignore]
-async fn concurrent_writers_100_runs_spaces() {
+async fn concurrent_writers_stress_spaces() {
     let Some(opts) = spaces_storage_options() else {
         eprintln!("SKIP: SPACES_ENDPOINT/SPACES_ACCESS_KEY/SPACES_SECRET_KEY not set");
         return;
@@ -473,7 +473,7 @@ async fn concurrent_writers_preserve_all_rows_gcs() {
 
 #[tokio::test]
 #[ignore]
-async fn concurrent_writers_100_runs_gcs() {
+async fn concurrent_writers_stress_gcs() {
     let Some(opts) = gcs_storage_options() else {
         eprintln!("SKIP: GCS_ENDPOINT/GCS_ACCESS_KEY/GCS_SECRET_KEY not set");
         return;
@@ -525,7 +525,7 @@ async fn concurrent_writers_preserve_all_rows_gcs_native() {
 
 #[tokio::test]
 #[ignore]
-async fn concurrent_writers_100_runs_gcs_native() {
+async fn concurrent_writers_stress_gcs_native() {
     let Some(opts) = gcs_native_storage_options() else {
         eprintln!(
             "SKIP: set GOOGLE_APPLICATION_CREDENTIALS \
@@ -683,7 +683,7 @@ async fn concurrent_writes_during_compaction_aws() {
 /// stress tests.
 #[tokio::test]
 #[ignore]
-async fn concurrent_writes_during_compaction_50_runs_minio() {
+async fn concurrent_writes_during_compaction_stress_minio() {
     const RUNS: usize = 50;
     let bucket = env_or("HEVSEARCH_S3_BUCKET", "hevsearch-test");
     let uri_base = format!("s3://{bucket}");
@@ -818,7 +818,7 @@ async fn concurrent_writes_during_compaction_aggressive_aws() {
 
 #[tokio::test]
 #[ignore]
-async fn concurrent_writes_during_compaction_aggressive_200_runs_minio() {
+async fn concurrent_writes_during_compaction_aggressive_stress_minio() {
     const RUNS: usize = 200;
     let bucket = env_or("HEVSEARCH_S3_BUCKET", "hevsearch-test");
     let uri_base = format!("s3://{bucket}");
