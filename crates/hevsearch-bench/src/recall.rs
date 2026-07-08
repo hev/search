@@ -116,14 +116,13 @@ pub fn brute_force_knn(base: &[Vec<f32>], query: &[f32], k: usize) -> Vec<u32> {
 
 /// `recall@k`: |retrieved@k ∩ true-NN@k| / k. Ground truth must hold
 /// at least `k` ids.
-pub fn recall_at_k(ground_truth: &[u32], retrieved: &[u64], k: usize) -> f64 {
+pub fn recall_at_k_ids(ground_truth: &[u64], retrieved: &[u64], k: usize) -> f64 {
     assert!(
         ground_truth.len() >= k,
         "ground truth holds {} ids, need {k}",
         ground_truth.len()
     );
-    let truth: std::collections::HashSet<u64> =
-        ground_truth[..k].iter().map(|&i| i as u64).collect();
+    let truth: std::collections::HashSet<u64> = ground_truth[..k].iter().copied().collect();
     let hits = retrieved
         .iter()
         .take(k)
@@ -132,16 +131,22 @@ pub fn recall_at_k(ground_truth: &[u32], retrieved: &[u64], k: usize) -> f64 {
     hits as f64 / k as f64
 }
 
+/// `recall@k`: |retrieved@k ∩ true-NN@k| / k for dataset-provided
+/// `.ivecs` ids.
+pub fn recall_at_k(ground_truth: &[u32], retrieved: &[u64], k: usize) -> f64 {
+    let ids: Vec<u64> = ground_truth.iter().map(|&i| i as u64).collect();
+    recall_at_k_ids(&ids, retrieved, k)
+}
+
 /// `ndcg@k` with binary relevance against the true k nearest
 /// neighbours: gain 1 iff the retrieved id is in the exact top-k.
-pub fn ndcg_at_k(ground_truth: &[u32], retrieved: &[u64], k: usize) -> f64 {
+pub fn ndcg_at_k_ids(ground_truth: &[u64], retrieved: &[u64], k: usize) -> f64 {
     assert!(
         ground_truth.len() >= k,
         "ground truth holds {} ids, need {k}",
         ground_truth.len()
     );
-    let truth: std::collections::HashSet<u64> =
-        ground_truth[..k].iter().map(|&i| i as u64).collect();
+    let truth: std::collections::HashSet<u64> = ground_truth[..k].iter().copied().collect();
     let dcg: f64 = retrieved
         .iter()
         .take(k)
@@ -157,6 +162,12 @@ pub fn ndcg_at_k(ground_truth: &[u32], retrieved: &[u64], k: usize) -> f64 {
     } else {
         dcg / ideal
     }
+}
+
+/// `ndcg@k` for dataset-provided `.ivecs` ids.
+pub fn ndcg_at_k(ground_truth: &[u32], retrieved: &[u64], k: usize) -> f64 {
+    let ids: Vec<u64> = ground_truth.iter().map(|&i| i as u64).collect();
+    ndcg_at_k_ids(&ids, retrieved, k)
 }
 
 /// Aggregate mean of a per-query metric.
