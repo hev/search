@@ -454,6 +454,7 @@ fn op_search(
         vectors,
         k: limit,
         nprobes: None,
+        exact: false,
         text: query,
         filter,
         include_vector: include_vectors,

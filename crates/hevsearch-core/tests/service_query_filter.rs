@@ -28,6 +28,7 @@ fn request(filter: Option<&str>) -> QueryRequest {
         vectors: None,
         k: 10,
         nprobes: None,
+        exact: false,
         text: None,
         fuzzy: None,
         filter: filter.map(str::to_string),

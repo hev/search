@@ -1569,6 +1569,7 @@ impl NamespaceManager {
             vectors,
             k,
             nprobes,
+            false,
             text,
             None,
             filter,
@@ -1586,6 +1587,7 @@ impl NamespaceManager {
         vectors: Option<Vec<Vec<f32>>>,
         k: usize,
         nprobes: Option<usize>,
+        exact: bool,
         text: Option<String>,
         fuzzy: Option<FuzzyRequest>,
         filter: Option<String>,
@@ -1755,10 +1757,12 @@ impl NamespaceManager {
                     vq
                 }
             };
-            vq = vq
-                .distance_type(info.distance_metric.to_lance())
-                .nprobes(nprobes)
-                .limit(k);
+            vq = vq.distance_type(info.distance_metric.to_lance()).limit(k);
+            if exact {
+                vq = vq.bypass_vector_index();
+            } else {
+                vq = vq.nprobes(nprobes);
+            }
             if let Some(target) = fts_target {
                 vq = vq.full_text_search(full_text_query(target, fuzzy.as_ref())?);
             }

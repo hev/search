@@ -386,6 +386,7 @@ fn vector_query(
         vectors: None,
         k,
         nprobes: Some(nprobes),
+        exact: false,
         text: None,
         fuzzy: None,
         filter: None,

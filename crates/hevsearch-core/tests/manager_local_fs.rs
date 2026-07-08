@@ -587,6 +587,7 @@ async fn local_fs_fuzzy_fts_matches_typo_query() {
             None,
             10,
             None,
+            false,
             // RFC 0001 moved FTS to unstemmed alyze `word_v4` tokens, and
             // RFC 0004's fuzzy ladder keeps 1-5 char tokens exact. Use the
             // longer RFC 0004 probe so a fixed edit distance still exercises

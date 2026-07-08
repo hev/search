@@ -112,6 +112,7 @@ async fn service_query_happy_path() {
         vectors: None,
         k: 4,
         nprobes: None,
+        exact: false,
         text: None,
         fuzzy: None,
         filter: None,

@@ -53,6 +53,12 @@ pub struct QueryRequest {
     /// omitted.
     #[serde(default)]
     pub nprobes: Option<usize>,
+    /// Force the vector leg of a vector or hybrid query to bypass
+    /// any vector index and scan exact nearest neighbours. Defaults
+    /// to `false`; exact mode is request-only and never selected by
+    /// the engine automatically.
+    #[serde(default)]
+    pub exact: bool,
     /// Full-text search query string. When set alongside a vector
     /// field, triggers hybrid search (vector + FTS combined via RRF).
     /// When set without any vector field, triggers FTS-only search.
@@ -240,6 +246,11 @@ pub fn validate_semantic_cache_request(req: &QueryRequest) -> Result<(), crate::
     if !sem.enabled {
         return Ok(());
     }
+    if req.exact {
+        return Err(crate::HevSearchError::InvalidRequest(
+            "semantic_cache is not supported with exact vector queries".into(),
+        ));
+    }
     if req.vector.is_empty() {
         return Err(crate::HevSearchError::InvalidRequest(
             "semantic_cache requires a single-vector `vector` field; \
@@ -263,6 +274,22 @@ pub fn validate_semantic_cache_request(req: &QueryRequest) -> Result<(), crate::
         ));
     }
     Ok(())
+}
+
+/// Validate query-plan knobs that are independent of namespace schema.
+pub fn validate_query_request(req: &QueryRequest) -> Result<(), crate::HevSearchError> {
+    if req.exact && req.nprobes.is_some() {
+        return Err(crate::HevSearchError::InvalidRequest(
+            "exact queries cannot set nprobes; nprobes only applies to indexed IVF search".into(),
+        ));
+    }
+    if req.exact && req.vector.is_empty() && req.vectors.as_ref().is_none_or(Vec::is_empty) {
+        return Err(crate::HevSearchError::InvalidRequest(
+            "exact requires a vector or vectors field; FTS-only queries have no vector index to bypass"
+                .into(),
+        ));
+    }
+    validate_semantic_cache_request(req)
 }
 
 /// Effective cosine threshold for a query: the per-request override
@@ -389,6 +416,7 @@ mod tests {
             vectors: None,
             k: 10,
             nprobes: None,
+            exact: false,
             text: None,
             fuzzy: None,
             filter: None,
