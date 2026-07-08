@@ -1,0 +1,187 @@
+name: bench-evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Pinned engine image reference in mesh-account ECR, preferably @sha256 digest"
+        required: true
+        type: string
+      corpus_hash:
+        description: "Pinned corpus identity/hash for this run"
+        required: true
+        type: string
+  schedule:
+    - cron: "17 8 * * *"
+
+concurrency:
+  group: bench-evidence-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_RELEASE_DEBUG: 0
+  DEFAULT_IMAGE_TAG: 186219257916.dkr.ecr.us-east-1.amazonaws.com/hev/search@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  DEFAULT_CORPUS_HASH: synthetic-seed42-256x32-q3-v1
+  HEVSEARCH_STORAGE_URI: s3://hevsearch-test
+  HEVSEARCH_S3_ENDPOINT: http://127.0.0.1:9000
+  HEVSEARCH_S3_ACCESS_KEY: minioadmin
+  HEVSEARCH_S3_SECRET_KEY: minioadmin
+  HEVSEARCH_BENCH_ROWS: "256"
+  HEVSEARCH_BENCH_DIM: "32"
+  HEVSEARCH_BENCH_QUERIES: "3"
+  HEVSEARCH_BENCH_SEED: "42"
+  HEVSEARCH_BENCH_NPROBES_SWEEP: "1,4"
+  HEVSEARCH_BENCH_PARTITIONS: "4"
+  HEVSEARCH_BENCH_SUB_VECTORS: "2"
+  HEVSEARCH_BENCH_NUM_BITS: "4"
+  HEVSEARCH_BENCH_OUT_DIR: bench/results/recall
+  BENCH_COMMAND: cargo run --release -p hevsearch-bench --bin recall_sweep
+
+jobs:
+  recall-build:
+    name: recall + build evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install protobuf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler libprotobuf-dev
+
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-evidence
+          cache-on-failure: true
+
+      - name: Resolve and validate pinned inputs
+        id: pins
+        shell: bash
+        env:
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+          INPUT_CORPUS_HASH: ${{ inputs.corpus_hash }}
+        run: |
+          set -euo pipefail
+          image_tag="${INPUT_IMAGE_TAG:-${DEFAULT_IMAGE_TAG}}"
+          corpus_hash="${INPUT_CORPUS_HASH:-${DEFAULT_CORPUS_HASH}}"
+
+          if [[ -z "${image_tag}" || -z "${corpus_hash}" ]]; then
+            echo "image_tag and corpus_hash are required and must be non-empty" >&2
+            exit 1
+          fi
+          if [[ "${image_tag}" != 186219257916.dkr.ecr.us-east-1.amazonaws.com/* ]]; then
+            echo "image_tag must use mesh-account ECR: 186219257916.dkr.ecr.us-east-1.amazonaws.com/..." >&2
+            exit 1
+          fi
+          if [[ "${image_tag}" == *":latest"* || "${image_tag}" != *@sha256:* ]]; then
+            echo "image_tag must be pinned by digest and must not use latest: ${image_tag}" >&2
+            exit 1
+          fi
+          digest="${image_tag##*@sha256:}"
+          if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "image_tag digest must be a 64-character lowercase sha256 hex digest" >&2
+            exit 1
+          fi
+          if [[ "${corpus_hash}" == "latest" || "${corpus_hash}" == "main" || "${corpus_hash}" == "HEAD" || "${corpus_hash}" == "nightly" ]]; then
+            echo "corpus_hash must be an immutable corpus identity, not ${corpus_hash}" >&2
+            exit 1
+          fi
+
+          {
+            echo "image_tag=${image_tag}"
+            echo "corpus_hash=${corpus_hash}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Start MinIO and create test bucket
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2025-09-07T16-13-09Z \
+            server /data --console-address ":9001"
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then
+              echo "minio is up"
+              break
+            fi
+            sleep 1
+          done
+          docker run --rm --network host --entrypoint /bin/sh \
+            minio/mc:latest -c "
+              mc alias set local http://127.0.0.1:9000 minioadmin minioadmin &&
+              mc mb --ignore-existing local/hevsearch-test
+            "
+
+      - name: Run RFC 0011 recall sweep
+        run: ${BENCH_COMMAND}
+
+      - name: Build evidence report
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.pins.outputs.image_tag }}
+          CORPUS_HASH: ${{ steps.pins.outputs.corpus_hash }}
+        run: |
+          set -euo pipefail
+          out_dir="${HEVSEARCH_BENCH_OUT_DIR}"
+          json="$(find "${out_dir}" -maxdepth 1 -name 'recall_sweep_*.json' | sort | tail -n 1)"
+          test -n "${json}"
+          report="${out_dir}/bench-evidence.md"
+
+          {
+            echo "# bench-evidence"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Engine image | \`${IMAGE_TAG}\` |"
+            echo "| Corpus hash | \`${CORPUS_HASH}\` |"
+            echo "| Git SHA | \`${GITHUB_SHA}\` |"
+            echo "| Runner | \`${RUNNER_OS} ${RUNNER_ARCH}\` |"
+            echo "| Rust dev image | \`hevsearch-rust-dev:1.94\` |"
+            echo "| Harness command | \`${BENCH_COMMAND}\` |"
+            echo
+            echo "## Recall / nDCG / Build"
+            echo
+            jq -r '
+              "| Dataset | Rows | Dim | Index | Build wall (s) | Variant | Knob | recall@1 | recall@10 | recall@100 | ndcg@10 | QPS | p50 ms | p95 ms | p99 ms |",
+              "| --- | ---: | ---: | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+              (.points[] as $p |
+                "| \(.dataset) | \(.rows) | \(.dim) | \(.index.kind) | \(.index.build_wall_s) | \($p.variant) | \($p.knob) | \($p.scores["recall@1"]) | \($p.scores["recall@10"]) | \($p.scores["recall@100"]) | \($p.scores["ndcg@10"]) | \($p.qps) | \($p.latency_p50_ms) | \($p.latency_p95_ms) | \($p.latency_p99_ms) |")
+            ' "${json}"
+            echo
+            echo "## RFC 0009 Gated Variants"
+            echo
+            jq -r '
+              "| Variant | Status |",
+              "| --- | --- |",
+              (.unavailable_variants[] | "| \(.variant) | \(.status) |")
+            ' "${json}"
+          } > "${report}"
+
+          cp "${json}" "${out_dir}/bench-evidence.json"
+          cat "${report}"
+
+      - name: Upload bench evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-evidence-${{ github.run_id }}
+          path: |
+            bench/results/recall/bench-evidence.md
+            bench/results/recall/bench-evidence.json
+            bench/results/recall/recall_sweep_*.json
+          if-no-files-found: error
+
+      - name: Dump MinIO logs on failure
+        if: failure()
+        run: docker logs minio --tail 200 || true
