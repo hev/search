@@ -1,0 +1,88 @@
+name: Stress
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  HEVSEARCH_S3_ENDPOINT: http://127.0.0.1:9000
+  HEVSEARCH_S3_ACCESS_KEY: minioadmin
+  HEVSEARCH_S3_SECRET_KEY: minioadmin
+  HEVSEARCH_S3_BUCKET: hevsearch-test
+
+jobs:
+  minio-stress:
+    name: nightly MinIO stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+
+      - name: Install protobuf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler libprotobuf-dev
+
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          cache-on-failure: true
+
+      - name: Start MinIO and create test bucket
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2025-09-07T16-13-09Z \
+            server /data --console-address ":9001"
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then
+              echo "minio is up"
+              break
+            fi
+            sleep 1
+          done
+          docker run --rm --network host --entrypoint /bin/sh \
+            minio/mc:latest -c "
+              mc alias set local http://127.0.0.1:9000 minioadmin minioadmin &&
+              mc mb --ignore-existing local/hevsearch-test
+            "
+
+      - name: cargo test (MinIO stress only)
+        run: |
+          cargo test --workspace --no-fail-fast _stress_minio -- \
+            --ignored
+
+      - name: Dump MinIO logs on failure
+        if: failure()
+        run: docker logs minio --tail 200 || true
