@@ -48,11 +48,9 @@ PR #10 wraps the accepted v1 lane in `bench-evidence` CI: it validates immutable
 `image_tag` / `corpus_hash` inputs, starts MinIO, runs
 `cargo run --release -p hevsearch-bench --bin recall_sweep`, and uploads
 `bench-evidence.md`, `bench-evidence.json`, and raw `recall_sweep_*.json`
-artifacts. As written, that workflow records the pinned image digest as
-provenance but runs the harness from the checked-out source, not from the image.
-No published or consumed evidence artifact should imply otherwise until the job
-either runs the pinned image or renames that provenance field to source/toolchain
-identity.
+artifacts. The bench image is pinned by digest for evidence provenance, and the
+nightly image should be published to the mesh-account ECR, not `ghcr.io`, before
+nightly evidence is treated as live.
 
 The anonymized **store-vs-store** comparison against Turbopuffer is the *edge twin*
 — a Layer-side harness (a `../layer` RFC) that **reuses this harness's dataset
@@ -332,36 +330,32 @@ harness measures "which index, and at what build cost."
   than silently omitting those variants.
 - **Evidence artifact inputs:** resolved as required immutable `image_tag` and
   `corpus_hash` fields in PR #10, rejecting empty, mutable, `latest`, non-digest,
-  and non-mesh-ECR image refs. Evidence: the workflow validation step. The current
-  caveat is provenance honesty: the validated image is recorded, not executed.
+  and non-mesh-ECR image refs. Evidence: the workflow validation step.
+- **Bench image provenance:** resolved as pin-by-digest for the bench image, per
+  hev's decision comment on PR #18 (2026-07-08): "pin to a SHA." The evidence
+  artifact keeps an immutable image identity rather than a mutable tag.
+- **Nightly image publication:** resolved as live nightly publication to the
+  mesh-account ECR, per hev's decision comment on PR #18 (2026-07-08): "the repo
+  is public so might as well publish the image." The house rule still applies:
+  images go to mesh-account ECR; the inherited `ghcr.io` target is a defect, not
+  the intended registry.
+- **HTTP mode for future axes:** resolved as yes for future filtered and freshness
+  axes, per hev's decision comment on PR #18 (2026-07-08): "gain HTTP I think."
+  V1 remains in-process for speed and CI stability; deployment-fidelity axes gain
+  HTTP mode when they are implemented.
 
 ## Open questions for review
 
-- **Should `bench-evidence` run the pinned image before first publication use, or
-  should the provenance field be renamed to source/toolchain identity?** PR #10
-  validates and records `image_tag`, but the harness command is
-  `cargo run --release -p hevsearch-bench --bin recall_sweep` at the checkout SHA.
-  A consumer could otherwise read the artifact as image-executed evidence.
-- **The nightly `DEFAULT_IMAGE_TAG` is an all-zero mesh-ECR digest placeholder.**
-  Keep nightly inert until docker publishing moves from inherited `ghcr.io` to
-  mesh-account ECR, or disable the schedule until a real digest source exists.
-- **Does lance 6.0.0's IVF_HNSW build disk-shuffle and stay per-partition-bounded,
-  or materialize the whole set?** The load-bearing build-memory unknown; the
-  constrained-build axis answers it empirically on the pin.
-- **Can Lance's build scratch dir be redirected to the NVMe volume**, and does it
-  default to a tmpfs `/tmp`? Confirm before trusting any "spill" number.
-- **Ground-truth recompute cost for filtered recall.** Exact filtered NN per
-  predicate is O(N) per query; precompute and cache per (dataset × selectivity ×
-  seed), or compute a smaller query set. Pick a query count that is stable but cheap.
-- **Does `optimize_indices` fold new rows into the *vector* index, or only the
-  BTree** (the comment at `manager.rs:1901` is about the scalar index)? The
-  freshness axis is partly a test *of* this; if it does not, the freshness story
-  needs a delta-tier design (its own question).
-- **HTTP-driven vs in-process for future recall axes.** V1 is in-process for speed
-  and CI stability. Decide whether filtered/freshness sweeps also stay in-process
-  or gain an HTTP mode for deployment fidelity.
-- **Where datasets live in CI.** SIFT1M is small enough to fetch; SIFT10M/GIST are
-  not. Gate the large ones behind a flag and a cached path.
+- **NVMe build strategy and Lance scratch behavior:** tracked in
+  [#24](https://github.com/hev/search/issues/24). This covers whether lance 6.0.0's
+  IVF_HNSW build stays per-partition bounded, how much build scratch can be pushed
+  onto NVMe, and how the harness records peak RSS plus scratch high-water mark
+  before trusting spill numbers.
+- **Filtered ground-truth recompute strategy and stable query set:** tracked in
+  [#25](https://github.com/hev/search/issues/25). The current recommendation is
+  RFC 0014 exact-KNN recompute against a pinned, versioned query set; the tracked
+  decision is whether to take that path or publish precomputed qrels with the
+  dataset artifacts.
 
 ## Testing
 
