@@ -20,7 +20,7 @@
 use std::time::{Duration, Instant};
 
 use bincode::config::{self, Configuration};
-use hevsearch_core::{QueryResult, QueryResultSet};
+use hevsearch_core::{QueryResult, QueryResultSet, RowId};
 
 const VECTOR_DIM: usize = 1536;
 const WARMUP_ITERS: usize = 200;
@@ -29,7 +29,7 @@ const SAMPLE_ITERS: usize = 2000;
 fn make_result_set(n: usize) -> QueryResultSet {
     let results: Vec<QueryResult> = (0..n)
         .map(|i| QueryResult {
-            id: i as u64,
+            id: RowId::U64(i as u64),
             score: 1.0 - (i as f32) * 0.001,
             // Deterministic but varied — not all-zero, so any run of
             // the serialiser that might special-case sparse/uniform
@@ -41,6 +41,7 @@ fn make_result_set(n: usize) -> QueryResultSet {
             ),
             text: None,
             ingested_at_micros: Some(1_700_000_000_000_000 + i as i64),
+            attributes: Default::default(),
         })
         .collect();
     QueryResultSet {

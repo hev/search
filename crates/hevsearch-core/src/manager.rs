@@ -1675,9 +1675,7 @@ impl NamespaceManager {
         // empty, hybrid queries drop the FTS leg and stay vector-only.
         let fts_target: Option<FtsTarget> = match &text {
             None => None,
-            Some(t) if info.has_text_tok => {
-                crate::analyzer::tokenized(t).map(FtsTarget::Analyzed)
-            }
+            Some(t) if info.has_text_tok => crate::analyzer::tokenized(t).map(FtsTarget::Analyzed),
             Some(t) => Some(FtsTarget::Legacy(t.clone())),
         };
         if has_text && fts_target.is_none() && shape.is_none() {
@@ -1992,10 +1990,7 @@ impl NamespaceManager {
         let merged: Vec<RecordBatch> = batches
             .iter()
             .map(|batch| {
-                let id = batch
-                    .column_by_name("id")
-                    .expect("projected above")
-                    .clone();
+                let id = batch.column_by_name("id").expect("projected above").clone();
                 let text = batch
                     .column_by_name("text")
                     .expect("projected above")
@@ -2517,10 +2512,7 @@ impl NamespaceManager {
     /// labelled per-namespace and this is a root-level operation.
     pub async fn list_namespaces(&self) -> Result<Vec<String>, HevSearchError> {
         let store = self.build_object_store()?;
-        let prefix = self
-            .storage_root
-            .prefix()
-            .map(ObjectStorePath::from);
+        let prefix = self.storage_root.prefix().map(ObjectStorePath::from);
 
         let listing = store
             .list_with_delimiter(prefix.as_ref())
@@ -2914,6 +2906,14 @@ fn list_of_fixed_size_float_dim(dt: &DataType) -> Option<usize> {
     }
 }
 
+type ArrowImportSchemaSummary = (
+    VectorKind,
+    usize,
+    RowIdType,
+    bool,
+    BTreeMap<String, AttributeType>,
+);
+
 /// Validate the Arrow schema of a `/import` stream and report the
 /// namespace kind, vector dimension, and whether a `text` column is
 /// present.
@@ -2932,16 +2932,7 @@ fn list_of_fixed_size_float_dim(dt: &DataType) -> Option<usize> {
 /// the background import.
 pub fn validate_arrow_import_schema(
     schema: &Schema,
-) -> Result<
-    (
-        VectorKind,
-        usize,
-        RowIdType,
-        bool,
-        BTreeMap<String, AttributeType>,
-    ),
-    HevSearchError,
-> {
+) -> Result<ArrowImportSchemaSummary, HevSearchError> {
     let id_type = match schema.column_with_name("id") {
         Some((_, f)) if f.data_type() == &DataType::UInt64 => RowIdType::U64,
         Some((_, f)) if f.data_type() == &DataType::Utf8 => RowIdType::String,
@@ -3653,7 +3644,7 @@ fn batches_to_list_rows(
                 HevSearchError::Backend("list: _ingested_at not Timestamp(Microsecond)".into())
             })?;
 
-        for row in 0..batch.num_rows() {
+        for (row, id) in ids.iter().enumerate() {
             let vector = extract_row_vector(batch, row, kind, "list")?;
             let text = texts.and_then(|t| {
                 if t.is_null(row) {
@@ -3663,7 +3654,7 @@ fn batches_to_list_rows(
                 }
             });
             out.push(ListRow {
-                id: ids[row].clone(),
+                id: id.clone(),
                 vector,
                 text,
                 ingested_at_micros: ingested_at.value(row),
@@ -3700,7 +3691,7 @@ fn batches_to_results(
             .column_by_name(INGESTED_AT_COLUMN)
             .and_then(|c| c.as_any().downcast_ref::<TimestampMicrosecondArray>());
 
-        for row in 0..batch.num_rows() {
+        for (row, id) in ids.iter().enumerate() {
             // Multivector hits never carry the bag (it is hundreds of
             // KB per row); single-vector hits carry the stored vector
             // unless the caller opted out and the column was projected
@@ -3725,7 +3716,7 @@ fn batches_to_results(
                 }
             });
             out.push(QueryResult {
-                id: ids[row].clone(),
+                id: id.clone(),
                 score: scores.value(row),
                 vector,
                 text,
@@ -3994,8 +3985,8 @@ mod tests {
     #[test]
     fn analyzed_target_pins_the_text_tok_column() {
         // Plain path.
-        let q = full_text_query(FtsTarget::Analyzed("kubernetes timeout".to_string()), None)
-            .unwrap();
+        let q =
+            full_text_query(FtsTarget::Analyzed("kubernetes timeout".to_string()), None).unwrap();
         match q.query {
             FtsQuery::Match(m) => {
                 assert_eq!(m.terms, "kubernetes timeout");

@@ -80,7 +80,9 @@ async fn filtered_and_unfiltered_queries_cache_independently() {
         .await
         .expect("unfiltered #1");
     assert_eq!(a.cache_source, QueryCacheSource::Backend);
-    let mut ids_a: Vec<u64> = a.result.results
+    let mut ids_a: Vec<u64> = a
+        .result
+        .results
         .iter()
         .map(|r| match &r.id {
             hevsearch_core::RowId::U64(v) => *v,
@@ -95,7 +97,9 @@ async fn filtered_and_unfiltered_queries_cache_independently() {
         .await
         .expect("filtered #1");
     assert_eq!(b.cache_source, QueryCacheSource::Backend);
-    let mut ids_b: Vec<u64> = b.result.results
+    let mut ids_b: Vec<u64> = b
+        .result
+        .results
         .iter()
         .map(|r| match &r.id {
             hevsearch_core::RowId::U64(v) => *v,
@@ -132,7 +136,9 @@ async fn distinct_filters_do_not_collide_in_exact_cache() {
         .await
         .expect("lt filter");
     assert_eq!(a.cache_source, QueryCacheSource::Backend);
-    let mut ids_a: Vec<u64> = a.result.results
+    let mut ids_a: Vec<u64> = a
+        .result
+        .results
         .iter()
         .map(|r| match &r.id {
             hevsearch_core::RowId::U64(v) => *v,
@@ -147,7 +153,9 @@ async fn distinct_filters_do_not_collide_in_exact_cache() {
         .await
         .expect("gt filter");
     assert_eq!(b.cache_source, QueryCacheSource::Backend);
-    let mut ids_b: Vec<u64> = b.result.results
+    let mut ids_b: Vec<u64> = b
+        .result
+        .results
         .iter()
         .map(|r| match &r.id {
             hevsearch_core::RowId::U64(v) => *v,
