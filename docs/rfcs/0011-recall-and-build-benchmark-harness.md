@@ -1,15 +1,16 @@
 # RFC 0011: Recall + build benchmark harness
 
-Tracking issue: _TBD_
+Tracking issue: [#16](https://github.com/hev/search/issues/16)
 
-> **Status:** draft, proposal. **Additive engine tooling + the build-memory knobs
-> it surfaces.** There is **no in-repo recall harness** today. `hevsearch-bench`
-> measures *latency / cache only*, in-process, on **synthetic** vectors
-> (`make_vector`, `NamespaceService` built directly — `crates/hevsearch-bench/src/main.rs`);
-> the `recall@k` / `ndcg` numbers in `bench/results/beir_multivector_raw/` were
-> produced by an **external, unversioned** pipeline that lives in neither repo. So
-> recall is currently unreproducible from source. Separately, the index **build**
-> passes LanceDB no memory / sampling / scratch options
+> **Status:** Accepted (2026-07-08). **Additive engine tooling + the build-memory
+> knobs it surfaces.** The first in-repo recall lane now exists in
+> `hevsearch-bench`: `crates/hevsearch-bench/src/recall.rs` owns the dataset
+> readers, exact-NN ground truth, and `recall@k` / `ndcg@k` scoring, while
+> `src/bin/recall_sweep.rs` runs a source-built `ivf_pq` + `nprobes` sweep through
+> `NamespaceService`. That resolves the old "external-only recall numbers" gap for
+> the initial evidence lane; filtered recall, freshness, HTTP mode, and the
+> constrained build profiler remain follow-up implementation issues. Separately,
+> the index **build** still passes LanceDB no memory / sampling / scratch options
 > (`IvfPqIndexBuilder::default()`, `manager.rs:1790`), runs **in-process in the
 > serving container** (`tokio::spawn`, not `spawn_blocking` —
 > `crates/hevsearch-api/src/handlers.rs:413`), and NVMe is wired only for the foyer
@@ -23,9 +24,11 @@ Tracking issue: _TBD_
 
 ## Summary
 
-Build a versioned, in-repo **recall + build** benchmark harness in
-`hevsearch-bench`, driven against the engine's REST surface, over **public
-ground-truth ANN datasets** (SIFT1M/10M, GIST1M, optionally Deep), and structure
+Build and evolve a versioned, in-repo **recall + build** benchmark harness in
+`hevsearch-bench`, first as an in-process source-built evidence lane and then,
+where fidelity requires it, against the engine's REST surface. The harness runs
+over seeded synthetic vectors for CI and **public ground-truth ANN datasets**
+(SIFT1M/10M, GIST1M, optionally Deep) for publication-grade runs, and structures
 its outputs around the four index requirements we actually care about —
 **filtering, updating, recall, operational simplicity**. The harness is the
 **decision instrument** for the still-open vector-index choice (the harness exists
@@ -35,27 +38,41 @@ constrained-build axis surfaces.
 
 Two dimensions most ANN benchmarks skip are first-class here because they map to
 two of the four requirements: **filtered recall at varying selectivity**
-(requirement: filtering) and **build under a fixed cgroup RAM limit** (requirement:
-operational simplicity). The full index-variant sweep depends on RFC 0009 (the
-`kind` selector and the `ef` / `refine_factor` query knobs); the harness ships
-useful for `ivf_pq` + `nprobes` on day one and widens as 0009 lands.
+(requirement: filtering) and **build under a fixed cgroup RAM limit**
+(requirement: operational simplicity). The full index-variant sweep depends on
+RFC 0009 (the `kind` selector and the `ef` / `refine_factor` query knobs); the
+accepted v1 harness is useful for `ivf_pq` + `nprobes` on day one and widens as
+0009 lands.
+
+PR #10 wraps the accepted v1 lane in `bench-evidence` CI: it validates immutable
+`image_tag` / `corpus_hash` inputs, starts MinIO, runs
+`cargo run --release -p hevsearch-bench --bin recall_sweep`, and uploads
+`bench-evidence.md`, `bench-evidence.json`, and raw `recall_sweep_*.json`
+artifacts. As written, that workflow records the pinned image digest as
+provenance but runs the harness from the checked-out source, not from the image.
+No published or consumed evidence artifact should imply otherwise until the job
+either runs the pinned image or renames that provenance field to source/toolchain
+identity.
 
 The anonymized **store-vs-store** comparison against Turbopuffer is the *edge twin*
 — a Layer-side harness (a `../layer` RFC) that **reuses this harness's dataset
 loaders, ground-truth, and metric collectors**, kept internal / backend-anonymized
 per RFC 0086 § Posture and Turbopuffer TOS §2.4. It is not built here.
 
-## Background: there is no recall harness, and build is uninstrumented
+## Background: recall v1 exists, and build is still uninstrumented
 
 Two gaps, both grounded:
 
-1. **Recall is unversioned.** The Rust harness only times queries and counts cache
-   hits / S3 bytes; it never loads a dataset, never holds ground truth, never
-   computes `recall@k`. Quality numbers exist only as JSON checked into
-   `bench/results/beir_multivector_raw/quality_0.9.2/` (see that dir's `README.md`),
-   emitted by an external tool — so a quality regression cannot be caught from a
-   `cargo` invocation, and "did this index change help recall" is not a question
-   the repo can currently answer.
+1. **Recall was unversioned; the v1 lane fixes the core scoring gap.** The original
+   Rust harness only timed queries and counted cache hits / S3 bytes; it never
+   loaded a dataset, held ground truth, or computed `recall@k`. Quality numbers
+   existed only as JSON checked into `bench/results/beir_multivector_raw/quality_0.9.2/`
+   (see that dir's `README.md`), emitted by an external tool. Current `main` now
+   has in-repo readers for `.fvecs` / `.bvecs` / `.ivecs`, exact L2 ground truth,
+   scorer unit tests, deterministic synthetic data, and a `recall_sweep` binary
+   that self-checks a linear-scan baseline before recording `ivf_pq` sweep results.
+   The remaining recall gaps are axes, not fundamentals: filtered recall,
+   freshness, HTTP mode, and larger public datasets.
 2. **Build is a black box with no controls.** `create_index` builds a default
    `IvfPqIndexBuilder` with only `num_partitions` / `num_sub_vectors` / `num_bits`
    (`manager.rs:1789-1801`); there is no build-memory budget, no sample-rate knob,
@@ -77,7 +94,7 @@ object storage, and emit the `bench/results/` JSON + markdown shape. This RFC ad
 
 - A reproducible, **in-repo** harness that computes `recall@k` (and `ndcg@k`)
   against **exact-NN ground truth**, runnable from `cargo` against a local /
-  MinIO-backed engine.
+  MinIO-backed engine. V1 is implemented by `recall.rs` + `recall_sweep.rs`.
 - The four requirement axes as four concrete, separable measurements:
   **filtered recall**, **freshness**, **recall-at-latency**, and **build cost
   under a RAM budget**.
@@ -89,7 +106,8 @@ object storage, and emit the `bench/results/` JSON + markdown shape. This RFC ad
   RAM budget): peak RSS, OOM point, bytes spilled to NVMe, and build wall-clock —
   so the container size each variant can build under is a measured number.
 - Output in the existing `bench/results/` JSON + markdown layout, so results are
-  auditable and diffable like the current runs.
+  auditable and diffable like the current runs. PR #10's CI wrapper adds the first
+  uploaded evidence artifact shape.
 
 ## Non-goals
 
@@ -139,11 +157,12 @@ needs the namespace's metric to be L2 on every backend — which depends on RFC 
 are unaffected.
 
 **Loaders:** `.fvecs` / `.bvecs` / `.ivecs` readers (the SIFT/GIST/Deep on-disk
-format: little-endian `[dim:i32][dim floats]` records), plus a deterministic
-**synthetic-attribute generator** that assigns each row categorical columns
-(e.g. `category ∈ 0..K`, a date) so the filtered-recall axis has something to
-filter on. The generator is seeded and reproducible (no `Math.random`-style
-nondeterminism — same dataset → same attributes → same ground truth).
+format: little-endian `[dim:i32][dim payload]` records) are implemented in
+`recall.rs`; seeded synthetic vectors are implemented for CI-sized runs. A
+deterministic **synthetic-attribute generator** that assigns each row categorical
+columns (e.g. `category in 0..K`, a date) remains part of the filtered-recall
+follow-up so that axis has something to filter on. The generator must be seeded
+and reproducible: same dataset, same attributes, same ground truth.
 
 ### The four axes = the four requirements
 
@@ -243,25 +262,32 @@ constrained-container ceiling falls per variant.
 
 ### Harness architecture & placement
 
-- **New bins in `hevsearch-bench/src/bin/`**, peers to `first_query_profile.rs`:
-  `recall_sweep.rs` (axes 1–3, the variant/knob sweep) and `build_profile.rs` (axis
-  4, the constrained-build runner). They reuse the existing in-process
-  `NamespaceService` setup *and* gain a mode that drives a **running engine over
-  HTTP** (axum `oneshot` for CI, a real base URL for prod-shaped runs), because the
-  constrained-build axis must run the build in its own memory-limited process.
-- **Ground-truth + recall is shared library code** (a `recall` module), so the
-  edge twin in `../layer` can depend on the same scoring and dataset loaders rather
-  than reimplementing IR math (which would be a boundary smell — `CLAUDE.md`
-  § "don't make Layer reimplement what the engine owns").
+- **Bins in `hevsearch-bench/src/bin/`**, peers to `first_query_profile.rs`:
+  `recall_sweep.rs` exists now for axis 3 and the first `ivf_pq` / `nprobes`
+  sweep. It reuses the existing in-process `NamespaceService` setup. Follow-ups
+  add filtered/freshness modes, HTTP mode where needed, and `build_profile.rs` for
+  axis 4, because the constrained-build axis must run the build in its own
+  memory-limited process.
+- **Ground-truth + recall is shared library code** (`crates/hevsearch-bench/src/recall.rs`),
+  so the edge twin in `../layer` can depend on the same scoring and dataset
+  loaders rather than reimplementing IR math (which would be a boundary smell —
+  `CLAUDE.md` § "don't make Layer reimplement what the engine owns").
 - **Datasets** are fetched/cached out of band (a `scripts/` helper), not vendored;
   the harness takes a dataset path. Large datasets (SIFT10M/Deep) are opt-in by
   flag, mirroring the `_100_runs_` / `_aws` skip discipline in CI (`AGENTS.md`).
 
 ### Output format
 
-Match the existing `bench/results/` layout: per-run JSON carrying
-`dataset, variant, k, knob values, num_queries, qps, latency_p50/p95/p99`,
-`scores: { recall@1/10/100, ndcg@10 }`, and — for build runs —
+Match the existing `bench/results/` layout. `recall_sweep` currently writes
+`bench/results/recall/recall_sweep_<dataset>.json` with
+`dataset, rows, dim, num_queries, metric, index, points[]`, per-point `variant`,
+`knob`, `qps`, `latency_p50/p95/p99`, and
+`scores: { recall@1/10/100, ndcg@10 }`. It also records RFC 0009-gated variants as
+unavailable instead of dropping them. PR #10 turns the latest raw JSON into
+`bench-evidence.md` and `bench-evidence.json` workflow artifacts with pinned input
+metadata.
+
+Build-profile runs will add
 `build: { ram_budget_mb, peak_rss_mb, oom: bool, spill_bytes, wall_s, index_bytes }`.
 A new `bench/results/recall/` group with a `README.md` mapping files → axes, the
 way `beir_multivector_raw/README.md` already documents its runs.
@@ -290,8 +316,35 @@ on Layer's Turbopuffer-shaped wire, which is *why* the variant sweep stays an
 engine bench. The edge twin measures "which backend, as the caller sees it"; this
 harness measures "which index, and at what build cost."
 
-## Open questions (for the implementation PR)
+## Resolved questions
 
+- **Initial recall lane shape:** resolved as source-built, in-process
+  `NamespaceService` for v1. Evidence: `recall_sweep.rs` creates
+  `NamespaceManager` / `NamespaceService` directly, starts no HTTP server, and PR
+  #10 runs that binary.
+- **Dataset posture for CI:** resolved as deterministic synthetic defaults for
+  scheduled / gate CI, with public `.fvecs` / `.ivecs` inputs available for larger
+  local or production-shaped runs. Evidence: `HEVSEARCH_BENCH_ROWS`,
+  `HEVSEARCH_BENCH_DIM`, `HEVSEARCH_BENCH_SEED`, and optional
+  `HEVSEARCH_BENCH_BASE_FVECS` / `_QUERY_FVECS` / `_GT_IVECS`.
+- **RFC 0009 gap handling:** resolved as explicit JSON entries in
+  `unavailable_variants` with `"unavailable - gated on RFC 0009"` semantics rather
+  than silently omitting those variants.
+- **Evidence artifact inputs:** resolved as required immutable `image_tag` and
+  `corpus_hash` fields in PR #10, rejecting empty, mutable, `latest`, non-digest,
+  and non-mesh-ECR image refs. Evidence: the workflow validation step. The current
+  caveat is provenance honesty: the validated image is recorded, not executed.
+
+## Open questions for review
+
+- **Should `bench-evidence` run the pinned image before first publication use, or
+  should the provenance field be renamed to source/toolchain identity?** PR #10
+  validates and records `image_tag`, but the harness command is
+  `cargo run --release -p hevsearch-bench --bin recall_sweep` at the checkout SHA.
+  A consumer could otherwise read the artifact as image-executed evidence.
+- **The nightly `DEFAULT_IMAGE_TAG` is an all-zero mesh-ECR digest placeholder.**
+  Keep nightly inert until docker publishing moves from inherited `ghcr.io` to
+  mesh-account ECR, or disable the schedule until a real digest source exists.
 - **Does lance 6.0.0's IVF_HNSW build disk-shuffle and stay per-partition-bounded,
   or materialize the whole set?** The load-bearing build-memory unknown; the
   constrained-build axis answers it empirically on the pin.
@@ -304,9 +357,9 @@ harness measures "which index, and at what build cost."
   BTree** (the comment at `manager.rs:1901` is about the scalar index)? The
   freshness axis is partly a test *of* this; if it does not, the freshness story
   needs a delta-tier design (its own question).
-- **HTTP-driven vs in-process for the recall sweep.** In-process is simpler and CI-
-  friendly; the constrained-build axis *must* be its own process. Decide whether the
-  recall sweep also goes HTTP for fidelity, or stays in-process for speed.
+- **HTTP-driven vs in-process for future recall axes.** V1 is in-process for speed
+  and CI stability. Decide whether filtered/freshness sweeps also stay in-process
+  or gain an HTTP mode for deployment fidelity.
 - **Where datasets live in CI.** SIFT1M is small enough to fetch; SIFT10M/GIST are
   not. Gate the large ones behind a flag and a cached path.
 
@@ -316,14 +369,14 @@ harness measures "which index, and at what build cost."
   known brute-force ground truth computed inline), asserting `recall@k == 1.0`
   against brute force and that a deliberately lossy config scores < 1.0 — so the
   scorer is trusted before any real run.
-- Filtered-recall scoring is unit-tested: filtered brute force vs the engine's
-  `only_if` prefilter agree at `recall = 1.0` on the fixture for several
-  selectivities.
+- Filtered-recall scoring should be unit-tested in the follow-up: filtered brute
+  force vs the engine's `only_if` prefilter agree at `recall = 1.0` on the fixture
+  for several selectivities.
 - Integration runs are `#[ignore]` + MinIO-gated like the rest of the suite
   (`AGENTS.md` § Build & test); the large-dataset runs carry the `_aws` /
   large-data skip markers CI already honors.
-- A determinism test: same dataset + seed → identical synthetic attributes and
-  identical ground truth across runs.
+- A determinism test exists for synthetic vectors and derived ground truth. The
+  filtered-recall follow-up must add the same property for synthetic attributes.
 
 ## Dependencies
 
@@ -363,10 +416,10 @@ harness measures "which index, and at what build cost."
 
 Pure **additive engine tooling** plus the build-memory knobs the constrained-build
 axis justifies — both **local and permanent** on a hard fork, no upstream PR
-(`AGENTS.md` § "This is a hard fork"). No subtractive edge removal. New harness bins
-ride the existing `hevsearch-bench` crate and the `bench/results/` layout; the only
-new *dependency surface* is dataset loaders (`.fvecs`/`.ivecs`) and a cgroup-limited
-build runner, both engine-local.
+(`AGENTS.md` § "This is a hard fork"). No subtractive edge removal. The v1 harness
+rides the existing `hevsearch-bench` crate and the `bench/results/` layout; the new
+dependency surface is engine-local dataset/scoring code and, in a follow-up, a
+cgroup-limited build runner.
 
 ## References
 
@@ -374,6 +427,15 @@ build runner, both engine-local.
   `make_vector`, in-process `NamespaceService`, IVF params `√rows` / `dim/16`);
   `src/bin/first_query_profile.rs`, `src/bin/semantic_cache_profile.rs` — the
   scaffolding the new bins mirror.
+- `crates/hevsearch-bench/src/recall.rs` — implemented RFC 0011 primitives:
+  `.fvecs` / `.bvecs` / `.ivecs` readers, exact L2 ground truth,
+  `recall@k` / `ndcg@k`, deterministic synthetic vectors, and scorer tests.
+- `crates/hevsearch-bench/src/bin/recall_sweep.rs` — implemented v1 recall lane:
+  synthetic or `.fvecs` inputs, linear-scan self-check, `ivf_pq` `nprobes` sweep,
+  JSON output under `bench/results/recall/`, and RFC 0009-gated variant markers.
+- PR #10 (`feat/bench-evidence-ci`) — the workflow wrapper that validates
+  `image_tag` / `corpus_hash`, runs the v1 harness against MinIO, and uploads
+  bench evidence artifacts; it records, but does not execute, the pinned image.
 - `bench/results/beir_multivector_raw/README.md` + `quality_0.9.2/` — the current
   (externally-scored) quality runs and the JSON shape to match;
   `fiqa_exact_vs_indexed/` — the 0.83 brute-force ceiling that motivates
