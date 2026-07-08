@@ -72,8 +72,14 @@ async fn listing_includes_written_namespaces_and_sorts() {
         .iter()
         .map(|v| v.as_str().expect("namespace name is a string"))
         .collect();
-    assert!(names.contains(&ns_a.as_str()), "missing {ns_a} in {names:?}");
-    assert!(names.contains(&ns_b.as_str()), "missing {ns_b} in {names:?}");
+    assert!(
+        names.contains(&ns_a.as_str()),
+        "missing {ns_a} in {names:?}"
+    );
+    assert!(
+        names.contains(&ns_b.as_str()),
+        "missing {ns_b} in {names:?}"
+    );
 
     let mut sorted = names.clone();
     sorted.sort_unstable();

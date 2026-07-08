@@ -124,7 +124,11 @@ pub fn recall_at_k(ground_truth: &[u32], retrieved: &[u64], k: usize) -> f64 {
     );
     let truth: std::collections::HashSet<u64> =
         ground_truth[..k].iter().map(|&i| i as u64).collect();
-    let hits = retrieved.iter().take(k).filter(|id| truth.contains(id)).count();
+    let hits = retrieved
+        .iter()
+        .take(k)
+        .filter(|id| truth.contains(id))
+        .count();
     hits as f64 / k as f64
 }
 
@@ -266,9 +270,6 @@ mod tests {
         let c = synthetic_vectors(1235, 50, 16);
         assert_ne!(a, c);
         // and ground truth derived from it is stable too
-        assert_eq!(
-            brute_force_knn(&a, &a[0], 5),
-            brute_force_knn(&b, &b[0], 5)
-        );
+        assert_eq!(brute_force_knn(&a, &a[0], 5), brute_force_knn(&b, &b[0], 5));
     }
 }
