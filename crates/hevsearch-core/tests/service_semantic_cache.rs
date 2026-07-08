@@ -22,8 +22,8 @@ use std::sync::Arc;
 use hevsearch_core::cache::NamespaceCache;
 use hevsearch_core::metrics::test_metrics;
 use hevsearch_core::{
-    NamespaceId, NamespaceManager, NamespaceService, QueryRequest, SemanticCacheRequest,
-    StorageRoot, UpsertRow,
+    DistanceMetric, NamespaceId, NamespaceManager, NamespaceService, QueryRequest,
+    SemanticCacheRequest, StorageRoot, UpsertRow,
 };
 
 const DIM: usize = 8;
@@ -145,7 +145,10 @@ async fn build_service() -> (
     let rows = (0..DIM)
         .map(|i| UpsertRow::from((i as u64, unit_vector(i))))
         .collect::<Vec<_>>();
-    service.upsert(&ns, rows).await.expect("seed upsert");
+    service
+        .upsert_with_distance_metric(&ns, rows, Some(DistanceMetric::Cosine))
+        .await
+        .expect("seed upsert");
     (service, ns, metrics)
 }
 
