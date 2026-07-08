@@ -34,9 +34,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use hevsearch_core::{
-    decode_list_cursor, validate_arrow_import_schema, DistanceMetric, FacetRequest, FacetResultSet,
-    HevSearchError, IndexRequest, ListOrder, ListPage, NamespaceId, NamespaceInfo, QueryRequest,
-    RowId, UpsertRow as CoreUpsertRow, LIST_MAX_LIMIT,
+    decode_list_cursor, DistanceMetric, FacetRequest, FacetResultSet, HevSearchError, IndexRequest,
+    ListOrder, ListPage, NamespaceId, NamespaceInfo, QueryRequest, RowId,
+    UpsertRow as CoreUpsertRow, LIST_MAX_LIMIT,
 };
 
 use crate::error::ApiError;
@@ -657,7 +657,11 @@ pub async fn import(
         })?;
         reader.schema()
     };
-    validate_arrow_import_schema(&schema).map_err(ApiError::Core)?;
+    state
+        .manager
+        .validate_arrow_import_schema_for_namespace(&ns, &schema, params.distance_metric)
+        .await
+        .map_err(ApiError::Core)?;
 
     let operation_id = state
         .operations
