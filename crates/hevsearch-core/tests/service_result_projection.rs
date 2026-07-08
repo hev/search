@@ -31,8 +31,8 @@ use hevsearch_core::cache::NamespaceCache;
 use hevsearch_core::metrics::test_metrics;
 use hevsearch_core::service::hash_query_for_cache;
 use hevsearch_core::{
-    NamespaceId, NamespaceManager, NamespaceService, QueryCacheSource, QueryRequest,
-    SemanticCacheRequest, StorageRoot, UpsertRow,
+    DistanceMetric, NamespaceId, NamespaceManager, NamespaceService, QueryCacheSource,
+    QueryRequest, SemanticCacheRequest, StorageRoot, UpsertRow,
 };
 
 const DIM: usize = 8;
@@ -140,7 +140,7 @@ async fn build_service() -> (
     let ns = NamespaceId::new(unique_namespace("projection")).unwrap();
 
     service
-        .upsert(
+        .upsert_with_distance_metric(
             &ns,
             (0..3)
                 .map(|i| UpsertRow {
@@ -151,6 +151,7 @@ async fn build_service() -> (
                     attributes: serde_json::Map::new(),
                 })
                 .collect(),
+            Some(DistanceMetric::Cosine),
         )
         .await
         .expect("seed upsert");

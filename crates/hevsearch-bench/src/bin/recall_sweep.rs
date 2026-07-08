@@ -307,9 +307,14 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&metrics),
     ));
     let cache = Arc::new(
-        NamespaceCache::new(64 * 1024 * 1024, tmp.path(), 512 * 1024 * 1024, Arc::clone(&metrics))
-            .await
-            .map_err(|e| anyhow::anyhow!("build cache: {e}"))?,
+        NamespaceCache::new(
+            64 * 1024 * 1024,
+            tmp.path(),
+            512 * 1024 * 1024,
+            Arc::clone(&metrics),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("build cache: {e}"))?,
     );
     let service = NamespaceService::new(Arc::clone(&manager), cache, Arc::clone(&metrics));
 
@@ -348,8 +353,15 @@ async fn main() -> anyhow::Result<()> {
     let build = build_start.elapsed();
     println!("  index build {:.1}s", build.as_secs_f64());
     for &np in &nprobes_sweep {
-        let point = run_point(&service, &ns, &ds, Some(np), "ivf_pq", format!("nprobes={np}"))
-            .await?;
+        let point = run_point(
+            &service,
+            &ns,
+            &ds,
+            Some(np),
+            "ivf_pq",
+            format!("nprobes={np}"),
+        )
+        .await?;
         println!(
             "  nprobes={np:>4}  recall@1={:.4} @10={:.4} @100={:.4}  ndcg@10={:.4}  \
              qps={:.1}  p50={:.1}ms p95={:.1}ms",
@@ -365,8 +377,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ---- write results ----
-    std::fs::create_dir_all(&out_dir)
-        .with_context(|| format!("creating {}", out_dir.display()))?;
+    std::fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     // Hand-rolled JSON: the structure is small and fixed, and the
     // bench crate deliberately carries no serde_json dependency.
     // Every string interpolated below is either a knob literal or a
@@ -394,14 +405,17 @@ async fn main() -> anyhow::Result<()> {
             )
         })
         .collect();
-    let gated_json: Vec<String> = ["ivf_pq+refine", "ivf_hnsw_sq", "ivf_hnsw_pq", "ivf_hnsw_flat"]
-        .iter()
-        .map(|v| {
-            format!(
-                "    {{ \"variant\": \"{v}\", \"status\": \"unavailable — gated on RFC 0009\" }}"
-            )
-        })
-        .collect();
+    let gated_json: Vec<String> = [
+        "ivf_pq+refine",
+        "ivf_hnsw_sq",
+        "ivf_hnsw_pq",
+        "ivf_hnsw_flat",
+    ]
+    .iter()
+    .map(|v| {
+        format!("    {{ \"variant\": \"{v}\", \"status\": \"unavailable — gated on RFC 0009\" }}")
+    })
+    .collect();
     let json = format!(
         "{{\n  \"dataset\": \"{}\",\n  \"rows\": {rows},\n  \"dim\": {dim},\n  \
          \"num_queries\": {},\n  \"metric\": \"l2\",\n  \"index\": {{ \"kind\": \"ivf_pq\", \
@@ -416,8 +430,7 @@ async fn main() -> anyhow::Result<()> {
         gated_json.join(",\n"),
     );
     let out_path = out_dir.join(format!("recall_sweep_{}.json", ds.label));
-    std::fs::write(&out_path, json)
-        .with_context(|| format!("writing {}", out_path.display()))?;
+    std::fs::write(&out_path, json).with_context(|| format!("writing {}", out_path.display()))?;
     println!("\nwrote {}", out_path.display());
     Ok(())
 }

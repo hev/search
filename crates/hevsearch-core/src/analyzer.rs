@@ -91,10 +91,7 @@ mod tests {
     fn word_v4_reference_outputs() {
         assert_eq!(analyze("Hello, world!"), vec!["hello", "world"]);
         // No stemming: surface forms are preserved.
-        assert_eq!(
-            analyze("running runs ran"),
-            vec!["running", "runs", "ran"]
-        );
+        assert_eq!(analyze("running runs ran"), vec!["running", "runs", "ran"]);
         // No stop-word removal.
         assert_eq!(analyze("To the Moon"), vec!["to", "the", "moon"]);
         // No ASCII folding: diacritics are preserved (lowercased).
