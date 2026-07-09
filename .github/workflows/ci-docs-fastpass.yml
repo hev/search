@@ -1,0 +1,50 @@
+name: CI docs fast-pass
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-docs-fastpass-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paths:
+    name: classify changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.docs.outputs.docs == 'true' && steps.non_docs.outputs.non_docs != 'true' }}
+    steps:
+      - name: Detect docs paths
+        id: docs
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            docs:
+              - "docs/**"
+              - "*.md"
+
+      - name: Detect non-doc paths
+        id: non_docs
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: every
+          filters: |
+            non_docs:
+              - "**"
+              - "!docs/**"
+              - "!*.md"
+
+  test:
+    name: fmt / clippy / test
+    runs-on: ubuntu-latest
+    needs: paths
+    if: needs.paths.outputs.docs_only == 'true'
+    steps:
+      - name: Fast-pass docs-only PR
+        run: |
+          echo "Docs-only change detected."
+          echo "The full CI workflow is path-filtered out for docs-only PRs."
