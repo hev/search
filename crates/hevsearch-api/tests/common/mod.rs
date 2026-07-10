@@ -2,18 +2,15 @@
 //!
 //! Adding a new field to `AppState` should change exactly one line
 //! here, not ten — this module is the single point that constructs
-//! `AppState` for tests so the auth + rate-limit fields stay in
-//! sync without per-test churn.
+//! `AppState` for tests without per-test churn.
 
 #![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hevsearch_api::auth::{AuthConfig, Secret};
 use hevsearch_api::config::AppConfig;
 use hevsearch_api::operations::OperationRegistry;
-use hevsearch_api::rate_limit::RateLimitSettings;
 use hevsearch_api::AppState;
 use hevsearch_core::cache::NamespaceCache;
 use hevsearch_core::metrics::test_metrics;
@@ -60,15 +57,6 @@ pub fn minio_options() -> HashMap<String, String> {
 /// Returns the temp dir alongside so the caller can keep it alive
 /// for the duration of the test (foyer NVMe tier lives here).
 pub async fn test_state() -> (AppState, tempfile::TempDir) {
-    test_state_with_auth(AuthConfig::disabled(), RateLimitSettings::default()).await
-}
-
-/// Build an `AppState` against MinIO with the provided auth + rate
-/// limit settings.
-pub async fn test_state_with_auth(
-    auth: AuthConfig,
-    rate_limit: RateLimitSettings,
-) -> (AppState, tempfile::TempDir) {
     let bucket = env_or("HEVSEARCH_S3_BUCKET", "hevsearch-test");
     let storage_root = StorageRoot::s3_bucket(&bucket).expect("test bucket name");
     let tmp = tempfile::tempdir().unwrap();
@@ -99,8 +87,6 @@ pub async fn test_state_with_auth(
         manager,
         metrics,
         operations: Arc::new(OperationRegistry::new()),
-        auth: Arc::new(auth),
-        rate_limit,
         max_body_bytes: 32 * 1024 * 1024,
         import_max_bytes: 0,
         import_tmp_dir: tmp.path().to_path_buf(),
@@ -109,24 +95,14 @@ pub async fn test_state_with_auth(
 }
 
 /// Build an `AppState` with **no** S3 backend touch — purely
-/// in-process, suitable for tests whose every assertion fires
-/// before reaching a handler (auth rejection, rate-limit shedding,
-/// /health). Skips MinIO entirely so these tests can run without
-/// docker compose up.
+/// in-process. Skips MinIO entirely so tests that do not touch
+/// storage can run without docker compose up.
 pub async fn test_state_offline() -> (AppState, tempfile::TempDir) {
-    test_state_offline_with_auth(AuthConfig::disabled(), RateLimitSettings::default()).await
-}
-
-pub async fn test_state_offline_with_auth(
-    auth: AuthConfig,
-    rate_limit: RateLimitSettings,
-) -> (AppState, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let metrics = test_metrics();
-    // Bucket name is irrelevant — the manager is never touched
-    // because the auth/limiter middleware short-circuits before any
-    // handler runs. Use an obviously-fake hostname so any accidental
-    // touch fails loudly rather than racing with a real MinIO.
+    // Bucket name is irrelevant for tests that do not touch storage.
+    // Use an obviously-fake hostname so any accidental touch fails
+    // loudly rather than racing with a real MinIO.
     let manager = Arc::new(NamespaceManager::new(
         StorageRoot::s3_bucket("hevsearch-offline").unwrap(),
         HashMap::from([
@@ -162,8 +138,6 @@ pub async fn test_state_offline_with_auth(
         manager,
         metrics,
         operations: Arc::new(OperationRegistry::new()),
-        auth: Arc::new(auth),
-        rate_limit,
         max_body_bytes: 32 * 1024 * 1024,
         import_max_bytes: 0,
         import_tmp_dir: tmp.path().to_path_buf(),
@@ -171,9 +145,8 @@ pub async fn test_state_offline_with_auth(
     (state, tmp)
 }
 
-/// Convenience: a minimal `AppConfig` used to verify env-var
-/// parsing in the auth tests. Not used by integration tests that
-/// drive the router directly.
+/// Convenience: a minimal `AppConfig` for tests that need config
+/// values without round-tripping through process env.
 pub fn dummy_config() -> AppConfig {
     AppConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
@@ -183,10 +156,6 @@ pub fn dummy_config() -> AppConfig {
         cache_nvme_bytes: 16 * 1024 * 1024,
         max_body_bytes: 32 * 1024 * 1024,
         storage_options: HashMap::new(),
-        api_key: None,
-        admin_api_key: None,
-        metrics_token: None,
-        rate_limit: RateLimitSettings::default(),
         object_cache_enabled: false,
         object_cache_dir: std::env::temp_dir(),
         object_cache_bytes: 0,
@@ -194,9 +163,4 @@ pub fn dummy_config() -> AppConfig {
         import_max_bytes: 0,
         import_tmp_dir: std::env::temp_dir(),
     }
-}
-
-/// Construct a `Secret` from a string literal in tests.
-pub fn secret(s: &str) -> Secret {
-    Secret::new(s)
 }
