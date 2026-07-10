@@ -1,8 +1,9 @@
 # RFC 0002: Remove auth, rate limiting, and proxy-header trust
 
-Tracking issue: [hev/search#1](https://github.com/hev/search/issues/1)
+Tracking issue: [hev/search#38](https://github.com/hev/search/issues/38)
+Implementation issue: [hev/search#1](https://github.com/hev/search/issues/1)
 
-> **Status:** draft, proposal. **The flagship subtractive removal.** The engine
+> **Status:** Accepted (2026-07-10). **The flagship subtractive removal.** The engine
 > runs *behind* Layer, reachable only by the Layer gateway (data path) and the
 > operator (admin path) over a `NetworkPolicy`; Layer is the auth boundary and the
 > engine's only client. Stock firnflow's internet-facing edge — API-key auth, the
@@ -148,17 +149,18 @@ undone:
   reachable **without** any `Authorization` header — i.e. open mode is the only
   mode — so a future rebase or refactor that re-introduces a gate fails loudly.
 
-## Open questions
+## Resolved Questions
 
-- **`trust_proxy_headers` / peer-IP for logging.** Today peer-IP extraction
-  exists only to feed the IP limiter. Layer owns request logging, so the default
-  is to remove it entirely. Confirm nothing in the engine's own tracing wants a
-  client IP before deleting `forwarded_ip`.
-- **`/metrics` exposure.** Leave it open inside the `NetworkPolicy` (recommended),
-  or bind it to a separate operator-only port? Network scope is the simpler answer
-  and matches "engine is trusted internal."
-- **Config helper fate.** Decide per-helper whether `optional_*`/`env_bool` have
-  non-auth callers; remove only the ones that don't.
+- **`trust_proxy_headers` / peer-IP for logging:** remove it entirely. In current
+  engine code, forwarded-peer extraction exists to feed the preauth IP limiter,
+  and Layer owns request logging at the edge. Keeping proxy-header trust would
+  preserve an edge concern after the limiter is gone.
+- **`/metrics` exposure:** leave `/metrics` open inside the `NetworkPolicy`.
+  Metrics scraping is network-scoped like the rest of the trusted internal
+  service; no metrics token or separate operator-only listener is part of v1.
+- **Config helper fate:** remove auth/rate-limit/proxy-trust config helpers only
+  when they have no remaining non-auth callers. The implementation issue should
+  verify this mechanically while deleting the config surface.
 
 ## References
 
