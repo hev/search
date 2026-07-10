@@ -54,8 +54,8 @@
     </ul>
 
     <div class="callout callout-info">
-      <div class="callout-title">Default-open local stack</div>
-      This quickstart talks to a default-open local stack — no <code>Authorization</code> header is required. Before exposing hev search on a network you do not trust, set <code>HEVSEARCH_API_KEY</code> and send <code>Authorization: Bearer &lt;token&gt;</code> with every request. See <a href="deployment.html#authentication-and-rate-limiting">deployment</a> and <a href="configuration.html#authentication">configuration</a> for the full story.
+      <div class="callout-title">Trusted internal stack</div>
+      This quickstart talks directly to the open engine API. That is the intended posture: hev search runs behind Layer or another trusted boundary, not on an untrusted network.
     </div>
 
     <h2>1. Clone and start the stack</h2>

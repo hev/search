@@ -1,9 +1,7 @@
 // Package config manages hev CLI profiles stored in ~/.hevsearch/config.toml.
 //
-// A profile names an engine endpoint (base URL) plus optional bearer keys
-// and the TUI preview content field. Unlike a public service client, auth
-// is optional here: the engine is a trusted internal service and only sends
-// Authorization when a key is configured.
+// A profile names an engine endpoint (base URL) plus the TUI preview content
+// field. hev search is a trusted internal service; Layer owns auth at the edge.
 package config
 
 import (
@@ -35,8 +33,6 @@ type Config struct {
 // ProfileConfig is a single named endpoint.
 type ProfileConfig struct {
 	URL          string `toml:"url"`
-	APIKey       string `toml:"api_key,omitempty"`
-	AdminAPIKey  string `toml:"admin_api_key,omitempty"`
 	ContentField string `toml:"content_field,omitempty"`
 	// ContentFields holds per-namespace preview overrides for the TUI.
 	ContentFields map[string]string `toml:"content_fields,omitempty"`
@@ -118,12 +114,10 @@ func ListProfiles() []ProfileEntry {
 
 // AddProfile adds or overwrites a profile, making it active if it is the
 // first one configured.
-func AddProfile(name, url, apiKey, adminAPIKey string) error {
+func AddProfile(name, url string) error {
 	cfg := Load()
 	cfg.Profiles[name] = ProfileConfig{
-		URL:         url,
-		APIKey:      apiKey,
-		AdminAPIKey: adminAPIKey,
+		URL: url,
 	}
 	if cfg.Active == "" {
 		cfg.Active = name

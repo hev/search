@@ -64,26 +64,15 @@
     <p>Single-vector queries can also opt into a small in-memory semantic sidecar. After an exact-cache miss, hev search can compare the incoming query vector with recent cached query vectors in the same namespace generation. If cosine similarity clears the request's threshold and <code>k</code> / <code>nprobes</code> / <code>include_vector</code> match, hev search reuses the previous top-k bytes without touching object storage. This is approximate result reuse, so callers must opt in per request.</p>
 
     <h2>Request middleware</h2>
-    <p>Every protected endpoint runs through a fixed middleware stack before the handler. The stack is wired up in <code>hevsearch_api::router</code> and the order is load-bearing — bucketing on a validated <code>Principal</code> rather than an attacker-supplied header is the whole reason auth runs first.</p>
+    <p>The engine request path is deliberately small. RFC 0002 removed auth, rate limiting, metrics-token handling, and proxy-header trust from hev search; those concerns live at Layer, before traffic reaches the engine.</p>
     <pre><code>request
   │
   ▼
-[ /health, /metrics — neither auth nor rate-limit ]
-
-[ all other routes ]
-  │
-  ▼
-pre-auth IP limiter (optional, outermost)
-  │
-  ▼
-auth (require_write or require_admin) — attaches Principal
-  │
-  ▼
-per-principal limiter (optional) — keys on Principal
+body limit + tracing
   │
   ▼
 handler</code></pre>
-    <p>The pre-auth IP limiter caps credential-stuffing throughput per peer IP and runs <em>before</em> auth on purpose. The per-principal limiter sits inside auth so it can read the validated identity. <code>/health</code> never traverses either layer; <code>/metrics</code> is gated only by the optional <code>HEVSEARCH_METRICS_TOKEN</code>. See <a href="configuration.html#authentication">configuration</a> for the env-var surface.</p>
+    <p>Every route is open to callers that can reach the engine listener. Production deployments rely on Layer plus network policy or equivalent firewalling to define who can reach that listener.</p>
 
     <h2>Query path</h2>
     <p>Every query follows this exact sequence:</p>
