@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **Authentication, rate limiting, and proxy-header trust.** The engine runs behind hev layer, which is the auth boundary; the engine is a trusted internal service on a `NetworkPolicy`. Deleted the `auth` / `rate_limit` modules, the `HEVSEARCH_API_KEY` / `HEVSEARCH_ADMIN_API_KEY` / `HEVSEARCH_METRICS_TOKEN` / `HEVSEARCH_RATE_LIMIT_*` / `HEVSEARCH_PREAUTH_IP_LIMIT_RPS` / `HEVSEARCH_TRUST_PROXY_HEADERS` config, the `hevsearch_auth_rejections_total` metric, and the `subtle` / `governor` / `tower_governor` dependencies. RFC 0002; closes #1.
+
 ## [0.1.0] - 2026-06-29
 
 > **Version line reset.** This is the first release published as **hev search**. The bare `v0.1.0`…`v0.9.2` tags belong to the firnflow origin, so the engine's own line starts fresh in a separate tag namespace: this release is tagged **`search-v0.1.0`** (the Python wheel keeps its own `hevsearch-v*` scheme). The crate `version` is `0.1.0`. This is deliberate and not a downgrade — `search-v0.1.0` carries everything through firnflow's `v0.9.2` plus the additions below.

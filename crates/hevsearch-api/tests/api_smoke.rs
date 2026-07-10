@@ -99,6 +99,37 @@ async fn upsert_and_query_round_trip() {
 
 #[tokio::test]
 #[ignore]
+async fn read_and_admin_routes_are_reachable_without_authorization_header() {
+    let (app, _tmp) = build_app().await;
+    let ns = unique_namespace("open-mode-test");
+
+    let upsert_body = json!({
+        "rows": [
+            {"id": 1, "vector": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+        ]
+    });
+    let (status, body) = post_json(app.clone(), format!("/ns/{ns}/upsert"), upsert_body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "read/write route gated auth: {body}"
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/ns/{ns}/compact"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "admin route must stay reachable without Authorization"
+    );
+}
+
+#[tokio::test]
+#[ignore]
 async fn invalid_namespace_returns_400() {
     let (app, _tmp) = build_app().await;
 

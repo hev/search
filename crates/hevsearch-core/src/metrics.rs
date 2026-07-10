@@ -14,7 +14,6 @@
 //! * `hevsearch_active_namespaces`
 //! * `hevsearch_s3_requests_total{namespace, operation}`
 //! * `hevsearch_cached_handles`
-//! * `hevsearch_auth_rejections_total{reason}`
 //! * `hevsearch_object_cache_hits_total`
 //! * `hevsearch_object_cache_misses_total`
 //! * `hevsearch_object_cache_inner_gets_total`
@@ -63,7 +62,6 @@ pub struct CoreMetrics {
     index_build_duration: HistogramVec,
     compaction_duration: HistogramVec,
     cached_handles: IntGauge,
-    auth_rejections: IntCounterVec,
     object_cache: Arc<ObjectCacheMetrics>,
     seen_namespaces: DashSet<NamespaceId>,
 }
@@ -245,27 +243,6 @@ impl CoreMetrics {
             .register(Box::new(cached_handles.clone()))
             .map_err(metrics_err)?;
 
-        let auth_rejections = IntCounterVec::new(
-            Opts::new(
-                "hevsearch_auth_rejections_total",
-                "Requests rejected before reaching their handler. \
-                 The `reason` label is one of: `missing` (no \
-                 Authorization header), `invalid` (header present \
-                 but token does not match a configured key), \
-                 `forbidden` (valid token, insufficient scope for \
-                 the route), `rate_limited` (rejected by either \
-                 rate limiter). Use this to detect misconfigured \
-                 keys after a rotation (spike in `missing`) or \
-                 credential-stuffing pressure (spike in `invalid` \
-                 or `rate_limited`).",
-            ),
-            &["reason"],
-        )
-        .map_err(metrics_err)?;
-        registry
-            .register(Box::new(auth_rejections.clone()))
-            .map_err(metrics_err)?;
-
         // Object-cache (issue #51) byte-range cache counters, registered into the same registry so
         // they surface at `/metrics`. Global (not per-namespace): the cache sits below the namespace
         // abstraction in the object-store layer.
@@ -285,7 +262,6 @@ impl CoreMetrics {
             index_build_duration,
             compaction_duration,
             cached_handles,
-            auth_rejections,
             object_cache,
             seen_namespaces: DashSet::new(),
         })
@@ -442,20 +418,6 @@ impl CoreMetrics {
     /// by tests; production code should read it via `/metrics`.
     pub fn cached_handles_value(&self) -> i64 {
         self.cached_handles.get()
-    }
-
-    /// Record an auth/rate-limit rejection. `reason` must be one of
-    /// the documented values: `"missing"`, `"invalid"`, `"forbidden"`,
-    /// `"rate_limited"`. Other values are accepted but cardinality is
-    /// the operator's responsibility.
-    pub fn record_auth_rejection(&self, reason: &str) {
-        self.auth_rejections.with_label_values(&[reason]).inc();
-    }
-
-    /// Current value of `hevsearch_auth_rejections_total{reason=…}`.
-    /// Test-only accessor; production code reads `/metrics`.
-    pub fn auth_rejections_value(&self, reason: &str) -> u64 {
-        self.auth_rejections.with_label_values(&[reason]).get()
     }
 }
 

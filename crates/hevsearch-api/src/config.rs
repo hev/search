@@ -7,14 +7,8 @@ use std::path::PathBuf;
 use anyhow::Context;
 use hevsearch_core::{Scheme, StorageRoot};
 
-use crate::auth::Secret;
-use crate::rate_limit::RateLimitSettings;
-
 /// Runtime configuration for the axum binary.
 ///
-/// Auth-bearing fields (`api_key`, `admin_api_key`, `metrics_token`)
-/// hold the redacting [`Secret`] newtype rather than raw strings so
-/// `tracing::info!(?config)` cannot leak the configured API keys.
 /// `storage_options` carries `object_store` parameters that may
 /// include S3 credentials such as `aws_secret_access_key`; the
 /// custom `Debug` impl below redacts the values for any key
@@ -45,18 +39,6 @@ pub struct AppConfig {
     /// keys depend on the resolved scheme: `aws_*` for S3-family
     /// backends, `google_*` for native GCS.
     pub storage_options: HashMap<String, String>,
-    /// `HEVSEARCH_API_KEY` — required for the read/write tier when
-    /// auth is enabled. `None` ⇒ disabled.
-    pub api_key: Option<Secret>,
-    /// `HEVSEARCH_ADMIN_API_KEY` — required for destructive ops
-    /// when set. `None` ⇒ single-key fallback (write key
-    /// authorises admin too).
-    pub admin_api_key: Option<Secret>,
-    /// `HEVSEARCH_METRICS_TOKEN` — gates `/metrics`. `None` ⇒
-    /// `/metrics` is public (current pre-0.5.0 behaviour).
-    pub metrics_token: Option<Secret>,
-    /// Rate-limiter knobs. `None` everywhere ⇒ both limiters off.
-    pub rate_limit: RateLimitSettings,
     /// Object cache (issue #51): when `true`, Lance object-store reads (index
     /// and data byte ranges) are served from a local-NVMe cache, cutting S3
     /// round-trips on warm/repeat/novel queries. `HEVSEARCH_OBJECT_CACHE_ENABLED`
@@ -133,10 +115,6 @@ impl std::fmt::Debug for AppConfig {
             .field("cache_nvme_bytes", &self.cache_nvme_bytes)
             .field("max_body_bytes", &self.max_body_bytes)
             .field("storage_options", &RedactedOptions(&self.storage_options))
-            .field("api_key", &self.api_key)
-            .field("admin_api_key", &self.admin_api_key)
-            .field("metrics_token", &self.metrics_token)
-            .field("rate_limit", &self.rate_limit)
             .finish()
     }
 }
@@ -187,22 +165,6 @@ impl AppConfig {
 
         let storage_options = build_storage_options_for(storage_root.scheme());
 
-        let api_key = optional_secret("HEVSEARCH_API_KEY");
-        let admin_api_key = optional_secret("HEVSEARCH_ADMIN_API_KEY");
-        let metrics_token = optional_secret("HEVSEARCH_METRICS_TOKEN");
-
-        let trust_proxy_headers = env_bool("HEVSEARCH_TRUST_PROXY_HEADERS", false)?;
-        let per_principal_rps = optional_u64("HEVSEARCH_RATE_LIMIT_RPS")?;
-        let preauth_ip_rps = optional_u64("HEVSEARCH_PREAUTH_IP_LIMIT_RPS")?;
-        let burst_size = optional_u32("HEVSEARCH_RATE_LIMIT_BURST")?;
-
-        let rate_limit = RateLimitSettings {
-            per_principal_rps,
-            burst_size,
-            preauth_ip_rps,
-            trust_proxy_headers,
-        };
-
         Ok(Self {
             bind,
             storage_root,
@@ -211,10 +173,6 @@ impl AppConfig {
             cache_nvme_bytes,
             max_body_bytes,
             storage_options,
-            api_key,
-            admin_api_key,
-            metrics_token,
-            rate_limit,
             object_cache_enabled,
             object_cache_dir,
             object_cache_bytes,
@@ -423,27 +381,6 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-fn optional_secret(key: &str) -> Option<Secret> {
-    match std::env::var(key) {
-        Ok(v) if !v.is_empty() => Some(Secret::new(v)),
-        _ => None,
-    }
-}
-
-fn optional_u64(key: &str) -> anyhow::Result<Option<u64>> {
-    match std::env::var(key) {
-        Ok(v) if !v.is_empty() => Ok(Some(v.parse().with_context(|| key.to_string())?)),
-        _ => Ok(None),
-    }
-}
-
-fn optional_u32(key: &str) -> anyhow::Result<Option<u32>> {
-    match std::env::var(key) {
-        Ok(v) if !v.is_empty() => Ok(Some(v.parse().with_context(|| key.to_string())?)),
-        _ => Ok(None),
-    }
-}
-
 fn env_bool(key: &str, default: bool) -> anyhow::Result<bool> {
     match std::env::var(key) {
         Ok(v) => match v.to_ascii_lowercase().as_str() {
@@ -508,10 +445,6 @@ mod tests {
             cache_nvme_bytes: 0,
             max_body_bytes: 16 * 1024 * 1024,
             storage_options: opts,
-            api_key: None,
-            admin_api_key: None,
-            metrics_token: None,
-            rate_limit: RateLimitSettings::default(),
             object_cache_enabled: false,
             object_cache_dir: std::env::temp_dir(),
             object_cache_bytes: 0,
@@ -572,10 +505,6 @@ mod tests {
             cache_nvme_bytes: 0,
             max_body_bytes: 16 * 1024 * 1024,
             storage_options: opts,
-            api_key: None,
-            admin_api_key: None,
-            metrics_token: None,
-            rate_limit: RateLimitSettings::default(),
             object_cache_enabled: false,
             object_cache_dir: std::env::temp_dir(),
             object_cache_bytes: 0,
