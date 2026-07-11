@@ -37,11 +37,10 @@ The only delete is namespace-scoped and physical:
   namespace's prefix … irreversible."
 
 There is no row-level delete anywhere — not in the router (`crates/hevsearch-api/src/lib.rs`
-has only `delete(handlers::delete)` on `/ns/{namespace}`), not in the manager, not
-in the Python wheel (`README.md`: "deletes are namespace-level rather than per
-row"). A row "goes away" only by being overwritten: upsert is latest-write-wins by
-`id` (`manager.rs:865`, `merge_insert(&["id"])`), so you can *replace* a row but
-not *remove* it.
+has only `delete(handlers::delete)` on `/ns/{namespace}`) and not in the manager.
+A row "goes away" only by being overwritten: upsert is latest-write-wins by `id`
+(`manager.rs:865`, `merge_insert(&["id"])`), so you can *replace* a row but not
+*remove* it.
 
 ## The constraint is already lifted: LanceDB deletes by predicate
 

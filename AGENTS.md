@@ -54,7 +54,6 @@ The toolchain is containerized; no local Rust needed (see `README.md`):
 - Integration tests are `#[tokio::test] #[ignore]` (MinIO-gated), driven through
   the axum router with tower `oneshot`; pure validators are unit-tested inline.
   Match that shape.
-- Python package: `./scripts/maturin` (the `hevsearch` wheel).
 - **Images go to the mesh-account ECR via `depot`, never `ghcr.io`.**
   `docker-publish.yml` still targets `ghcr.io/hev/search` (inherited from firnflow)
   — that's a defect to retarget at ECR, not the house style.

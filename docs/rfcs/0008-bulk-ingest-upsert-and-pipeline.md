@@ -140,7 +140,7 @@ the engine would be a boundary error (`AGENTS.md` § "The engine/edge test").
 - Is bulk a `VectorStoreClient` trait verb (option 2) or a Pipeline-only
   server-side path (option 1)? — primarily an RFC 0086 call, recorded here.
 - If the gateway never drives `/import` (option 4), is the endpoint removed as dead
-  surface, or kept for the embedded `hevsearch` package / operator use?
+  surface, or kept for operator use?
 - Should bulk ingest carry the `_ingested_at` / write-stamp semantics identically
   to `/upsert`, so `/list` paging and consistency settling behave the same after a
   bulk load?

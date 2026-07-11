@@ -4,7 +4,6 @@ members = [
     "crates/hevsearch-core",
     "crates/hevsearch-api",
     "crates/hevsearch-bench",
-    "python",
 ]
 
 [workspace.package]
