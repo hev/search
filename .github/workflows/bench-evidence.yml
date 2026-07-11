@@ -4,15 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Pinned engine image reference in mesh-account ECR, preferably @sha256 digest"
+        description: "Pinned engine image reference in mesh-account ECR (@sha256 digest)"
         required: true
         type: string
       corpus_hash:
         description: "Pinned corpus identity/hash for this run"
         required: true
         type: string
-  schedule:
-    - cron: "17 8 * * *"
 
 concurrency:
   group: bench-evidence-${{ github.ref }}
@@ -22,7 +20,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_RELEASE_DEBUG: 0
-  DEFAULT_IMAGE_TAG: 186219257916.dkr.ecr.us-east-1.amazonaws.com/hev/search@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  DEFAULT_IMAGE_TAG: ""
   DEFAULT_CORPUS_HASH: synthetic-seed42-256x32-q3-v1
   HEVSEARCH_STORAGE_URI: s3://hevsearch-test
   HEVSEARCH_S3_ENDPOINT: http://127.0.0.1:9000

@@ -10,6 +10,9 @@ name: Publish Docker image
 #   DEPOT_TOKEN      — Depot project token (omit if the repo uses depot OIDC trust).
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: "11 7 * * *"
   push:
     # hev search tags its releases `search-v*` (e.g. search-v0.1.0). The bare
     # `v0.1.0..v0.9.2` line belongs to the firnflow origin, so the engine's own
@@ -27,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
+      actions: write  # dispatch bench-evidence with the pushed image digest
       contents: read
       id-token: write   # AWS OIDC role assumption
 
@@ -55,6 +59,7 @@ jobs:
       - uses: depot/setup-action@v1
 
       - name: Build and push with depot
+        id: build
         uses: depot/build-push-action@v1
         with:
           project: t4vlld595v
@@ -63,3 +68,33 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Resolve pushed ECR digest
+        id: digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="${{ steps.build.outputs.digest }}"
+          if [[ -z "${digest}" || "${digest}" == "null" ]]; then
+            digest="$(aws ecr describe-images \
+              --repository-name "${IMAGE_NAME}" \
+              --image-ids imageTag=latest \
+              --query 'imageDetails[0].imageDigest' \
+              --output text)"
+          fi
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Unexpected image digest: ${digest}" >&2
+            exit 1
+          fi
+          image_ref="${ECR_REGISTRY}/${IMAGE_NAME}@${digest}"
+          echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Dispatch bench evidence for pinned image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
+        run: |
+          gh workflow run bench-evidence.yml \
+            --ref "${GITHUB_REF_NAME}" \
+            -f "image_tag=${IMAGE_REF}" \
+            -f "corpus_hash=synthetic-seed42-256x32-q3-v1"
