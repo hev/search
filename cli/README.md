@@ -7,8 +7,8 @@ It speaks the engine's **internal REST API** directly (default
 
 This is the admin/debug path into the engine itself, not the inbound wire
 that application clients use (that is Layer's Turbopuffer-shaped API). The
-engine is a trusted internal service, so **auth is optional**: a bearer token
-is sent only when one is configured.
+engine is a trusted internal service; Layer owns authentication and
+authorization at the edge.
 
 ## Install
 
@@ -28,18 +28,11 @@ Resolution precedence for the base URL:
 --url flag  >  HEVSEARCH_URL env  >  active profile  >  http://localhost:3000
 ```
 
-Bearer keys (optional):
-
-```
-HEVSEARCH_API_KEY        / profile api_key         # read path
-HEVSEARCH_ADMIN_API_KEY  / profile admin_api_key   # admin path (falls back to api_key)
-```
-
 Profiles live in `~/.hevsearch/config.toml` (written `0600`). Manage them
 with `hev env`:
 
 ```sh
-hev env add local          # interactive: base URL, optional keys
+hev env add local          # interactive: base URL
 hev env use staging        # switch active profile
 hev env list               # show configured profiles
 hev env show               # show the active profile

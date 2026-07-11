@@ -6,11 +6,6 @@ import "os"
 type Endpoint struct {
 	// URL is the engine base URL (no trailing slash).
 	URL string
-	// APIKey is the read-path bearer token, if any.
-	APIKey string
-	// AdminAPIKey is the admin-path bearer token, if any. Falls back to
-	// APIKey when unset — the engine is a single trusted service.
-	AdminAPIKey string
 	// Profile is the active profile name, or "" if none / env-driven.
 	Profile string
 }
@@ -18,9 +13,6 @@ type Endpoint struct {
 // Resolve computes the effective endpoint for an invocation.
 //
 // URL precedence:  --url flag > HEVSEARCH_URL env > active profile > default.
-// Key precedence:  HEVSEARCH_API_KEY / HEVSEARCH_ADMIN_API_KEY env >
-//
-//	active profile api_key / admin_api_key.
 func Resolve(urlFlag string) Endpoint {
 	name, profile, ok := GetActiveProfile()
 
@@ -36,25 +28,12 @@ func Resolve(urlFlag string) Endpoint {
 	}
 	url = trimTrailingSlash(url)
 
-	apiKey := os.Getenv("HEVSEARCH_API_KEY")
-	if apiKey == "" && ok {
-		apiKey = profile.APIKey
-	}
-
-	adminKey := os.Getenv("HEVSEARCH_ADMIN_API_KEY")
-	if adminKey == "" && ok {
-		adminKey = profile.AdminAPIKey
-	}
-	if adminKey == "" {
-		adminKey = apiKey
-	}
-
 	pname := ""
 	if ok {
 		pname = name
 	}
 
-	return Endpoint{URL: url, APIKey: apiKey, AdminAPIKey: adminKey, Profile: pname}
+	return Endpoint{URL: url, Profile: pname}
 }
 
 func trimTrailingSlash(s string) string {

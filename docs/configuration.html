@@ -256,71 +256,9 @@ GOOGLE_APPLICATION_CREDENTIALS=/etc/hevsearch/gcp-sa.json</code></pre>
       The result cache stores whole query results and turns a repeated query into zero object-storage reads. The object cache stores raw file byte ranges and makes the <em>first</em> execution of a new query cheaper the next time similar data is read. They are complementary and can be enabled together.
     </div>
 
-    <h2>Authentication</h2>
-    <p>hev search supports optional bearer-token authentication. Both keys are opt-in via env: when neither is set, the API stays open and logs a single startup <code>WARN</code> (the default for the local-dev compose stack).</p>
-
-    <table>
-      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr>
-          <td><code>HEVSEARCH_API_KEY</code></td>
-          <td><em>unset (open)</em></td>
-          <td>Read/write tier. Authorises <code>upsert</code>, <code>query</code>, <code>list</code>, and <code>warmup</code>. Send as <code>Authorization: Bearer &lt;token&gt;</code>. Compared in constant time.</td>
-        </tr>
-        <tr>
-          <td><code>HEVSEARCH_ADMIN_API_KEY</code></td>
-          <td><em>unset</em></td>
-          <td>Admin tier. Authorises destructive ops (<code>delete</code>, <code>index</code>, <code>fts-index</code>, <code>scalar-index</code>, <code>compact</code>) <em>and</em> read/write ops. If unset, <code>HEVSEARCH_API_KEY</code> authorises admin routes too (single-key fallback).</td>
-        </tr>
-        <tr>
-          <td><code>HEVSEARCH_METRICS_TOKEN</code></td>
-          <td><em>unset (open)</em></td>
-          <td>Optional gate on <code>/metrics</code>. Same Bearer parser as the data plane, so Prometheus's <code>bearer_token</code> / <code>bearer_token_file</code> scrape config works directly. <code>/metrics</code> stays public when this is unset.</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <p>Status codes:</p>
-    <ul>
-      <li><code>401 Unauthorized</code> — missing, malformed, or unknown token. Response includes <code>WWW-Authenticate: Bearer realm="hevsearch"</code>.</li>
-      <li><code>403 Forbidden</code> — valid token but insufficient scope (write key on an admin route while a separate admin key is configured).</li>
-    </ul>
-
-    <div class="callout callout-warning">
-      <div class="callout-title">Service-level only</div>
-      This authenticates clients to the hevsearch process. It does <strong>not</strong> bind a credential to a namespace: any holder of <code>HEVSEARCH_API_KEY</code> can read or write any namespace. For per-tenant namespace isolation, place hev search behind an authenticating gateway that maps tenants to namespaces.
-    </div>
-
-    <h2>Rate limiting</h2>
-    <p>Two layers, both off by default. The per-principal limiter buckets on the <em>validated</em> identity attached by the auth layer, so a bogus token cannot mint fresh buckets. The optional pre-auth limiter sits outside auth and caps unauthenticated traffic by peer IP.</p>
-
-    <table>
-      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr>
-          <td><code>HEVSEARCH_RATE_LIMIT_RPS</code></td>
-          <td><em>unset (disabled)</em></td>
-          <td>Sustained requests per second per principal. <code>0</code> or unset disables the per-principal limiter.</td>
-        </tr>
-        <tr>
-          <td><code>HEVSEARCH_RATE_LIMIT_BURST</code></td>
-          <td><code>30</code></td>
-          <td>Token-bucket burst size. Used by both limiters when active.</td>
-        </tr>
-        <tr>
-          <td><code>HEVSEARCH_PREAUTH_IP_LIMIT_RPS</code></td>
-          <td><em>unset (disabled)</em></td>
-          <td>Optional pre-auth IP limiter. When set, a coarse limiter wraps the protected sub-router as the outermost layer and caps credential-stuffing throughput per peer IP.</td>
-        </tr>
-        <tr>
-          <td><code>HEVSEARCH_TRUST_PROXY_HEADERS</code></td>
-          <td><code>false</code></td>
-          <td>When <code>true</code>, the IP extractor reads peer IP from <code>X-Forwarded-For</code> / <code>X-Real-IP</code>. Default reads from the connection only — safe for deployments reachable directly. Enable only when hev search sits behind a trusted proxy that strips the client-supplied header.</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <p><code>/health</code> and <code>/metrics</code> are exempt from both limiters. Rejected requests return <code>429 Too Many Requests</code> with a <code>Retry-After</code> header.</p>
+    <h2 id="trusted-internal-service">Trusted internal service</h2>
+    <p>There are no auth, rate-limit, metrics-token, or proxy-trust environment variables. RFC 0002 removed that edge surface from the engine: hev search runs open inside a trusted network, and Layer owns authentication, tenant authorization, rate limiting, and proxy-header trust.</p>
+    <p>For production, expose hev search only to Layer or operator tooling. In Kubernetes, enforce that posture with a <code>NetworkPolicy</code>; in other environments, use the equivalent private subnet or firewall rule. Do not expose the engine listener directly to untrusted clients.</p>
 
     <h2>Docker Compose override</h2>
     <p>To customise settings for local development, create a <code>docker-compose.override.yml</code>:</p>

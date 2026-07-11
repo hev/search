@@ -56,7 +56,7 @@ type errorBody struct {
 }
 
 // doRaw issues a request and returns the raw response body on 2xx, or a
-// typed error otherwise. useAdmin selects the admin bearer token.
+// typed error otherwise.
 func (c *Client) doRaw(ctx context.Context, method, path string, body []byte, useAdmin bool) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.ep.URL+path, bytesReader(body))
 	if err != nil {
@@ -66,13 +66,6 @@ func (c *Client) doRaw(ctx context.Context, method, path string, body []byte, us
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	key := c.ep.APIKey
-	if useAdmin && c.ep.AdminAPIKey != "" {
-		key = c.ep.AdminAPIKey
-	}
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

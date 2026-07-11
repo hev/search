@@ -66,7 +66,7 @@
       New in 0.6.0: native Google Cloud Storage support. Set <code>HEVSEARCH_STORAGE_URI=gs://your-bucket</code> and hev search routes through lancedb's native GCS backend, using the GCS XML API's generation precondition (<code>x-goog-if-generation-match: 0</code>) instead of <code>If-None-Match: *</code>. Validated by the same 100-run Lance concurrent-writer stress that gates every other backend. Switching between AWS S3, MinIO, Cloudflare R2, Tigris, DigitalOcean Spaces, and native GCS is a single env-var change &mdash; see the <a href="https://github.com/gordonmurray/hevsearch#backend-configuration">backend configuration recipes</a>.
     </p>
     <p>
-      Production hardening, new in 0.5.0: optional bearer-token authentication with a read/write and admin scope split, optional <code>tower-governor</code> rate limiting keyed on the validated principal, and an opt-in <code>/metrics</code> token. See <a href="configuration.html#authentication">configuration</a> and <a href="deployment.html#authentication-and-rate-limiting">deployment</a>.
+      hev search is a trusted internal engine. Authentication, tenant authorization, rate limiting, and proxy-header trust belong to Layer at the edge; deploy the engine behind Layer and a network boundary such as a Kubernetes <code>NetworkPolicy</code>.
     </p>
 
     <h2>Documentation</h2>

@@ -69,15 +69,7 @@ func runEnvAdd(cmd *cobra.Command, args []string) error {
 		url = config.DefaultURL
 	}
 
-	fmt.Fprint(os.Stderr, "API key (optional, press Enter to skip): ")
-	apiKey, _ := reader.ReadString('\n')
-	apiKey = strings.TrimSpace(apiKey)
-
-	fmt.Fprint(os.Stderr, "Admin API key (optional, press Enter to skip): ")
-	adminKey, _ := reader.ReadString('\n')
-	adminKey = strings.TrimSpace(adminKey)
-
-	if err := config.AddProfile(name, url, apiKey, adminKey); err != nil {
+	if err := config.AddProfile(name, url); err != nil {
 		return err
 	}
 	output.Statusf("Profile %q added.", name)
@@ -101,11 +93,9 @@ func runEnvList(cmd *cobra.Command, args []string) error {
 		list := make([]map[string]any, 0, len(profiles))
 		for _, p := range profiles {
 			list = append(list, map[string]any{
-				"name":              p.Name,
-				"url":               p.Config.URL,
-				"active":            p.IsActive,
-				"has_api_key":       p.Config.APIKey != "",
-				"has_admin_api_key": p.Config.AdminAPIKey != "",
+				"name":   p.Name,
+				"url":    p.Config.URL,
+				"active": p.IsActive,
 			})
 		}
 		return output.JSON(map[string]any{"profiles": list})
@@ -114,7 +104,7 @@ func runEnvList(cmd *cobra.Command, args []string) error {
 		output.Statusf("No profiles configured. Run 'hev env add <name>'.")
 		return nil
 	}
-	headers := []string{"", "NAME", "URL", "API KEY", "ADMIN KEY"}
+	headers := []string{"", "NAME", "URL"}
 	var rows [][]string
 	for _, p := range profiles {
 		marker := ""
@@ -129,8 +119,6 @@ func runEnvList(cmd *cobra.Command, args []string) error {
 			marker,
 			p.Name,
 			p.Config.URL,
-			config.MaskKey(p.Config.APIKey),
-			config.MaskKey(p.Config.AdminAPIKey),
 		})
 	}
 	output.PrintTable(headers, rows)
@@ -161,18 +149,14 @@ func runEnvShow(cmd *cobra.Command, args []string) error {
 	}
 	if output.IsJSON() {
 		return output.JSON(map[string]any{
-			"active":            name,
-			"url":               p.URL,
-			"has_api_key":       p.APIKey != "",
-			"has_admin_api_key": p.AdminAPIKey != "",
-			"content_field":     p.ContentField,
+			"active":        name,
+			"url":           p.URL,
+			"content_field": p.ContentField,
 		})
 	}
 	pairs := [][2]string{
 		{"active", name},
 		{"url", p.URL},
-		{"api_key", config.MaskKey(p.APIKey)},
-		{"admin_api_key", config.MaskKey(p.AdminAPIKey)},
 	}
 	if p.ContentField != "" {
 		pairs = append(pairs, [2]string{"content_field", p.ContentField})
