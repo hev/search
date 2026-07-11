@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Removed
+- **Embedded Python wheel and PyPI packaging.** Deleted the `python/` PyO3 package, local embedded examples, `scripts/maturin`, the `pypi-publish` workflow, and the Python workspace member. The engine is reached through Layer's HTTP SDKs; the in-process notebook/serverless package was firnflow inheritance and is deliberately not a current hev search surface. Repo-side removal is complete; PyPI package deprecation/yanking remains a maintainer credential step. Closes #3.
 - **Authentication, rate limiting, and proxy-header trust.** The engine runs behind hev layer, which is the auth boundary; the engine is a trusted internal service on a `NetworkPolicy`. Deleted the `auth` / `rate_limit` modules, the `HEVSEARCH_API_KEY` / `HEVSEARCH_ADMIN_API_KEY` / `HEVSEARCH_METRICS_TOKEN` / `HEVSEARCH_RATE_LIMIT_*` / `HEVSEARCH_PREAUTH_IP_LIMIT_RPS` / `HEVSEARCH_TRUST_PROXY_HEADERS` config, the `hevsearch_auth_rejections_total` metric, and the `subtle` / `governor` / `tower_governor` dependencies. RFC 0002; closes #1.
 
 ## [0.1.0] - 2026-06-29
