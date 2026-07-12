@@ -1,0 +1,113 @@
+name: Release Docker Hub image
+
+# Publishes the customer-distribution hev search engine image to Docker Hub.
+# The internal ECR lane remains the mesh registry path; this workflow is inert
+# until a `pro-images-v*` tag is pushed, or manually run.
+#
+# Required secrets for a real release:
+#   DOCKERHUB_USERNAME     Docker Hub username with push access to hevlayer
+#   DOCKERHUB_TOKEN        Docker Hub access token
+#   DEPOT_TOKEN            Depot project token, unless OIDC trust is configured
+
+on:
+  push:
+    tags:
+      - 'pro-images-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version X.Y.Z (no leading v)'
+        required: true
+      dry_run:
+        description: 'Dry run - validate only, no image push'
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-dockerhub-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: hevlayer/search
+  DEPOT_PROJECT_ID: t4vlld595v
+
+jobs:
+  release:
+    name: Publish Docker Hub image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: depot/setup-action@v1
+
+      - name: Resolve version and mode
+        id: p
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            version="${GITHUB_REF_NAME#pro-images-v}"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+          else
+            version="${{ inputs.version }}"
+            if [ "${{ inputs.dry_run }}" = "false" ]; then
+              echo "mode=release" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=dry-run" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
+            echo "::error::Docker Hub image release version must be X.Y.Z or X.Y.Z-prerelease (got: $version)."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release secrets
+        if: steps.p.outputs.mode == 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is required for Docker Hub image release."
+              missing=1
+            fi
+          done
+          exit "$missing"
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: steps.p.outputs.mode == 'release'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image
+        if: steps.p.outputs.mode == 'dry-run'
+        uses: depot/build-push-action@v1
+        with:
+          project: ${{ env.DEPOT_PROJECT_ID }}
+          token: ${{ secrets.DEPOT_TOKEN }}
+          context: .
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.p.outputs.version }}
+
+      - name: Build and push image
+        if: steps.p.outputs.mode == 'release'
+        uses: depot/build-push-action@v1
+        with:
+          project: ${{ env.DEPOT_PROJECT_ID }}
+          token: ${{ secrets.DEPOT_TOKEN }}
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.p.outputs.version }}
+            ${{ env.IMAGE_NAME }}:latest
