@@ -107,6 +107,26 @@ async fn info_returns_namespace_metadata() {
         info["table_version"].as_u64().unwrap() >= 1,
         "table version advances on commits"
     );
+    assert!(
+        info["last_write_ms"].as_i64().unwrap() > 0,
+        "last_write_ms should be the Lance manifest commit timestamp"
+    );
+    assert!(
+        info["approx_logical_bytes"].as_u64().unwrap() > 0,
+        "approx_logical_bytes should come from manifest data-file sizes"
+    );
+    let schema = info["schema"].as_array().expect("schema array");
+    let field_names: Vec<_> = schema
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(
+        field_names.contains(&"id")
+            && field_names.contains(&"vector")
+            && field_names.contains(&"text")
+            && field_names.contains(&"_ingested_at"),
+        "schema should list Lance fields, got {field_names:?}"
+    );
 
     // The metadata read bypasses NamespaceService, so the manager
     // records the backend hit itself; confirm it lands on the cost

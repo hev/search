@@ -72,7 +72,7 @@ use crate::metrics::CoreMetrics;
 use crate::query::{FuzzyRequest, DEFAULT_NPROBES};
 use crate::result::{
     DistanceMetric, FacetBucket, FacetField, FacetResultSet, ListOrder, ListPage, ListRow,
-    NamespaceInfo, RowId, RowIdType,
+    NamespaceField, NamespaceInfo, RowId, RowIdType,
 };
 use crate::storage_root::Scheme;
 use crate::vector::VectorKind;
@@ -2530,6 +2530,10 @@ impl NamespaceManager {
             .map_err(|e| HevSearchError::Backend(format!("list_indices: {e}")))?;
         let (has_vector_index, has_fts_index, has_scalar_index) =
             classify_index_types(indices.iter().map(|i| i.index_type.clone()));
+        let table_schema = tbl
+            .schema()
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("schema: {e}")))?;
 
         // Fragment count and table version come from the in-memory
         // manifest on the (now pooled) handle — no extra round-trip.
@@ -2542,6 +2546,24 @@ impl NamespaceManager {
             .await
             .map_err(|e| HevSearchError::Backend(format!("resolve dataset: {e}")))?;
         let manifest = dataset.manifest();
+        let last_write_ms = manifest_timestamp_ms(manifest.timestamp_nanos);
+        let mut approx_logical_bytes = Some(0_u64);
+        for file in manifest
+            .fragments
+            .iter()
+            .flat_map(|fragment| &fragment.files)
+        {
+            let Some(file_size) = serde_json::to_value(&file.file_size_bytes)
+                .ok()
+                .and_then(|v| v.as_u64())
+            else {
+                approx_logical_bytes = None;
+                break;
+            };
+            approx_logical_bytes =
+                approx_logical_bytes.and_then(|total| total.checked_add(file_size));
+        }
+        let schema_fields = namespace_schema_fields(&table_schema);
 
         Ok(Some(NamespaceInfo {
             namespace: ns.to_string(),
@@ -2555,6 +2577,9 @@ impl NamespaceManager {
             has_fts_index,
             has_scalar_index,
             table_version: manifest.version,
+            last_write_ms,
+            approx_logical_bytes,
+            schema: schema_fields,
         }))
     }
 
@@ -2621,6 +2646,25 @@ fn classify_index_types(types: impl Iterator<Item = IndexType>) -> (bool, bool, 
         }
     }
     (vector, fts, scalar)
+}
+
+fn manifest_timestamp_ms(timestamp_nanos: u128) -> Option<i64> {
+    if timestamp_nanos == 0 {
+        return None;
+    }
+    i64::try_from(timestamp_nanos / 1_000_000).ok()
+}
+
+fn namespace_schema_fields(schema: &Schema) -> Vec<NamespaceField> {
+    schema
+        .fields()
+        .iter()
+        .map(|field| NamespaceField {
+            name: field.name().clone(),
+            data_type: field.data_type().to_string(),
+            nullable: field.is_nullable(),
+        })
+        .collect()
 }
 
 /// The length-keyed `auto` edit-distance ladder (RFC 0004, mirroring the

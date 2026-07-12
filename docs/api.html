@@ -451,7 +451,7 @@ curl -X POST http://localhost:3000/ns/demo/import \
         <span class="endpoint-desc">Namespace metadata</span>
       </div>
       <div class="endpoint-body">
-        <p>Returns operational metadata for a namespace: its vector shape, live row count, fragment count, which index kinds are built, and the current Lance table version. Useful for dashboards and for deciding when to compact or build an index, without querying the data or inspecting raw objects.</p>
+        <p>Returns operational metadata for a namespace: its vector shape, live row count, fragment count, which index kinds are built, current Lance table version, true last-write timestamp, approximate logical bytes, and schema fields. Useful for dashboards and for deciding when to compact or build an index, without querying the data or inspecting raw objects.</p>
         <p>Like <code>/list</code>, this bypasses the foyer cache; it is namespace state, not a query result. It never creates a table, so a namespace that has never been written returns 404.</p>
 
         <h4>Response (200)</h4>
@@ -469,6 +469,9 @@ curl -X POST http://localhost:3000/ns/demo/import \
             <tr><td><code>has_fts_index</code></td><td>bool</td><td>Whether a BM25 full-text index is built</td></tr>
             <tr><td><code>has_scalar_index</code></td><td>bool</td><td>Whether a BTree / bitmap / label-list scalar index is built</td></tr>
             <tr><td><code>table_version</code></td><td>u64</td><td>Current Lance table version; advances on every commit</td></tr>
+            <tr><td><code>last_write_ms</code></td><td>integer?</td><td>Current Lance manifest commit timestamp in Unix epoch milliseconds; distinct from any caller polling timestamp</td></tr>
+            <tr><td><code>approx_logical_bytes</code></td><td>u64?</td><td>Approximate bytes from cached Lance data-file sizes, or <code>null</code> when the manifest cannot report every file size</td></tr>
+            <tr><td><code>schema</code></td><td>array</td><td>Lance table fields as <code>{name, data_type, nullable}</code></td></tr>
           </tbody>
         </table>
 
@@ -494,7 +497,15 @@ curl -X POST http://localhost:3000/ns/demo/import \
   "has_vector_index": true,
   "has_fts_index": false,
   "has_scalar_index": false,
-  "table_version": 42
+  "table_version": 42,
+  "last_write_ms": 1783801772329,
+  "approx_logical_bytes": 81234567,
+  "schema": [
+    {"name": "id", "data_type": "UInt64", "nullable": false},
+    {"name": "vector", "data_type": "FixedSizeList(...)", "nullable": false},
+    {"name": "text", "data_type": "Utf8", "nullable": true},
+    {"name": "_ingested_at", "data_type": "Timestamp(Microsecond, None)", "nullable": false}
+  ]
 }</code></pre>
       </div>
     </div>

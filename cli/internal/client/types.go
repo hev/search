@@ -13,17 +13,26 @@ type NamespaceList struct {
 
 // NamespaceInfo is the body of GET /ns/{ns}.
 type NamespaceInfo struct {
-	Namespace      string `json:"namespace"`
-	Kind           string `json:"kind"`
-	VectorDim      int    `json:"vector_dim"`
-	IDType         string `json:"id_type"`
-	DistanceMetric string `json:"distance_metric"`
-	RowCount       int    `json:"row_count"`
-	FragmentCount  int    `json:"fragment_count"`
-	HasVectorIndex bool   `json:"has_vector_index"`
-	HasFtsIndex    bool   `json:"has_fts_index"`
-	HasScalarIndex bool   `json:"has_scalar_index"`
-	TableVersion   uint64 `json:"table_version"`
+	Namespace          string           `json:"namespace"`
+	Kind               string           `json:"kind"`
+	VectorDim          int              `json:"vector_dim"`
+	IDType             string           `json:"id_type"`
+	DistanceMetric     string           `json:"distance_metric"`
+	RowCount           int              `json:"row_count"`
+	FragmentCount      int              `json:"fragment_count"`
+	HasVectorIndex     bool             `json:"has_vector_index"`
+	HasFtsIndex        bool             `json:"has_fts_index"`
+	HasScalarIndex     bool             `json:"has_scalar_index"`
+	TableVersion       uint64           `json:"table_version"`
+	LastWriteMs        *int64           `json:"last_write_ms,omitempty"`
+	ApproxLogicalBytes *uint64          `json:"approx_logical_bytes,omitempty"`
+	Schema             []NamespaceField `json:"schema,omitempty"`
+}
+
+type NamespaceField struct {
+	Name     string `json:"name"`
+	DataType string `json:"data_type"`
+	Nullable bool   `json:"nullable"`
 }
 
 // ListRow is one row from GET /ns/{ns}/list.

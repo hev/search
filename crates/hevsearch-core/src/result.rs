@@ -206,6 +206,29 @@ pub struct NamespaceInfo {
     /// Current Lance table version. Advances on every commit; this is
     /// the value the result cache derives its generation from.
     pub table_version: u64,
+    /// Commit timestamp for the current Lance manifest, in Unix epoch
+    /// milliseconds. `None` only when the backend manifest does not
+    /// carry a timestamp.
+    #[serde(default)]
+    pub last_write_ms: Option<i64>,
+    /// Approximate logical bytes for live Lance data files, when the
+    /// manifest has cached file sizes for every data file.
+    #[serde(default)]
+    pub approx_logical_bytes: Option<u64>,
+    /// Field listing from the Lance table schema.
+    #[serde(default)]
+    pub schema: Vec<NamespaceField>,
+}
+
+/// One field in a namespace's Lance table schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamespaceField {
+    /// Column name.
+    pub name: String,
+    /// Arrow data type, rendered in the same form Lance reports.
+    pub data_type: String,
+    /// Whether the column allows null values.
+    pub nullable: bool,
 }
 
 /// Per-namespace row id column type.

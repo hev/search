@@ -65,6 +65,14 @@ func (m infoModel) view(width, height int) string {
 	}
 
 	info := m.info
+	lastWrite := "unavailable"
+	if info.LastWriteMs != nil {
+		lastWrite = fmt.Sprintf("%d", *info.LastWriteMs)
+	}
+	logicalBytes := "unavailable"
+	if info.ApproxLogicalBytes != nil {
+		logicalBytes = fmt.Sprintf("%d", *info.ApproxLogicalBytes)
+	}
 	fields := [][2]string{
 		{"kind", info.Kind},
 		{"vector_dim", fmt.Sprintf("%d", info.VectorDim)},
@@ -76,6 +84,9 @@ func (m infoModel) view(width, height int) string {
 		{"has_fts_index", fmt.Sprintf("%t", info.HasFtsIndex)},
 		{"has_scalar_index", fmt.Sprintf("%t", info.HasScalarIndex)},
 		{"table_version", fmt.Sprintf("%d", info.TableVersion)},
+		{"last_write_ms", lastWrite},
+		{"approx_logical_bytes", logicalBytes},
+		{"schema_fields", fmt.Sprintf("%d", len(info.Schema))},
 	}
 	width = 0
 	for _, f := range fields {

@@ -107,6 +107,32 @@ async fn info_reports_namespace_state_and_index_flags() {
         "first upsert auto-builds the id index"
     );
     assert!(info.table_version >= 1, "version advances on commits");
+    let last_write_ms = info
+        .last_write_ms
+        .expect("Lance manifest should report a commit timestamp");
+    assert!(last_write_ms > 0, "last write timestamp should be real");
+    assert!(
+        info.approx_logical_bytes.unwrap_or_default() > 0,
+        "manifest should report logical data-file bytes"
+    );
+    let field_names: Vec<_> = info
+        .schema
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect();
+    assert!(
+        field_names.contains(&"id")
+            && field_names.contains(&"vector")
+            && field_names.contains(&"text")
+            && field_names.contains(&"_ingested_at"),
+        "schema should list stored Lance fields, got {field_names:?}"
+    );
+
+    let polled = mgr.info(&ns).await.unwrap().expect("still exists");
+    assert_eq!(
+        polled.last_write_ms, info.last_write_ms,
+        "metadata polling must not advance last_write_ms"
+    );
 
     // Both builds are synchronous at the manager layer.
     mgr.create_scalar_index(&ns, "_ingested_at")
