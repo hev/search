@@ -213,8 +213,8 @@ this lands, every namespace is IVF_PQ — which is the current matrix state.
   inapplicable params (`num_bits` on `ivf_hnsw_sq`) → `400`; assert non-default
   `kind` on a multivector namespace → `400`; assert the default path
   (`kind` omitted) stays IVF_PQ and every existing test stays green.
-- **Cache** (`api_semantic_cache.rs` neighbors): assert a `refine_factor` query and
-  an otherwise-identical non-refine query do not share a cached result.
+- **Cache**: assert a `refine_factor` query and an otherwise-identical non-refine
+  query do not share an exact-cache entry.
 
 ## Benchmark plan
 

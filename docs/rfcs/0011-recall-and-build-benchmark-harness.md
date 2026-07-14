@@ -83,10 +83,10 @@ Two gaps, both grounded:
    RAM").
 
 The existing scaffolding is worth reusing, not replacing: `src/main.rs` (cold vs
-warm, four-phase), `src/bin/first_query_profile.rs` (cold-start cases), and
-`src/bin/semantic_cache_profile.rs` already build the in-process stack, drive real
-object storage, and emit the `bench/results/` JSON + markdown shape. This RFC adds
-**recall** and **constrained build** as peers to those, not a parallel framework.
+warm, four-phase) and `src/bin/first_query_profile.rs` (cold-start cases) already
+build the in-process stack, drive real object storage, and emit the
+`bench/results/` JSON + markdown shape. This RFC adds **recall** and **constrained
+build** as peers to those, not a parallel framework.
 
 ## Goals
 
@@ -419,8 +419,7 @@ cgroup-limited build runner.
 
 - `crates/hevsearch-bench/src/main.rs` — the latency/cache harness (synthetic
   `make_vector`, in-process `NamespaceService`, IVF params `√rows` / `dim/16`);
-  `src/bin/first_query_profile.rs`, `src/bin/semantic_cache_profile.rs` — the
-  scaffolding the new bins mirror.
+  `src/bin/first_query_profile.rs` — the scaffolding the new bins mirror.
 - `crates/hevsearch-bench/src/recall.rs` — implemented RFC 0011 primitives:
   `.fvecs` / `.bvecs` / `.ivecs` readers, exact L2 ground truth,
   `recall@k` / `ndcg@k`, deterministic synthetic vectors, and scorer tests.

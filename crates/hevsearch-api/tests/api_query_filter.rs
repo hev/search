@@ -94,25 +94,3 @@ async fn query_filter_malformed_predicate_returns_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.to_string().contains("filter"), "{body}");
 }
-
-#[tokio::test]
-#[ignore]
-async fn query_filter_with_semantic_cache_returns_400() {
-    let (app, _tmp) = build_app().await;
-    let ns = unique_namespace("query-filter-semantic");
-    seed(app.clone(), &ns).await;
-
-    let (status, body) = post_json(
-        app,
-        format!("/ns/{ns}/query"),
-        json!({
-            "vector": [1.0, 0.0, 0.0, 0.0],
-            "k": 3,
-            "filter": "id > 1",
-            "semantic_cache": {"enabled": true}
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.to_string().contains("filter"), "{body}");
-}

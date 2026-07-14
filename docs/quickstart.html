@@ -105,32 +105,7 @@ docker compose up --build</code></pre>
       Run the same query again. The second call returns from cache with zero object-storage requests. You can verify this at <code>/metrics</code>.
     </div>
 
-    <h2>5. Try semantic caching</h2>
-    <p>The exact cache only helps when the same query repeats. For single-vector workloads, you can opt into semantic caching so a near-duplicate query can reuse a previous top-k result when cosine similarity clears your threshold.</p>
-    <pre><code># First query: populates the exact cache and the semantic sidecar.
-curl -X POST http://localhost:3000/ns/demo/query \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "vector": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    "k": 2,
-    "semantic_cache": {"enabled": true, "min_similarity": 0.995}
-  }'
-
-# Near-duplicate query: exact cache misses, semantic cache may hit.
-curl -X POST http://localhost:3000/ns/demo/query \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "vector": [0.0, 0.999, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0],
-    "k": 2,
-    "semantic_cache": {"enabled": true, "min_similarity": 0.995}
-  }'</code></pre>
-
-    <div class="callout callout-warning">
-      <div class="callout-title">Approximate reuse</div>
-      A semantic-cache hit reuses an earlier result; it does not run a fresh search for the new vector. Start with the default threshold (<code>0.995</code>) and lower <code>min_similarity</code> only after measuring result quality for your model and corpus. V1 supports single-vector queries only, with no <code>text</code> or <code>vectors</code> field.
-    </div>
-
-    <h2>6. Add text for full-text search</h2>
+    <h2>5. Add text for full-text search</h2>
     <p>Upsert rows with both vectors and text, then build an FTS index.</p>
     <pre><code># Upsert with text
 curl -X POST http://localhost:3000/ns/articles/upsert \
@@ -160,17 +135,16 @@ curl -X POST http://localhost:3000/ns/articles/fts-index</code></pre>
     "k": 2
   }'</code></pre>
 
-    <h2>7. Check the metrics</h2>
+    <h2>6. Check the metrics</h2>
     <p>See exactly how many object-storage requests hev search has saved you.</p>
     <pre><code>curl -s http://localhost:3000/metrics | grep hevsearch</code></pre>
     <p>Key metric families to look for:</p>
     <pre><code>hevsearch_cache_hits_total{namespace="demo"} ...
 hevsearch_cache_misses_total{namespace="demo"} ...
-hevsearch_semantic_cache_hits_total{namespace="demo"} ...
 hevsearch_s3_requests_total{namespace="demo",operation="query"} ...
 hevsearch_active_namespaces ...
 hevsearch_cached_handles ...</code></pre>
-    <p>The exact cache miss count increments when a query misses the RAM/NVMe result cache. If semantic caching hits after that, <code>hevsearch_semantic_cache_hits_total</code> increments and <code>hevsearch_s3_requests_total{operation="query"}</code> does not. <code>hevsearch_cached_handles</code> tracks namespaces with a warm LanceDB connection in the in-process pool &mdash; the first request to any namespace opens the connection, every later request reuses it.</p>
+    <p>The exact cache miss count increments when a query misses the RAM/NVMe result cache; each miss runs the search against the backend. <code>hevsearch_cached_handles</code> tracks namespaces with a warm LanceDB connection in the in-process pool &mdash; the first request to any namespace opens the connection, every later request reuses it.</p>
 
     <h2>Next steps</h2>
     <ul>

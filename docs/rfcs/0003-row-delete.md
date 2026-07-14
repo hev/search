@@ -156,8 +156,8 @@ must-have and by-filter rides on top.)
   (`GET /ns/{ns}`) drops by the right amount; delete by `filter` and assert the
   same; malformed `filter` → `400`; both `ids` and `filter` → `400`; delete from a
   nonexistent namespace → `404`.
-- **Cache**: assert a delete invalidates the exact and semantic caches (a repeat
-  of a previously-cached query does not return a deleted row) — extend the
+- **Cache**: assert a delete invalidates the exact result cache (a repeat of a
+  previously-cached query does not return a deleted row) — extend the
   `service_cache_aside` tests.
 - **Dedupe**: a namespace seeded with duplicate ids (append-only era) has all
   copies removed by a single by-id delete.

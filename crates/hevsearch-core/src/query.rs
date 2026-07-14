@@ -88,16 +88,6 @@ pub struct QueryRequest {
     /// collide.
     #[serde(default = "default_include_vector")]
     pub include_vector: bool,
-    /// Opt-in semantic-cache controls. Absent or `enabled: false`
-    /// leaves the exact result cache as the only short-circuit;
-    /// `enabled: true` permits reusing the result of a previous
-    /// very-similar query when the exact cache misses. The default
-    /// shape is "off", so existing callers see no behaviour change.
-    ///
-    /// Excluded from the exact-cache key so toggling the option
-    /// does not split otherwise-identical entries.
-    #[serde(default)]
-    pub semantic_cache: Option<SemanticCacheRequest>,
 }
 
 /// Fuzzy full-text matching controls.
@@ -182,98 +172,10 @@ pub fn validate_facet_request(req: &FacetRequest) -> Result<usize, crate::HevSea
     Ok(top)
 }
 
-/// Per-request controls for opt-in semantic caching.
-///
-/// Semantic caching is approximate: a hit means the cached result
-/// belonged to a previous query whose vector was extremely close
-/// (cosine similarity `>= min_similarity`) and whose surrounding
-/// request shape was identical (`k`, `nprobes`, single-vector,
-/// no text/filters). Eligible namespaces are single-vector only in
-/// v1. Multivector, FTS, and hybrid queries with semantic caching
-/// requested are rejected with HTTP 400.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SemanticCacheRequest {
-    /// When `true`, the read path may reuse a previous near-duplicate
-    /// query's cached result. When `false` (or the field is absent),
-    /// only exact-cache hits short-circuit.
-    pub enabled: bool,
-    /// Cosine-similarity floor for a semantic hit. Must be in
-    /// `(0.0, 1.0]`. Omitting picks the server default
-    /// ([`DEFAULT_SEMANTIC_MIN_SIMILARITY`]) — deliberately strict
-    /// because a semantic hit returns an approximate top-k, not
-    /// the exact one.
-    #[serde(default)]
-    pub min_similarity: Option<f32>,
-}
-
 /// Serde default for [`QueryRequest::include_vector`] — vectors are
 /// returned unless the caller opts out.
 fn default_include_vector() -> bool {
     true
-}
-
-/// Conservative default cosine threshold for semantic-cache hits.
-///
-/// Picked to be strict enough that two queries reaching this
-/// threshold are very likely to ask for the same top-k against any
-/// reasonable embedding model. Operators may relax it per request
-/// via [`SemanticCacheRequest::min_similarity`].
-pub const DEFAULT_SEMANTIC_MIN_SIMILARITY: f32 = 0.995;
-
-/// Validate the opt-in semantic-cache controls carried by a
-/// [`QueryRequest`].
-///
-/// Pure: no I/O. Called from `NamespaceService::query` before any
-/// cache or backend work so a bad payload returns 400 immediately.
-///
-/// Checks:
-/// - `min_similarity ∈ (0.0, 1.0]` when supplied.
-/// - When `enabled: true`, the request must be single-vector
-///   (`vector` non-empty, `vectors` absent, `text` and `filter`
-///   absent). V1 does not support semantic caching for FTS, hybrid,
-///   filtered, or multivector queries — those reject with a clear 400.
-pub fn validate_semantic_cache_request(req: &QueryRequest) -> Result<(), crate::HevSearchError> {
-    let Some(sem) = req.semantic_cache.as_ref() else {
-        return Ok(());
-    };
-    if let Some(threshold) = sem.min_similarity {
-        if !threshold.is_finite() || threshold <= 0.0 || threshold > 1.0 {
-            return Err(crate::HevSearchError::InvalidRequest(format!(
-                "semantic_cache.min_similarity must be in (0.0, 1.0], got {threshold}"
-            )));
-        }
-    }
-    if !sem.enabled {
-        return Ok(());
-    }
-    if req.exact {
-        return Err(crate::HevSearchError::InvalidRequest(
-            "semantic_cache is not supported with exact vector queries".into(),
-        ));
-    }
-    if req.vector.is_empty() {
-        return Err(crate::HevSearchError::InvalidRequest(
-            "semantic_cache requires a single-vector `vector` field; \
-             multivector, FTS, and hybrid queries are not eligible in v1"
-                .into(),
-        ));
-    }
-    if req.vectors.as_ref().is_some_and(|v| !v.is_empty()) {
-        return Err(crate::HevSearchError::InvalidRequest(
-            "semantic_cache is not supported for multivector queries in v1".into(),
-        ));
-    }
-    if req.text.is_some() {
-        return Err(crate::HevSearchError::InvalidRequest(
-            "semantic_cache is not supported for FTS or hybrid queries in v1".into(),
-        ));
-    }
-    if req.filter.is_some() {
-        return Err(crate::HevSearchError::InvalidRequest(
-            "semantic_cache is not supported for filtered queries in v1".into(),
-        ));
-    }
-    Ok(())
 }
 
 /// Validate query-plan knobs that are independent of namespace schema.
@@ -289,14 +191,7 @@ pub fn validate_query_request(req: &QueryRequest) -> Result<(), crate::HevSearch
                 .into(),
         ));
     }
-    validate_semantic_cache_request(req)
-}
-
-/// Effective cosine threshold for a query: the per-request override
-/// if supplied, else [`DEFAULT_SEMANTIC_MIN_SIMILARITY`].
-pub fn effective_semantic_threshold(req: &SemanticCacheRequest) -> f32 {
-    req.min_similarity
-        .unwrap_or(DEFAULT_SEMANTIC_MIN_SIMILARITY)
+    Ok(())
 }
 
 /// Parameters for an explicit index build request.
@@ -408,134 +303,6 @@ mod tests {
         // default is dim/16 which is even for any vector dim that is
         // a multiple of 32 (the realistic case). Don't reject here.
         assert!(validate_ivf_pq_options(Some(4), None).is_ok());
-    }
-
-    fn req_vector_only() -> QueryRequest {
-        QueryRequest {
-            vector: vec![0.1, 0.2, 0.3],
-            vectors: None,
-            k: 10,
-            nprobes: None,
-            exact: false,
-            text: None,
-            fuzzy: None,
-            filter: None,
-            include_vector: true,
-            semantic_cache: None,
-        }
-    }
-
-    #[test]
-    fn semantic_cache_absent_or_disabled_is_ok() {
-        let mut req = req_vector_only();
-        assert!(validate_semantic_cache_request(&req).is_ok());
-
-        req.semantic_cache = Some(SemanticCacheRequest {
-            enabled: false,
-            min_similarity: None,
-        });
-        assert!(validate_semantic_cache_request(&req).is_ok());
-    }
-
-    #[test]
-    fn semantic_cache_threshold_range_enforced() {
-        let mut req = req_vector_only();
-        req.semantic_cache = Some(SemanticCacheRequest {
-            enabled: true,
-            min_similarity: Some(0.0),
-        });
-        let err = validate_semantic_cache_request(&req).unwrap_err();
-        match err {
-            HevSearchError::InvalidRequest(msg) => assert!(msg.contains("min_similarity"), "{msg}"),
-            other => panic!("expected InvalidRequest, got {other:?}"),
-        }
-
-        let mut req = req_vector_only();
-        req.semantic_cache = Some(SemanticCacheRequest {
-            enabled: true,
-            min_similarity: Some(1.5),
-        });
-        assert!(matches!(
-            validate_semantic_cache_request(&req).unwrap_err(),
-            HevSearchError::InvalidRequest(_)
-        ));
-
-        let mut req = req_vector_only();
-        req.semantic_cache = Some(SemanticCacheRequest {
-            enabled: true,
-            min_similarity: Some(f32::NAN),
-        });
-        assert!(matches!(
-            validate_semantic_cache_request(&req).unwrap_err(),
-            HevSearchError::InvalidRequest(_)
-        ));
-    }
-
-    #[test]
-    fn semantic_cache_rejects_fts_hybrid_and_multivector() {
-        let mut req = req_vector_only();
-        req.text = Some("hello".into());
-        req.semantic_cache = Some(SemanticCacheRequest {
-            enabled: true,
-            min_similarity: None,
-        });
-        let err = validate_semantic_cache_request(&req).unwrap_err();
-        let msg = match err {
-            HevSearchError::InvalidRequest(m) => m,
-            other => panic!("expected InvalidRequest, got {other:?}"),
-        };
-        assert!(msg.contains("FTS") || msg.contains("hybrid"), "{msg}");
-
-        let mut req = req_vector_only();
-        req.vector.clear();
-        req.vectors = Some(vec![vec![0.1, 0.2]]);
-        req.semantic_cache = Some(SemanticCacheRequest {
-            enabled: true,
-            min_similarity: None,
-        });
-        let err = validate_semantic_cache_request(&req).unwrap_err();
-        match err {
-            HevSearchError::InvalidRequest(msg) => {
-                assert!(
-                    msg.contains("multivector") || msg.contains("single-vector"),
-                    "{msg}"
-                );
-            }
-            other => panic!("expected InvalidRequest, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn semantic_cache_requires_a_vector_when_enabled() {
-        let mut req = req_vector_only();
-        req.vector.clear();
-        req.semantic_cache = Some(SemanticCacheRequest {
-            enabled: true,
-            min_similarity: None,
-        });
-        let err = validate_semantic_cache_request(&req).unwrap_err();
-        match err {
-            HevSearchError::InvalidRequest(msg) => assert!(msg.contains("single-vector"), "{msg}"),
-            other => panic!("expected InvalidRequest, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn semantic_cache_rejects_filter() {
-        let mut req = req_vector_only();
-        req.filter = Some("id < 5".into());
-        req.semantic_cache = Some(SemanticCacheRequest {
-            enabled: true,
-            min_similarity: None,
-        });
-
-        let err = validate_semantic_cache_request(&req).unwrap_err();
-        match err {
-            HevSearchError::InvalidRequest(msg) => {
-                assert!(msg.contains("filter"), "{msg}");
-            }
-            other => panic!("expected InvalidRequest, got {other:?}"),
-        }
     }
 
     #[test]

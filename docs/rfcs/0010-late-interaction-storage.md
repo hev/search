@@ -216,10 +216,9 @@ the "multivector has no portable-subset spelling — a later question" that RFC 
   stays green.
 - **Round-trip** (`manager_multivector.rs`): a write-then-introspect cycle classifies
   `List<FixedSizeList<Float16, dim>>` as `Multivector` with the right dim.
-- **Cache** (`api_semantic_cache.rs` neighbors): the result-cache key is unaffected
-  (precision is a namespace property, not a per-query input), so an f16 namespace's
-  cache behaves identically — assert no cross-precision key collision can arise
-  (distinct namespaces, distinct prefixes).
+- **Cache**: the result-cache key is unaffected (precision is a namespace property,
+  not a per-query input), so an f16 namespace's cache behaves identically — assert
+  no cross-precision key collision can arise (distinct namespaces, distinct prefixes).
 
 ## Benchmark plan
 

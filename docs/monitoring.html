@@ -76,25 +76,7 @@ scrape_configs:
           <td><code>hevsearch_cache_misses_total</code></td>
           <td>Counter</td>
           <td><code>namespace</code></td>
-          <td>Total exact-cache misses. Without semantic caching, each miss reaches the configured backend via LanceDB. With <code>semantic_cache.enabled: true</code>, a semantic-cache hit can still avoid the backend after this counter increments.</td>
-        </tr>
-        <tr>
-          <td><code>hevsearch_semantic_cache_hits_total</code></td>
-          <td>Counter</td>
-          <td><code>namespace</code></td>
-          <td>Opt-in semantic-cache hits. Each hit reused a previous near-duplicate single-vector query's top-k result after the exact cache missed.</td>
-        </tr>
-        <tr>
-          <td><code>hevsearch_semantic_cache_misses_total</code></td>
-          <td>Counter</td>
-          <td><code>namespace</code></td>
-          <td>Eligible semantic-cache lookups where the sidecar had entries, but no cached query cleared the request's <code>min_similarity</code> threshold with matching <code>k</code>, <code>nprobes</code>, and <code>include_vector</code>.</td>
-        </tr>
-        <tr>
-          <td><code>hevsearch_semantic_cache_rejections_total</code></td>
-          <td>Counter</td>
-          <td><code>namespace</code>, <code>reason</code></td>
-          <td>Semantic-cache lookups rejected before a similarity scan. Reasons are bounded to <code>unsupported_query_shape</code> and <code>empty_index</code>.</td>
+          <td>Total exact-cache misses. Each miss reaches the configured backend via LanceDB.</td>
         </tr>
       </tbody>
     </table>
@@ -157,7 +139,7 @@ scrape_configs:
 
     <div class="callout callout-info">
       <div class="callout-title">The key metric</div>
-      <code>hevsearch_s3_requests_total</code> is the metric that proves backend work happened. For exact-cache-only traffic, compare <code>s3_requests_total{operation="query"}</code> against <code>cache_misses_total</code>; they should be equal. For semantic-cache traffic, semantic hits make <code>s3_requests_total{operation="query"}</code> lower than exact-cache misses. (The metric name is historical and kept stable for dashboard continuity; it counts requests against any configured backend.)
+      <code>hevsearch_s3_requests_total</code> is the metric that proves backend work happened. Compare <code>s3_requests_total{operation="query"}</code> against <code>cache_misses_total</code>; they should be equal. (The metric name is historical and kept stable for dashboard continuity; it counts requests against any configured backend.)
     </div>
 
     <h3>Object cache metrics</h3>
@@ -222,7 +204,7 @@ histogram_quantile(0.99, rate(hevsearch_query_duration_seconds_bucket[5m]))</cod
     <pre><code>rate(hevsearch_s3_requests_total{namespace="production"}[5m])</code></pre>
 
     <h3>Object-storage requests saved (total avoided queries)</h3>
-    <pre><code>sum(hevsearch_cache_hits_total) + sum(hevsearch_semantic_cache_hits_total)</code></pre>
+    <pre><code>sum(hevsearch_cache_hits_total)</code></pre>
 
     <h3>Object-cache hit rate</h3>
     <p>The fraction of cacheable byte-range reads served from the local object cache:</p>
@@ -232,15 +214,7 @@ histogram_quantile(0.99, rate(hevsearch_query_duration_seconds_bucket[5m]))</cod
 
     <h3>Object-storage bytes fetched by the object cache</h3>
     <pre><code>rate(hevsearch_object_cache_s3_bytes_total[5m])</code></pre>
-    <p>Each exact-cache hit and semantic-cache hit is one object-storage query that did not happen. Semantic-cache hits are approximate result reuse, so track them separately when correctness calibration matters.</p>
-
-    <h3>Semantic-cache hit rate (eligible lookups)</h3>
-    <pre><code>sum(rate(hevsearch_semantic_cache_hits_total[5m]))
-/
-(sum(rate(hevsearch_semantic_cache_hits_total[5m])) + sum(rate(hevsearch_semantic_cache_misses_total[5m])))</code></pre>
-
-    <h3>Semantic-cache rejections by reason</h3>
-    <pre><code>sum by (reason) (rate(hevsearch_semantic_cache_rejections_total[5m]))</code></pre>
+    <p>Each exact-cache hit is one object-storage query that did not happen.</p>
 
     <h3>Write throughput</h3>
     <pre><code>rate(hevsearch_s3_requests_total{operation="upsert"}[5m])</code></pre>
@@ -362,7 +336,6 @@ groups:
     <ul>
       <li>Cache hit rate above 80% for read-heavy workloads</li>
       <li><code>s3_requests_total{operation=query}</code> rate is low and stable</li>
-      <li>Semantic-cache hit rate is stable for workloads that opt into <code>semantic_cache</code>, with rejections mostly from <code>empty_index</code> immediately after startup or writes</li>
       <li>Query latency p99 under 10ms (warm queries dominate)</li>
     </ul>
 
@@ -370,7 +343,6 @@ groups:
     <ul>
       <li><strong>Falling cache hit rate:</strong> the working set may exceed cache capacity. Increase <code>HEVSEARCH_CACHE_MEMORY_BYTES</code> or <code>HEVSEARCH_CACHE_NVME_BYTES</code>.</li>
       <li><strong>High <code>s3_requests_total</code> rate:</strong> too many cache misses are reaching the object-storage backend. This costs money and adds latency. Consider cache warmup, larger cache, or building an index.</li>
-      <li><strong>Low semantic-cache hit rate:</strong> the threshold may be too strict for your embedding model, or query vectors may not cluster tightly enough for safe reuse. Lower <code>semantic_cache.min_similarity</code> only after measuring result quality on your corpus.</li>
       <li><strong>Rising query latency:</strong> if cold queries dominate, build an IVF_PQ index. If warm queries are slow, check for serialisation overhead with large result sets.</li>
       <li><strong>Write duration spikes:</strong> may indicate backend throttling or contention. Check the object-storage request metrics and consider compaction.</li>
     </ul>

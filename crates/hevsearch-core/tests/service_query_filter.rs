@@ -1,7 +1,6 @@
 //! Query filter behavior through `NamespaceService` on local storage.
 //!
-//! Covers exact-cache splitting by filter and semantic-cache rejection
-//! for filtered requests without requiring MinIO.
+//! Covers exact-cache splitting by filter without requiring MinIO.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -9,8 +8,8 @@ use std::sync::Arc;
 use hevsearch_core::cache::NamespaceCache;
 use hevsearch_core::metrics::test_metrics;
 use hevsearch_core::{
-    HevSearchError, NamespaceId, NamespaceManager, NamespaceService, QueryCacheSource,
-    QueryRequest, SemanticCacheRequest, StorageRoot, UpsertRow,
+    NamespaceId, NamespaceManager, NamespaceService, QueryCacheSource, QueryRequest, StorageRoot,
+    UpsertRow,
 };
 use tempfile::TempDir;
 
@@ -33,7 +32,6 @@ fn request(filter: Option<&str>) -> QueryRequest {
         fuzzy: None,
         filter: filter.map(str::to_string),
         include_vector: false,
-        semantic_cache: None,
     }
 }
 
@@ -165,23 +163,4 @@ async fn distinct_filters_do_not_collide_in_exact_cache() {
         .collect();
     ids_b.sort_unstable();
     assert_eq!(ids_b, vec![2, 3]);
-}
-
-#[tokio::test]
-async fn filtered_semantic_cache_request_is_rejected() {
-    let (service, ns, _dir, _cache_dir) = local_service().await;
-    let mut req = request(Some("id > 1"));
-    req.semantic_cache = Some(SemanticCacheRequest {
-        enabled: true,
-        min_similarity: None,
-    });
-
-    let err = service
-        .query_with_cache_source(&ns, &req)
-        .await
-        .expect_err("filtered semantic-cache query should reject");
-    match err {
-        HevSearchError::InvalidRequest(msg) => assert!(msg.contains("filter"), "{msg}"),
-        other => panic!("expected InvalidRequest, got {other:?}"),
-    }
 }
