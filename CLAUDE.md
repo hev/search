@@ -17,7 +17,7 @@ and what does not:
 
 - **search owns the engine** — vector / FTS / hybrid search, LanceDB storage on
   object storage, the IVF_PQ / BM25 / scalar index lifecycle, and the foyer
-  (L1 RAM / L2 NVMe) + object + result + semantic caches. This is the moat. Keep
+  (L1 RAM / L2 NVMe) + object and exact-result caches. This is the moat. Keep
   it and deepen it.
 - **Layer owns the edge** — auth, per-tenant authorization, rate limiting, the
   inbound (Turbopuffer-shaped) wire, query history, embedding, and cost. The

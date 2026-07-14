@@ -57,10 +57,10 @@
 
     <h2>How it works</h2>
     <p>
-      hev search stores every namespace under its own object-storage prefix using <strong>LanceDB</strong> as the storage engine. A tiered cache powered by <strong>foyer</strong> sits in front of the backend, serving repeated queries from RAM or NVMe in microseconds instead of milliseconds. Single-vector queries can also opt into semantic caching, where a near-duplicate query may reuse a previous top-k result when its vector clears your cosine-similarity threshold. Writes automatically invalidate both cache layers for the affected namespace, because the cache key carries the Lance table version and every committed write advances it.
+      hev search stores every namespace under its own object-storage prefix using <strong>LanceDB</strong> as the storage engine. A tiered exact-result cache powered by <strong>foyer</strong> sits in front of the backend, serving byte-identical repeated queries from RAM or NVMe in microseconds instead of milliseconds. Writes automatically invalidate cached results for the affected namespace, because the cache key carries the Lance table version and every committed write advances it.
     </p>
     <p>
-      The result: your data lives cheaply on object storage, but hot and near-duplicate queries can feel local. The <code>/metrics</code> endpoint shows exactly how many backend requests the exact and semantic cache layers are saving you.
+      The result: your data lives cheaply on object storage, but repeated hot queries can feel local. The <code>/metrics</code> endpoint shows exactly how many backend requests the exact result and object cache layers are saving you.
     </p>
     <p>
       New in 0.6.0: native Google Cloud Storage support. Set <code>HEVSEARCH_STORAGE_URI=gs://your-bucket</code> and hev search routes through lancedb's native GCS backend, using the GCS XML API's generation precondition (<code>x-goog-if-generation-match: 0</code>) instead of <code>If-None-Match: *</code>. Validated by the same 100-run Lance concurrent-writer stress that gates every other backend. Switching between AWS S3, MinIO, Cloudflare R2, Tigris, DigitalOcean Spaces, and native GCS is a single env-var change &mdash; see the <a href="https://github.com/gordonmurray/hevsearch#backend-configuration">backend configuration recipes</a>.

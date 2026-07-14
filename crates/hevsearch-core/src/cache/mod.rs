@@ -11,9 +11,7 @@
 mod invalidation;
 mod key;
 mod layer;
-mod semantic;
 
 pub use invalidation::GenerationCounter;
 pub use key::{CacheKey, QueryHash};
 pub use layer::NamespaceCache;
-pub use semantic::{SemanticCache, SemanticLookup, SEMANTIC_CACHE_MAX_PER_NAMESPACE};

@@ -8,9 +8,7 @@
 //!    score, text, and timestamp survive — and the flag splits the
 //!    exact-cache key, so full and vector-light payloads never
 //!    collide and both hit independently on repeat.
-//! 3. The semantic sidecar never answers a request with bytes whose
-//!    payload shape differs from what the caller asked for.
-//! 4. A cached payload this build cannot decode (the pre-upgrade
+//! 3. A cached payload this build cannot decode (the pre-upgrade
 //!    wire format recovered from the NVMe tier) degrades to a cache
 //!    miss that self-heals on the next call — not a 500.
 //!
@@ -32,7 +30,7 @@ use hevsearch_core::metrics::test_metrics;
 use hevsearch_core::service::hash_query_for_cache;
 use hevsearch_core::{
     DistanceMetric, NamespaceId, NamespaceManager, NamespaceService, QueryCacheSource,
-    QueryRequest, SemanticCacheRequest, StorageRoot, UpsertRow,
+    QueryRequest, StorageRoot, UpsertRow,
 };
 
 const DIM: usize = 8;
@@ -75,15 +73,6 @@ fn unit_vector(axis: usize) -> Vec<f32> {
     v
 }
 
-fn near_unit_vector(axis: usize, drift: f32) -> Vec<f32> {
-    let other = (axis + 1) % DIM;
-    let main = (1.0_f32 - drift * drift).sqrt();
-    let mut v = vec![0.0_f32; DIM];
-    v[axis] = main;
-    v[other] = drift;
-    v
-}
-
 fn request(vector: Vec<f32>, include_vector: bool) -> QueryRequest {
     QueryRequest {
         vector,
@@ -95,17 +84,6 @@ fn request(vector: Vec<f32>, include_vector: bool) -> QueryRequest {
         fuzzy: None,
         filter: None,
         include_vector,
-        semantic_cache: None,
-    }
-}
-
-fn semantic_request(vector: Vec<f32>, include_vector: bool) -> QueryRequest {
-    QueryRequest {
-        semantic_cache: Some(SemanticCacheRequest {
-            enabled: true,
-            min_similarity: Some(0.9),
-        }),
-        ..request(vector, include_vector)
     }
 }
 
@@ -236,53 +214,6 @@ async fn include_vector_splits_cache_key_and_omits_payload() {
         full_again.cache_source,
         QueryCacheSource::ExactCache,
         "the light entry must not have evicted or replaced the full one"
-    );
-}
-
-#[tokio::test]
-#[ignore]
-async fn semantic_sidecar_does_not_cross_payload_shapes() {
-    let (service, _manager, _cache, ns) = build_service().await;
-
-    // Seed the sidecar with a full-payload entry.
-    let seed = service
-        .query_with_cache_source(&ns, &semantic_request(unit_vector(0), true))
-        .await
-        .expect("seed query");
-    assert_eq!(seed.cache_source, QueryCacheSource::Backend);
-
-    // Control: a near-duplicate asking for the same payload shape is
-    // served from the sidecar.
-    let same_shape = service
-        .query_with_cache_source(&ns, &semantic_request(near_unit_vector(0, 0.05), true))
-        .await
-        .expect("same-shape near-duplicate");
-    assert_eq!(
-        same_shape.cache_source,
-        QueryCacheSource::SemanticCache,
-        "near-duplicate with a matching payload shape should reuse the \
-         sidecar entry"
-    );
-
-    // A near-duplicate asking for the vector-light shape must not be
-    // handed the full-payload bytes.
-    let other_shape = service
-        .query_with_cache_source(&ns, &semantic_request(near_unit_vector(0, 0.07), false))
-        .await
-        .expect("other-shape near-duplicate");
-    assert_eq!(
-        other_shape.cache_source,
-        QueryCacheSource::Backend,
-        "the sidecar must skip entries whose include_vector differs \
-         from the incoming request"
-    );
-    assert!(
-        other_shape
-            .result
-            .results
-            .iter()
-            .all(|h| h.vector.is_none()),
-        "the vector-light request must come back vector-light"
     );
 }
 

@@ -74,10 +74,6 @@ when `exact` is set because there are no IVF partitions to probe.
 - **`exact: true` and `nprobes` together reject with HTTP 400.** `nprobes` is
   an ANN/IVF query knob; exact scan has no partitions to probe. Rejecting the
   combination is clearer than silently ignoring caller input.
-- **Semantic cache is disabled for exact queries.** An exact request must not
-  be served by a near-duplicate cached result. Implement this as a validation
-  rejection if `semantic_cache.enabled` and `exact` are both set, and ensure
-  exact queries do not insert into the semantic sidecar.
 - **Exact result-cache entries are allowed and keyed distinctly.** The normal
   generation-keyed result cache can cache exact results, but `exact` must be
   part of the exact-cache key so exact and indexed answers never collide.
@@ -153,9 +149,6 @@ rules for exact scans; those belong in Layer if they are needed.
   leg.
 - **`nprobes` + exact:** reject with HTTP 400. The knobs describe mutually
   exclusive execution plans.
-- **Semantic cache:** reject `semantic_cache.enabled` with exact mode and skip
-  semantic sidecar insertion for exact results. Semantic-cache hits are
-  approximate by design and cannot satisfy the exactness contract.
 - **Exact result cache:** keep it, but include `exact` in the cache key. The
   existing exact result cache is keyed by namespace generation and canonical
   query fields; exactness must become one of those fields.
@@ -163,13 +156,11 @@ rules for exact scans; those belong in Layer if they are needed.
 ## References
 
 - `crates/hevsearch-core/src/query.rs` — current `QueryRequest` exposes
-  `nprobes`, text/fuzzy/filter/projection, and `semantic_cache`, but no
-  `exact` field.
+  `nprobes` plus text/fuzzy/filter/projection controls, but no `exact` field.
 - `crates/hevsearch-core/src/manager.rs` — current query construction applies
   `distance_type(...)`, `.nprobes(...)`, `.limit(k)`, optional
   `full_text_search(...)`, `only_if(...)`, and projection before execution.
-- `crates/hevsearch-core/src/service.rs` and `src/cache/semantic.rs` — exact
-  result cache, semantic sidecar semantics, and cache-key shape.
+- `crates/hevsearch-core/src/service.rs` — exact result-cache and cache-key shape.
 - `crates/hevsearch-bench/src/bin/recall_sweep.rs` and
   `src/recall.rs` — current RFC 0011 recall harness: unindexed exact baseline,
   synthetic brute-force ground truth, `.ivecs` ground truth, and IVF_PQ

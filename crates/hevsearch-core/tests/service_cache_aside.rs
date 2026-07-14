@@ -119,7 +119,6 @@ async fn service_cache_aside_follows_table_version() {
         fuzzy: None,
         filter: None,
         include_vector: true,
-        semantic_cache: None,
     };
 
     // ---- 1. upsert via service: two rows ----
@@ -244,7 +243,6 @@ async fn local_row_delete_does_not_serve_cached_deleted_row() {
         fuzzy: None,
         filter: None,
         include_vector: true,
-        semantic_cache: None,
     };
 
     service
@@ -336,7 +334,6 @@ async fn delete_recreate_does_not_serve_old_incarnation() {
         fuzzy: None,
         filter: None,
         include_vector: true,
-        semantic_cache: None,
     };
 
     // --- Incarnation A: one row, then cache the query result. ---

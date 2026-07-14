@@ -248,34 +248,9 @@ curl -X POST http://localhost:3000/ns/demo/import \
             <tr><td><code>fuzzy.max_edit_distance</code></td><td>integer|string</td><td>No</td><td>Typo-tolerant FTS matching for FTS-only and hybrid queries. Accepts <code>0</code>, <code>1</code>, <code>2</code>, or <code>"auto"</code>. Omitted means exact BM25 matching.</td></tr>
             <tr><td><code>filter</code></td><td>string</td><td>No</td><td>DataFusion SQL predicate applied before vector ranking or FTS scoring. Uses the same predicate dialect as <code>/list</code>; examples include <code>id &gt; 1000</code> and predicates over <code>_ingested_at</code>. For vector search this is a prefilter: the response contains up to <code>k</code> neighbours satisfying the predicate, not a post-filtered top-k. Malformed predicates return 400.</td></tr>
             <tr><td><code>include_vector</code></td><td>bool</td><td>No</td><td>Whether result rows carry the stored vector (default <code>true</code>). Set <code>false</code> when you only need <code>id</code>/<code>score</code>/<code>text</code> — the vector column is dropped from the returned rows, so the response and the cached result shrink, and the object-storage read for those rows' vectors is avoided. At dim=1536 each hit carries ~6&nbsp;KiB of raw vector data, so a 100-hit response drops by roughly 600&nbsp;KiB. This is response projection, not a scan optimisation: Lance still reads whatever it needs to score the query, so an unindexed flat scan reads the vectors regardless.</td></tr>
-            <tr><td><code>semantic_cache</code></td><td>object</td><td>No</td><td>Opt-in semantic-cache controls. See <em>Semantic cache</em> below. Omitting the field preserves the legacy exact-cache-only behaviour.</td></tr>
           </tbody>
         </table>
         <p><small>* At least one of <code>vector</code>, <code>vectors</code>, or <code>text</code> must be present. Setting both <code>vector</code> and <code>vectors</code> on the same request returns 400.</small></p>
-
-        <h4>Semantic cache</h4>
-        <p>An optional <code>semantic_cache</code> block lets the server reuse a previous query's result when the new query vector is very close to a recent one against the same namespace generation. The exact result cache is still consulted first; only when it misses does the semantic layer get a chance to short-circuit. Eligible requests are single-vector only in v1; multivector, FTS, hybrid, and filtered requests with the field enabled return 400.</p>
-        <table>
-          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
-          <tbody>
-            <tr><td><code>semantic_cache.enabled</code></td><td>bool</td><td>Yes (within the block)</td><td>When <code>true</code>, an exact-cache miss may be answered from a cached near-duplicate query. When <code>false</code> (or the whole block is omitted), only exact hits short-circuit.</td></tr>
-            <tr><td><code>semantic_cache.min_similarity</code></td><td>float32</td><td>No</td><td>Cosine-similarity floor for a semantic hit. Must lie in <code>(0.0, 1.0]</code>. Omitting picks the server default (<code>0.995</code>) — deliberately strict because a semantic hit is an approximate top-k, not the exact one.</td></tr>
-          </tbody>
-        </table>
-        <p>Behaviour:</p>
-        <ul>
-          <li><strong>The <code>semantic_cache</code> block does not change the exact-cache key.</strong> Toggling <code>enabled</code> on and off does not split otherwise-identical entries.</li>
-          <li><strong>k, nprobes, and include_vector must match</strong> between the incoming request and the cached candidate; mismatches are skipped. A vector-light cached result is never used to answer a request that wants vectors back, or vice versa.</li>
-          <li><strong>Any committed change drops the semantic layer</strong> alongside the exact cache: writes, deletes, compactions, and index builds. An index build invalidates too, because it is a Lance commit that advances the table version the cache keys on, even though the rows are unchanged.</li>
-          <li><strong>Behaviour is observable</strong> via three Prometheus counters: <code>hevsearch_semantic_cache_hits_total{namespace}</code>, <code>hevsearch_semantic_cache_misses_total{namespace}</code>, and <code>hevsearch_semantic_cache_rejections_total{namespace, reason}</code> (with bounded reason labels: <code>unsupported_query_shape</code>, <code>unsupported_distance_metric</code>, <code>empty_index</code>).</li>
-        </ul>
-        <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "vector": [0.10, 0.21, 0.29, 0.40],
-    "k": 10,
-    "semantic_cache": {"enabled": true, "min_similarity": 0.995}
-  }'</code></pre>
 
         <h4>Response (200)</h4>
         <table>
@@ -590,7 +565,7 @@ curl -X POST http://localhost:3000/ns/demo/import \
         <span class="endpoint-desc">Pre-warm the cache (async)</span>
       </div>
       <div class="endpoint-body">
-        <p>Accepts a list of queries and runs them in a background task to populate the cache. Returns <code>202 Accepted</code> immediately. Useful for warming the cache after a deployment or before expected traffic. Query objects use the same schema as <code>/query</code>; include <code>semantic_cache: {"enabled": true}</code> on eligible single-vector warmup queries if you also want to seed the semantic sidecar.</p>
+        <p>Accepts a list of queries and runs them in a background task to populate the exact result cache. Returns <code>202 Accepted</code> immediately. Useful for warming the cache after a deployment or before expected traffic. Query objects use the same schema as <code>/query</code>.</p>
 
         <h4>Request body</h4>
         <table>
@@ -631,7 +606,7 @@ curl -X POST http://localhost:3000/ns/demo/import \
 
         <div class="callout callout-info">
           <div class="callout-title">Monitoring warmup progress</div>
-          Watch the <code>hevsearch_cache_misses_total</code> metric to track how many warmup queries have completed. For semantic warmup, also watch <code>hevsearch_semantic_cache_rejections_total{reason="empty_index"}</code> at startup and <code>hevsearch_semantic_cache_hits_total</code> once near-duplicate traffic starts. Failures inside the background task are logged server-side but do not affect the HTTP response.
+          Watch the <code>hevsearch_cache_misses_total</code> metric to track how many warmup queries have completed. Failures inside the background task are logged server-side but do not affect the HTTP response.
         </div>
       </div>
     </div>

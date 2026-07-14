@@ -101,14 +101,6 @@ alongside vector kind and dimension:
    in the `/ns/{ns}` response; note the immutability and the multivector
    constraint.
 
-### Semantic-cache interaction
-
-The semantic cache's `min_similarity` is a **cosine** floor by definition
-(`README.md` semantic-cache section). On a non-cosine namespace, decide whether
-semantic caching is rejected (`400`, like other unsupported shapes) or interpreted
-against the namespace metric. Simplest v1: the semantic cache stays cosine-only and
-returns the existing `unsupported_query_shape` rejection on non-cosine namespaces.
-
 ## Edge mapping (how Layer uses this)
 
 For the edge twin (RFC 0086): Layer's `Index.spec.backend.distanceMetric` maps to
@@ -133,7 +125,6 @@ fixed").
 - **Score sign/range** — `results[].score` is a distance for vector queries
   (`docs/api.html`); confirm dot/cosine score orientation is documented so callers
   read it correctly (smaller-is-nearer vs. larger-is-more-similar).
-- **Semantic cache on non-cosine** — reject vs. reinterpret (lean reject in v1).
 
 ## Testing
 
@@ -169,8 +160,7 @@ removal.
   import — L2/Cosine/Dot available); `:1388` (query path that must match);
   `:746` (`resolve_schema_info`, where namespace shape is carried).
 - `README.md:336` — "Cosine only" multivector / no per-request metric option.
-- `docs/api.html` — `results[].score` is a distance; `/ns/{ns}` info shape to
-  extend; semantic-cache cosine floor.
+- `docs/api.html` — `results[].score` is a distance; `/ns/{ns}` info shape to extend.
 - `Cargo.toml:24-25` — `lancedb = "=0.29.0"` / `lance = "=6.0.0"` (the pin whose
   IVF_PQ `Dot` support the PR confirms).
 - `../layer/docs/rfcs/0086-hev-search-vectorstore-backend.md` — edge twin;

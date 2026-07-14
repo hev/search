@@ -99,11 +99,9 @@ impl NamespaceCache {
     /// Look up a cached result without populating on miss.
     ///
     /// Returns `Some(bytes)` on hit and `None` on miss; records the
-    /// hit/miss counter the same way `get_or_populate` does. Intended
-    /// for the semantic-cache interleave in [`crate::NamespaceService`],
-    /// which needs to slot a sidecar lookup between an exact miss and
-    /// the backend call. Callers that don't need that separation
-    /// should keep using `get_or_populate`.
+    /// hit/miss counter the same way `get_or_populate` does. The service
+    /// uses the separated lookup/populate path so unreadable persistent
+    /// entries can fall through to the backend and self-heal.
     ///
     /// Returns the generation that was sampled during the read so
     /// callers can pair a subsequent [`populate_with_generation`]
@@ -153,8 +151,7 @@ impl NamespaceCache {
     /// [`NamespaceManager`](crate::NamespaceManager) reports.
     ///
     /// The read path calls this before every lookup so the exact-cache
-    /// key (and the semantic sidecar, which shares this counter) is
-    /// derived from the persistent table version rather than a
+    /// key is derived from the persistent table version rather than a
     /// process-local sequence. This is what lets recovered NVMe entries
     /// survive a restart without being served stale: the version
     /// reflects every committed write, so a key computed after a
@@ -181,15 +178,6 @@ impl NamespaceCache {
     /// The current generation counter for a namespace.
     pub fn generation(&self, ns: &NamespaceId) -> u64 {
         self.generations.current(ns)
-    }
-
-    /// Borrow the shared generation counter so a sidecar (the
-    /// semantic-cache layer, for example) can stamp its own entries
-    /// against the same monotonic source the exact cache uses for
-    /// invalidation. Returning the `Arc` keeps invalidation
-    /// single-sourced — only the exact cache bumps the counter.
-    pub fn generation_counter(&self) -> Arc<GenerationCounter> {
-        Arc::clone(&self.generations)
     }
 
     /// Flush the NVMe write buffer and shut the cache down cleanly.

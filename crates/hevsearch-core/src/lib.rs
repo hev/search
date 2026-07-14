@@ -27,9 +27,8 @@ pub use manager::{
 pub use metrics::CoreMetrics;
 pub use namespace::NamespaceId;
 pub use query::{
-    effective_semantic_threshold, validate_ivf_pq_options, validate_semantic_cache_request,
-    FacetRequest, FuzzyMaxEditDistance, FuzzyRequest, IndexRequest, QueryRequest,
-    SemanticCacheRequest, DEFAULT_SEMANTIC_MIN_SIMILARITY,
+    validate_ivf_pq_options, FacetRequest, FuzzyMaxEditDistance, FuzzyRequest, IndexRequest,
+    QueryRequest,
 };
 pub use result::{
     DistanceMetric, FacetBucket, FacetField, FacetResultSet, ListOrder, ListPage, ListRow,

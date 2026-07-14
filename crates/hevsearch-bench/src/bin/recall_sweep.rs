@@ -177,7 +177,6 @@ async fn run_queries(
             fuzzy: None,
             filter: filter.map(str::to_string),
             include_vector: false,
-            semantic_cache: None,
         };
         let t = Instant::now();
         let res = service.query(ns, &req).await?;
