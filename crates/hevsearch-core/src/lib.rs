@@ -9,6 +9,7 @@
 pub mod analyzer;
 pub mod cache;
 pub mod error;
+pub mod hydration;
 pub mod manager;
 pub mod metrics;
 pub mod namespace;
@@ -20,6 +21,9 @@ pub mod storage_root;
 pub mod vector;
 
 pub use error::HevSearchError;
+pub use hydration::{
+    HydrationManifest, HydrationRange, HydrationReport, HYDRATION_MANIFEST_SCHEMA_VERSION,
+};
 pub use manager::{
     decode_list_cursor, encode_list_cursor, validate_arrow_import_schema,
     validate_scalar_index_column, CompactResult, NamespaceManager, UpsertRow, LIST_MAX_LIMIT,

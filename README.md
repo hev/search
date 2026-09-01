@@ -26,6 +26,16 @@ Benchmarked at 100,000 vectors of 1536 dimensions against AWS S3 in `eu-west-1`:
 
 Two things decide latency. An **IVF_PQ index** turns an unindexed ~25 s scan into a ~979 ms cold query — build it with `POST /ns/{ns}/index` after your first writes. The **result cache** returns byte-identical repeats in microseconds; any write advances the namespace version and drops its cached results, so it never serves stale data. Novel queries miss the result cache and pay the cold cost; an optional NVMe **object cache** (`HEVSEARCH_OBJECT_CACHE_ENABLED=true`) keeps the underlying S3 byte-ranges local so even new queries over already-read data skip the round-trips.
 
+Embedded/container hosts can make that residency a readiness contract. Every
+successful IVF_PQ build emits a versioned hydration manifest containing the
+immutable Lance index objects for that exact table version. The host calls
+`NamespaceManager::hydrate_index` with an explicit byte budget and bounded
+concurrency before opening readiness. It fails on a stale version, incomplete
+admission, or budget overflow; mutable Lance manifests and transaction objects
+always bypass the cache. A hydrated whole index object serves later bounded,
+offset, suffix, and HEAD reads locally, so the first novel query can be checked
+for zero index-object backend GETs. See [issue #50](https://github.com/hev/search/issues/50).
+
 ## Architecture
 
 Tiered storage:

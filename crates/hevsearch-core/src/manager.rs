@@ -52,6 +52,7 @@ use dashmap::DashMap;
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::ColumnOrdering;
 use lance::dataset::{WriteMode, WriteParams};
+use lance::index::DatasetIndexExt;
 use lancedb::index::scalar::{
     BTreeIndexBuilder, BooleanQuery, FtsIndexBuilder, FtsQuery, FullTextSearchQuery, MatchQuery,
     Occur,
@@ -65,7 +66,7 @@ use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectStorePath;
-use object_store::ObjectStore;
+use object_store::{GetOptions, ObjectStore};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::metrics::CoreMetrics;
@@ -77,6 +78,9 @@ use crate::result::{
 use crate::storage_root::Scheme;
 use crate::vector::VectorKind;
 use crate::{HevSearchError, NamespaceId, QueryResult, QueryResultSet, StorageRoot};
+use crate::{
+    HydrationManifest, HydrationRange, HydrationReport, HYDRATION_MANIFEST_SCHEMA_VERSION,
+};
 
 const TABLE_NAME: &str = "data";
 const DISTANCE_METRIC_METADATA_KEY: &str = "hevsearch.distance_metric";
@@ -1923,12 +1927,190 @@ impl NamespaceManager {
             .await
             .map_err(|e| HevSearchError::Backend(format!("create_index: {e}")))?;
 
+        // The committed table version is the only safe identity for a resident
+        // ANN working set. Emit its immutable index-object manifest as part of
+        // the successful build; startup hydration will reject it after any
+        // later table commit rather than serving a partial/stale cache.
+        self.write_hydration_manifest_for_table(ns, &tbl).await?;
+
         // Evict the pooled handle: building an index bumps the
         // table manifest, so the next operation should open a fresh
         // table view rather than reuse metadata captured before the
         // build.
         self.evict_handle(ns);
         Ok(())
+    }
+
+    async fn write_hydration_manifest_for_table(
+        &self,
+        ns: &NamespaceId,
+        tbl: &lancedb::Table,
+    ) -> Result<HydrationManifest, HevSearchError> {
+        let dataset = tbl
+            .dataset()
+            .ok_or_else(|| {
+                HevSearchError::Backend("hydration manifest requires a native lance table".into())
+            })?
+            .get()
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("resolve dataset: {e}")))?;
+        let table_version = dataset.version_id();
+        let indices = dataset
+            .load_indices()
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("load index metadata: {e}")))?;
+        let mut ranges = Vec::new();
+        for index in indices.iter() {
+            let files = index.files.as_ref().ok_or_else(|| {
+                HevSearchError::Backend(format!(
+                    "index {} ({}) has no file-size metadata; rebuild it with the current engine before hydration",
+                    index.name, index.uuid
+                ))
+            })?;
+            for file in files {
+                ranges.push(HydrationRange {
+                    path: format!("_indices/{}/{}", index.uuid, file.path),
+                    start: 0,
+                    end: file.size_bytes,
+                });
+            }
+        }
+        ranges.sort_by(|a, b| (&a.path, a.start).cmp(&(&b.path, b.start)));
+        let manifest = HydrationManifest {
+            schema_version: HYDRATION_MANIFEST_SCHEMA_VERSION,
+            namespace: ns.to_string(),
+            table_version,
+            ranges,
+        };
+        // Validate structure without imposing an operator budget at build time.
+        manifest.validate_for(ns.as_str(), table_version, u64::MAX)?;
+        let bytes = serde_json::to_vec(&manifest)
+            .map_err(|e| HevSearchError::Backend(format!("serialize hydration manifest: {e}")))?;
+        let indices_dir = dataset.indices_dir();
+        let part_count = indices_dir.parts().count();
+        let table_root: ObjectStorePath = indices_dir
+            .parts()
+            .take(part_count.saturating_sub(1))
+            .collect();
+        let path = table_root
+            .child("_hydration")
+            .child(format!("v{table_version}.json"));
+        dataset
+            .object_store()
+            .put(&path, &bytes)
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("write hydration manifest: {e}")))?;
+        Ok(manifest)
+    }
+
+    /// Hydrate every immutable index range declared for the live table version.
+    ///
+    /// The versioned manifest itself is read through a mutable-metadata path and
+    /// therefore bypasses the local object cache. Declared `_indices/` ranges
+    /// flow through the cache-wrapped Lance store with bounded concurrency.
+    pub async fn hydrate_index(
+        &self,
+        ns: &NamespaceId,
+        max_bytes: u64,
+        concurrency: usize,
+    ) -> Result<HydrationReport, HevSearchError> {
+        if concurrency == 0 {
+            return Err(HevSearchError::InvalidRequest(
+                "hydration concurrency must be at least 1".into(),
+            ));
+        }
+        let Some((tbl, _)) = self.open_existing(ns).await? else {
+            return Err(HevSearchError::InvalidRequest(format!(
+                "cannot hydrate namespace {ns}: namespace does not exist"
+            )));
+        };
+        let dataset = tbl
+            .dataset()
+            .ok_or_else(|| {
+                HevSearchError::Backend("index hydration requires a native lance table".into())
+            })?
+            .get()
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("resolve dataset: {e}")))?;
+        let table_version = dataset.version_id();
+        let indices_dir = dataset.indices_dir();
+        let part_count = indices_dir.parts().count();
+        let table_root: ObjectStorePath = indices_dir
+            .parts()
+            .take(part_count.saturating_sub(1))
+            .collect();
+        let manifest_path = table_root
+            .child("_hydration")
+            .child(format!("v{table_version}.json"));
+        let manifest_bytes = dataset
+            .object_store()
+            .inner
+            .get(&manifest_path)
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("read hydration manifest: {e}")))?
+            .bytes()
+            .await
+            .map_err(|e| HevSearchError::Backend(format!("buffer hydration manifest: {e}")))?;
+        let manifest: HydrationManifest = serde_json::from_slice(&manifest_bytes)
+            .map_err(|e| HevSearchError::Backend(format!("decode hydration manifest: {e}")))?;
+        let required_bytes = manifest.validate_for(ns.as_str(), table_version, max_bytes)?;
+        let before = self.metrics.object_cache().snapshot();
+        let started = std::time::Instant::now();
+        let store = dataset.object_store().inner.clone();
+        let fetches = futures::stream::iter(manifest.ranges.iter().cloned().map(|range| {
+            let store = store.clone();
+            let path = ObjectStorePath::from(format!("{table_root}/{}", range.path));
+            async move {
+                let bytes = store
+                    .get_opts(&path, GetOptions::default())
+                    .await
+                    .map_err(|e| HevSearchError::Backend(format!("hydrate {}: {e}", range.path)))?
+                    .bytes()
+                    .await
+                    .map_err(|e| {
+                        HevSearchError::Backend(format!("buffer hydrated {}: {e}", range.path))
+                    })?;
+                if bytes.len() as u64 != range.len() {
+                    return Err(HevSearchError::Backend(format!(
+                        "hydrated object size changed for {}: manifest={}, fetched={}",
+                        range.path,
+                        range.len(),
+                        bytes.len()
+                    )));
+                }
+                Ok::<(), HevSearchError>(())
+            }
+        }))
+        .buffer_unordered(concurrency)
+        .try_collect::<Vec<_>>()
+        .await?;
+        let after = self.metrics.object_cache().snapshot();
+        let admitted = after
+            .1
+            .saturating_sub(before.1)
+            .saturating_add(after.2.saturating_sub(before.2));
+        if admitted != fetches.len() as u64 {
+            return Err(HevSearchError::Backend(format!(
+                "hydration did not admit every index object: required_objects={}, admitted_objects={admitted}",
+                fetches.len()
+            )));
+        }
+        Ok(HydrationReport {
+            table_version,
+            manifest_bytes: manifest_bytes.len() as u64,
+            manifest_gets: 1,
+            required_bytes,
+            range_gets: fetches.len() as u64,
+            concurrency,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            cache_inner_gets: after.0.saturating_sub(before.0),
+            cache_hits: after.1.saturating_sub(before.1),
+            cache_misses: after.2.saturating_sub(before.2),
+            object_store_bytes: after.3.saturating_sub(before.3),
+            cache_evictions: after.4.saturating_sub(before.4),
+            local_cache_occupancy_bytes: self.metrics.object_cache().occupancy_bytes.get() as u64,
+            peak_rss_bytes: linux_peak_rss_bytes().unwrap_or(0),
+        })
     }
 
     /// Build a BM25 full-text search index on the namespace's
@@ -2653,6 +2835,18 @@ fn manifest_timestamp_ms(timestamp_nanos: u128) -> Option<i64> {
         return None;
     }
     i64::try_from(timestamp_nanos / 1_000_000).ok()
+}
+
+fn linux_peak_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))?
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    kib.checked_mul(1024)
 }
 
 fn namespace_schema_fields(schema: &Schema) -> Vec<NamespaceField> {

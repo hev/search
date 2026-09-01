@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{self, BoxStream, StreamExt};
 use lru::LruCache;
-use prometheus::{IntCounter, Opts, Registry};
+use prometheus::{IntCounter, IntGauge, Opts, Registry};
 use tokio::fs;
 
 use object_store::path::Path as OPath;
@@ -95,6 +95,8 @@ impl ObjectCacheConfig {
 pub struct ObjectCacheMetrics {
     /// Reads that went to the inner (object storage) store — misses + uncacheable passthroughs.
     pub inner_gets: IntCounter,
+    /// Reads of immutable Lance index objects forwarded to object storage.
+    pub index_inner_gets: IntCounter,
     /// Reads served from the local cache.
     pub hits: IntCounter,
     /// Cacheable reads that missed, were fetched from object storage, and were written to the
@@ -102,8 +104,12 @@ pub struct ObjectCacheMetrics {
     pub misses: IntCounter,
     /// Bytes fetched from object storage.
     pub s3_bytes: IntCounter,
+    /// Immutable Lance index bytes fetched from object storage.
+    pub index_s3_bytes: IntCounter,
     /// Cache entries evicted for capacity.
     pub evictions: IntCounter,
+    /// Current immutable payload bytes resident in the local cache.
+    pub occupancy_bytes: IntGauge,
 }
 
 impl ObjectCacheMetrics {
@@ -116,10 +122,19 @@ impl ObjectCacheMetrics {
             registry.register(Box::new(counter.clone()))?;
             Ok(counter)
         };
+        let gauge = |name: &str, help: &str| -> prometheus::Result<IntGauge> {
+            let value = IntGauge::with_opts(Opts::new(name, help))?;
+            registry.register(Box::new(value.clone()))?;
+            Ok(value)
+        };
         Ok(Self {
             inner_gets: mk(
                 "hevsearch_object_cache_inner_gets_total",
                 "Object-cache reads forwarded to object storage (misses + uncacheable passthroughs)",
+            )?,
+            index_inner_gets: mk(
+                "hevsearch_object_cache_index_inner_gets_total",
+                "Index-object reads forwarded to object storage",
             )?,
             hits: mk(
                 "hevsearch_object_cache_hits_total",
@@ -133,9 +148,17 @@ impl ObjectCacheMetrics {
                 "hevsearch_object_cache_s3_bytes_total",
                 "Bytes fetched from object storage by the object cache",
             )?,
+            index_s3_bytes: mk(
+                "hevsearch_object_cache_index_s3_bytes_total",
+                "Immutable Lance index bytes fetched from object storage",
+            )?,
             evictions: mk(
                 "hevsearch_object_cache_evictions_total",
                 "Object-cache entries evicted for capacity",
+            )?,
+            occupancy_bytes: gauge(
+                "hevsearch_object_cache_occupancy_bytes",
+                "Immutable payload bytes currently resident in the local object cache",
             )?,
         })
     }
@@ -145,10 +168,17 @@ impl ObjectCacheMetrics {
         let mk = |name: &str| IntCounter::with_opts(Opts::new(name, name)).expect("counter opts");
         Self {
             inner_gets: mk("hevsearch_object_cache_inner_gets_total"),
+            index_inner_gets: mk("hevsearch_object_cache_index_inner_gets_total"),
             hits: mk("hevsearch_object_cache_hits_total"),
             misses: mk("hevsearch_object_cache_misses_total"),
             s3_bytes: mk("hevsearch_object_cache_s3_bytes_total"),
+            index_s3_bytes: mk("hevsearch_object_cache_index_s3_bytes_total"),
             evictions: mk("hevsearch_object_cache_evictions_total"),
+            occupancy_bytes: IntGauge::with_opts(Opts::new(
+                "hevsearch_object_cache_occupancy_bytes",
+                "hevsearch_object_cache_occupancy_bytes",
+            ))
+            .expect("gauge opts"),
         }
     }
 
@@ -307,6 +337,7 @@ impl CachingObjectStore {
                 let _ = std::fs::remove_file(sz_path(&dir.join(&k)));
             }
         }
+        metrics.occupancy_bytes.set(lru.used as i64);
 
         Self {
             inner,
@@ -351,13 +382,18 @@ impl CachingObjectStore {
     }
 
     async fn admit_file(&self, key: String, size: u64) {
-        let evicted = self.lru.lock().unwrap().admit(key, size);
+        let (evicted, used) = {
+            let mut lru = self.lru.lock().unwrap();
+            let evicted = lru.admit(key, size);
+            (evicted, lru.used)
+        };
         for k in evicted {
             let p = self.dir.join(&k);
             let _ = fs::remove_file(&p).await;
             let _ = fs::remove_file(sz_path(&p)).await;
             self.metrics.evictions.inc();
         }
+        self.metrics.occupancy_bytes.set(used as i64);
     }
 
     /// Try to serve `(location, range)` from disk. Returns the result on a hit.
@@ -381,6 +417,51 @@ impl CachingObjectStore {
         self.lru.lock().unwrap().touch(key);
         Some(build_result(location.clone(), bytes, range, Some(obj_size)))
     }
+
+    /// Serve a bounded read from a previously hydrated whole immutable object.
+    /// Whole-object admission is what turns a finite manifest into coverage for
+    /// Lance's arbitrary later subrange reads.
+    async fn disk_whole_range(&self, location: &OPath, requested: &GetRange) -> Option<GetResult> {
+        let (key, path) = self.key_path(location, None);
+        let obj_size = fs::read_to_string(sz_path(&path))
+            .await
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())?;
+        let range = match requested {
+            GetRange::Bounded(range) => (range.start, range.end),
+            GetRange::Offset(start) => (*start, obj_size),
+            GetRange::Suffix(length) => (obj_size.saturating_sub(*length), obj_size),
+        };
+        if range.0 > range.1 || range.1 > obj_size {
+            return None;
+        }
+        let bytes = fs::read(&path).await.ok()?;
+        let slice = bytes.get(range.0 as usize..range.1 as usize)?.to_vec();
+        self.metrics.hits.inc();
+        self.lru.lock().unwrap().touch(&key);
+        Some(build_result(
+            location.clone(),
+            slice,
+            Some(range),
+            Some(obj_size),
+        ))
+    }
+
+    async fn disk_whole_head(&self, location: &OPath) -> Option<GetResult> {
+        let (key, path) = self.key_path(location, None);
+        let obj_size = fs::read_to_string(sz_path(&path))
+            .await
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())?;
+        self.metrics.hits.inc();
+        self.lru.lock().unwrap().touch(&key);
+        Some(build_result(
+            location.clone(),
+            Vec::new(),
+            Some((0, 0)),
+            Some(obj_size),
+        ))
+    }
 }
 
 /// Cache only immutable, uniquely-named (write-once) objects (data fragments + index files). Everything else
@@ -395,6 +476,10 @@ fn should_cache(location: &OPath) -> bool {
         return false;
     }
     p.contains("_indices") || p.contains("/data/") || p.ends_with(".lance")
+}
+
+fn is_index_object(location: &OPath) -> bool {
+    location.as_ref().contains("_indices")
 }
 
 /// Whether a `GetOptions` is a plain (cacheable) read: not a HEAD, no conditional headers, no
@@ -415,6 +500,14 @@ fn plain_read(o: &GetOptions) -> bool {
     matches!(o.range, None | Some(GetRange::Bounded(_)))
 }
 
+fn unconditional_read(o: &GetOptions) -> bool {
+    o.version.is_none()
+        && o.if_match.is_none()
+        && o.if_none_match.is_none()
+        && o.if_modified_since.is_none()
+        && o.if_unmodified_since.is_none()
+}
+
 fn bounded_or_whole(o: &GetOptions) -> Option<(u64, u64)> {
     match &o.range {
         Some(GetRange::Bounded(r)) => Some((r.start, r.end)),
@@ -425,8 +518,25 @@ fn bounded_or_whole(o: &GetOptions) -> Option<(u64, u64)> {
 #[async_trait]
 impl ObjectStore for CachingObjectStore {
     async fn get_opts(&self, location: &OPath, options: GetOptions) -> OResult<GetResult> {
+        // Once a complete immutable object is resident, it is authoritative
+        // for every non-conditional access shape Lance may use: footer suffix,
+        // offset, bounded range, or HEAD metadata.
+        if should_cache(location) && unconditional_read(&options) {
+            if options.head {
+                if let Some(hit) = self.disk_whole_head(location).await {
+                    return Ok(hit);
+                }
+            } else if let Some(requested) = options.range.as_ref() {
+                if let Some(hit) = self.disk_whole_range(location, requested).await {
+                    return Ok(hit);
+                }
+            }
+        }
         if !should_cache(location) || !plain_read(&options) {
             self.metrics.inner_gets.inc();
+            if is_index_object(location) {
+                self.metrics.index_inner_gets.inc();
+            }
             return self.inner.get_opts(location, options).await;
         }
         let range = bounded_or_whole(&options);
@@ -436,7 +546,6 @@ impl ObjectStore for CachingObjectStore {
         if let Some(hit) = self.disk_hit(&key, &path, location, range).await {
             return Ok(hit);
         }
-
         // single-flight: serialize concurrent identical misses, then self-clean.
         let gate = self.inflight_lock(&key);
         let _g = gate.lock().await;
@@ -486,6 +595,9 @@ impl CachingObjectStore {
         path: &FsPath,
     ) -> OResult<GetResult> {
         self.metrics.inner_gets.inc();
+        if is_index_object(location) {
+            self.metrics.index_inner_gets.inc();
+        }
         let res = self.inner.get_opts(location, options).await?;
 
         // Bound the buffered read. A whole-object (or large-range) read of a big fragment would
@@ -501,6 +613,9 @@ impl CachingObjectStore {
         let actual = res.range.clone();
         let bytes = res.bytes().await?;
         self.metrics.s3_bytes.inc_by(bytes.len() as u64);
+        if is_index_object(location) {
+            self.metrics.index_s3_bytes.inc_by(bytes.len() as u64);
+        }
 
         // Count a miss only once the bytes are durably cached, so the metric means
         // "fetched and cached" — a failed disk write (or an over-limit passthrough above) is not
@@ -709,6 +824,68 @@ mod tests {
             (1, 1, 1),
             "miss then hit, inner touched once"
         );
+    }
+
+    #[tokio::test]
+    async fn hydrated_whole_object_serves_arbitrary_subranges() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let loc = OPath::from("ns/data.lance/_indices/abc/index.idx");
+        inner
+            .put(&loc, PutPayload::from((0_u8..100).collect::<Vec<_>>()))
+            .await
+            .unwrap();
+        let (cache, metrics) = cache(tmp.path(), inner);
+
+        let whole = cache
+            .get_opts(&loc, GetOptions::default())
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(whole.len(), 100);
+        let bounded = cache
+            .get_opts(
+                &loc,
+                GetOptions {
+                    range: Some(GetRange::Bounded(17..29)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(bounded.as_ref(), &(17_u8..29).collect::<Vec<_>>());
+        let suffix = cache
+            .get_opts(
+                &loc,
+                GetOptions {
+                    range: Some(GetRange::Suffix(7)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(suffix.as_ref(), &(93_u8..100).collect::<Vec<_>>());
+        let head = cache
+            .get_opts(
+                &loc,
+                GetOptions {
+                    head: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(head.meta.size, 100);
+        let (inner_gets, hits, misses, _, _) = metrics.snapshot();
+        assert_eq!((inner_gets, hits, misses), (1, 3, 1));
     }
 
     #[tokio::test]
