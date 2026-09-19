@@ -18,9 +18,9 @@ Motivating workload: Layer `/search` (layer-pro RFC 0116)
 
 Layer's fused text route expands one search into many subqueries and fuses the
 rankings with RRF at the edge. On hev search each subquery is a separate
-`POST /ns/{ns}/query` today (`vectorstore-core/src/search.rs:593-680` on
+`POST /ns/{ns}/query` today (`vectorstore-core/src/search.rs:593-690` on
 layer-pro `origin/main` @ `249076d`; the store's `multi_ranked_query` is
-declared unimplemented, `:682-690`). That has three costs the engine can remove:
+declared unimplemented, at `:682-690`). That has three costs the engine can remove:
 
 1. **No shared read cut.** Every `/query` derives its own cache generation from
    whatever version the pooled handle holds at that instant
@@ -138,7 +138,7 @@ POST /ns/{namespace}/multi-query
 ```
 
 - **`cut`** — the single Lance `table_version` (`result.rs:208`) every leg ran
-  against. This is RFC 0012's LSN; the gateway can carry it as the response's
+  against, plus `last_write_ms`, that version's commit timestamp. This is RFC 0012's LSN; the gateway can carry it as the response's
   consistency token with no further call.
 - **`hits`** — `id`, raw `score` (BM25 `_score` or `_distance`; not comparable
   across kinds, as today), and 1-based `rank`. Rank is explicit so the gateway's
@@ -245,10 +245,11 @@ multivector case is called out separately):
 | Path | Measured | Source |
 |---|---|---|
 | exact-cache hit | 56–62 µs p50 | `bench/results/cold_vs_warm_realistic.md:16-19` |
-| backend query, warm handle, novel query | 7.2 ms p50, 194 ms p95 | `bench/results/first_query_profile_objcache.md:24` |
-| backend IVF_PQ, cold | 71 ms p50 | `bench/results/cold_vs_warm_realistic.md:18` |
+| backend ANN query, warm handle, novel query (S3, 1M rows) | 7.2 ms p50, 194 ms p95 | `bench/results/first_query_profile_objcache.md:24` |
+| backend IVF_PQ, cold (MinIO, 100k rows) | 71 ms p50 | `bench/results/cold_vs_warm_realistic.md:18` |
+| backend ANN query, cold process / fresh process (S3, 1M rows) | 383 ms / 144 ms p50 | `bench/results/first_query_profile_objcache.md:22,26` |
 | cold IVF_PQ object reads | ~140 small GETs, request-count-bound | `object_cache.rs:3-5` |
-| multivector MaxSim | CPU-bound, seconds p50, cache does not help | `bench/results/beir_multivector_objcache.md:413-420` |
+| multivector MaxSim | CPU-bound, ~17 s p50 (~46 s at 1M docs), cache does not help | `bench/results/beir_multivector_objcache.md:221,265,413-420` |
 
 Per leg, unshared: one Lance plan + execution, a top-`k` heap, and the
 index reads for that modality — IVF centroids + `nprobes` (default 20,
@@ -276,9 +277,9 @@ assumes a leg pays its own prefilter.
 
 | Limit | Value | Why |
 |---|---|---|
-| **Hard cap, legs per request** | **64** | With in-request execution concurrency 8, 64 legs is 8 waves. At the measured 7.2 ms warm backend p50 that is ≈ 58 ms of leg time, inside RFC 0116's illustrative `legs_ms: 88`; cold it is ≈ 0.6 s once, then NVMe-warm. 128 legs would double both and buy nothing the workload asks for: (4 strings × 6 text fields × 2) + 8 ANN = 56. |
+| **Hard cap, legs per request** | **64** | With in-request execution concurrency 8, 64 legs is 8 waves. If every leg lands at the 7.2 ms warm p50 that is ≈ 57 ms of leg time, inside RFC 0116's illustrative `legs_ms: 88`; a wave ends at its slowest leg, so one 194 ms tail leg puts the request near 250 ms (see below). 128 legs would double both and buy nothing the workload asks for: (4 strings × 4 text fields × 2) + 8 ANN = 40, which is 5 waves. The 24 spare legs are headroom for the LYR-91 fan-out and can only be BM25. |
 | **Sub-cap, vector legs** | **8** single-vector; **1** on a multivector namespace | The expensive kind. Each probes 20 partitions and is the only leg whose cold cost is request-count-bound (~140 GETs). MaxSim is CPU-bound at seconds per query, so parallel MaxSim legs just contend. |
-| **Sub-cap, fuzzy text legs** (effective distance > 0) | **16** | Term-dictionary expansion per token makes a fuzzy leg the costliest text leg. One per (string, field) is all this engine can use; 16 = 4 strings × 4 fields. |
+| **Sub-cap, fuzzy text legs** (effective distance > 0) | **16** | Term-dictionary expansion per token makes a fuzzy leg the costliest text leg, and that cost is unmeasured, so this limit gets no headroom: 16 = 4 strings × 4 fields, exactly the fuzzy share of the 40-leg sizing workload. |
 | **Per-leg `k`** | 1..=1000 | The gateway's per-leg ceiling is 200 (`routes/hybrid_text.rs:51`); 1000 leaves room without allowing scan-sized legs. |
 | **Σ `k` across legs** | ≤ 12,800 (= 64 × 200) | Bounds the union take and the response. |
 | **Execution concurrency** | 8 per request, engine config, not wire | Keeps one request from monopolizing the runtime. Dedupe and cache hits do not consume a slot. |
@@ -290,9 +291,24 @@ gateway's `MAX_QUERY_TOKENS` ranking policy. Neither describes this engine.
 The caps are constants to start, and they count *submitted* legs (before dedupe
 and collapse) so the budget is predictable from the request alone.
 
-The latency figures are from existing single-leg benches, not a multi-leg run.
-RFC 0011's harness should gain a multi-leg scenario before these constants are
-treated as settled; see open questions.
+The field count in the sizing workload is forward-looking: a namespace has one
+text surface today, so the largest request the edge can build now is
+(4 × 1 × 2) + 1 ANN = 9 legs. Four fields is the assumption both the hard cap
+and the fuzzy sub-cap are sized on; a namespace with more fuzzy-worthy fields
+than that waits for a measured fuzzy leg cost rather than a bigger guess.
+
+How far the numbers go: the 7.2 ms / 194 ms row is one sequential single-vector
+IVF_PQ ANN query (1M rows, dim 1536, `k`=10, `nprobes`=20, S3 eu-west-1, object
+cache on), 19 samples at 6.5–8.8 ms and one at 193.86 ms. It is not a text leg,
+not `k` = 100–200, and not 8-way concurrent. At a 1-in-20 outlier rate a 64-leg
+request draws at least one tail leg about 96% of the time (40 legs: 87%), so
+≈ 250 ms, not ≈ 57 ms, is the figure to plan on. Cold, on that same S3 bench,
+the first wave pays 383 ms p50 in a cold process (144 ms in a fresh one,
+`first_query_profile_objcache.md:22,26`); later waves read NVMe-warm ranges and
+are unmeasured. **Text-leg cost is argued from mechanism, not measured:** there
+is no FTS or fuzzy bench in `bench/results/`, yet 32 of the 40 sized legs are
+text legs. RFC 0011's harness should gain a multi-leg scenario with text legs
+before these constants are treated as settled; see open questions.
 
 ## Interaction with the fuzzy clamp
 
@@ -377,7 +393,7 @@ addresses `field: "text"` / `column: "vector"` only.
 ## Interactions with other RFCs
 
 - **RFC 0012 (LSN).** The cut *is* an LSN read. This call is the first place the
-  engine returns `table_version` on a read; `lsn`/`consistency` on the request
+  engine returns `table_version` on a query response; `lsn`/`consistency` on the request
   are accepted once 0012 lands and gate once per request.
 - **RFC 0004 (fuzzy).** Reused unchanged per leg; motivates the fuzzy leg unit.
 - **RFC 0014 (exact).** `exact` is a per-leg knob on vector legs, in the leg
