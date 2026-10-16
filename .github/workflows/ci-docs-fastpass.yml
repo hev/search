@@ -14,10 +14,14 @@ concurrency:
 jobs:
   paths:
     name: classify changed paths
-    runs-on: ubuntu-latest
+    runs-on: [oven, linux-x64]
     outputs:
       docs_only: ${{ steps.docs.outputs.docs == 'true' && steps.non_docs.outputs.non_docs != 'true' }}
     steps:
+      - name: Require self-hosted runner
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: test "$RUNNER_ENVIRONMENT" = self-hosted
       - name: Detect docs paths
         id: docs
         uses: dorny/paths-filter@v4
@@ -40,10 +44,14 @@ jobs:
 
   test:
     name: fmt / clippy / test
-    runs-on: ubuntu-latest
+    runs-on: [oven, linux-x64]
     needs: paths
     if: needs.paths.outputs.docs_only == 'true'
     steps:
+      - name: Require self-hosted runner
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: test "$RUNNER_ENVIRONMENT" = self-hosted
       - name: Fast-pass docs-only PR
         run: |
           echo "Docs-only change detected."
