@@ -33,7 +33,7 @@ env:
 jobs:
   test:
     name: fmt / clippy / test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux-x64, oven]
     timeout-minutes: 60
 
     steps:
