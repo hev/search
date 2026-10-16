@@ -33,10 +33,14 @@ env:
 jobs:
   test:
     name: fmt / clippy / test
-    runs-on: [self-hosted, linux-x64, oven]
+    runs-on: [oven, linux-x64]
     timeout-minutes: 60
 
     steps:
+      - name: Require self-hosted runner
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: test "$RUNNER_ENVIRONMENT" = self-hosted
       - uses: actions/checkout@v4
 
       # ubuntu-latest ships with ~14 GB free. Lance + DataFusion in
