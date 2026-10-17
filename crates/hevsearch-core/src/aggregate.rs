@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use datafusion::{
     execution::runtime_env::RuntimeEnvBuilder,
-    physical_plan::{displayable, execute_stream},
+    physical_plan::{display::DisplayableExecutionPlan, execute_stream},
     prelude::{SQLOptions, SessionConfig, SessionContext},
 };
 use futures::TryStreamExt;
@@ -28,6 +28,10 @@ pub struct AggregateRequest {
     pub tables: BTreeMap<String, String>,
     /// One read-only SELECT/CTE query, in the pinned DataFusion dialect.
     pub sql: String,
+    /// Optional physical namespace-to-version pins for consistent repeated reads.
+    /// Missing/expired versions fail; they never fall back to the latest version.
+    #[serde(default)]
+    pub versions: BTreeMap<String, u64>,
     /// Result row budget; exceeding it fails instead of returning partial totals.
     pub max_rows: usize,
     /// Serialized JSON row budget, at most 8 MiB.
@@ -56,6 +60,13 @@ impl AggregateRequest {
                 return Err(invalid("table aliases must be lower-case SQL identifiers"));
             }
             NamespaceId::new(namespace.clone())?;
+        }
+        for (namespace, version) in &self.versions {
+            if *version == 0 || !self.tables.values().any(|ns| ns == namespace) {
+                return Err(invalid(
+                    "versions must pin bound namespaces to nonzero versions",
+                ));
+            }
         }
         if self.sql.is_empty() || self.sql.len() > 64 * 1024 {
             return Err(invalid("sql must contain 1..=65536 bytes"));
@@ -145,6 +156,14 @@ pub(crate) async fn execute(
     ) {
         return Err(invalid("aggregate requires a SELECT query"));
     }
+    let mut names = std::collections::HashSet::new();
+    for field in df.schema().fields() {
+        if !names.insert(field.name()) {
+            return Err(invalid(
+                "output column names must be unique; use AS aliases",
+            ));
+        }
+    }
     let df = df.limit(0, Some(request.max_rows + 1)).map_err(invalid)?;
     let logical_plan = df
         .clone()
@@ -167,6 +186,32 @@ pub(crate) async fn execute(
             if batch.get_array_memory_size() > MAX_BYTES * 4 {
                 return Err(invalid("aggregate output batch exceeds memory budget"));
             }
+            // JSON has no decimal type: preserve scalar financial values as
+            // exact strings rather than round them through serde_json f64.
+            let mut columns = batch.columns().to_vec();
+            let mut fields = batch.schema().fields().to_vec();
+            for i in 0..columns.len() {
+                if matches!(
+                    columns[i].data_type(),
+                    arrow_schema::DataType::Decimal32(_, _)
+                        | arrow_schema::DataType::Decimal64(_, _)
+                        | arrow_schema::DataType::Decimal128(_, _)
+                        | arrow_schema::DataType::Decimal256(_, _)
+                ) {
+                    columns[i] = arrow_cast::cast(&columns[i], &arrow_schema::DataType::Utf8)
+                        .map_err(invalid)?;
+                    fields[i] = Arc::new(arrow_schema::Field::new(
+                        fields[i].name(),
+                        arrow_schema::DataType::Utf8,
+                        true,
+                    ));
+                }
+            }
+            let batch = arrow_array::RecordBatch::try_new(
+                Arc::new(arrow_schema::Schema::new(fields)),
+                columns,
+            )
+            .map_err(invalid)?;
             let mut writer = arrow_json::WriterBuilder::new()
                 .with_explicit_nulls(true)
                 .build::<_, arrow_json::writer::JsonArray>(Vec::new());
@@ -185,14 +230,14 @@ pub(crate) async fn execute(
             }
         }
     }
+    let physical_plan = DisplayableExecutionPlan::with_full_metrics(plan.as_ref())
+        .indent(true)
+        .to_string();
     Ok(AggregateResult {
         rows,
         snapshots,
         logical_plan,
-        physical_plan: displayable(plan.as_ref())
-            .with_metrics()
-            .indent(true)
-            .to_string(),
+        physical_plan,
         elapsed_ms: started.elapsed().as_millis() as u64,
         result_bytes,
         executed: !request.explain_only,

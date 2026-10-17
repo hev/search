@@ -150,7 +150,8 @@ pub fn validate_scalar_index_column(column: &str) -> Result<(), HevSearchError> 
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 /// Attribute column types accepted by JSON upsert, Arrow import,
 /// filters, and facets. The first four are scalars; [`StringList`] is
 /// a variable-length list of strings (e.g. tags/genres) — filterable
@@ -169,6 +170,10 @@ pub enum AttributeType {
     /// Variable-length list of UTF-8 strings (`List<Utf8>`). Multi-valued:
     /// `array_has(col, 'v')` filters it and a facet counts each element.
     StringList,
+    /// List of signed 64-bit integers (for epoch timestamps, for example).
+    Int64List,
+    /// List of 64-bit floating point numbers.
+    Float64List,
 }
 
 impl RowId {
@@ -205,6 +210,10 @@ impl AttributeType {
             Self::Utf8 => DataType::Utf8,
             // Item field "item", nullable — matches arrow's ListBuilder
             // default so the built array's type equals the table schema.
+            Self::Int64List => DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            Self::Float64List => {
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true)))
+            }
             Self::StringList => DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
         }
     }
@@ -216,6 +225,10 @@ impl AttributeType {
             DataType::Boolean => Some(Self::Boolean),
             DataType::Utf8 => Some(Self::Utf8),
             DataType::List(item) if *item.data_type() == DataType::Utf8 => Some(Self::StringList),
+            DataType::List(item) if *item.data_type() == DataType::Int64 => Some(Self::Int64List),
+            DataType::List(item) if *item.data_type() == DataType::Float64 => {
+                Some(Self::Float64List)
+            }
             _ => None,
         }
     }
@@ -228,6 +241,8 @@ impl AttributeType {
             Self::Utf8 => "CAST(NULL AS VARCHAR)",
             // Backfill an all-null list column on an existing table.
             Self::StringList => "arrow_cast(NULL, 'List(Utf8)')",
+            Self::Int64List => "arrow_cast(NULL, 'List(Int64)')",
+            Self::Float64List => "arrow_cast(NULL, 'List(Float64)')",
         }
     }
 }
@@ -319,13 +334,18 @@ fn infer_attribute_type(
             // A list attribute. An empty list carries no type signal, so it
             // is treated like null (no column created from it alone); a later
             // non-empty list in the request/namespace fixes the type.
+            let items: Vec<_> = items.iter().filter(|v| !v.is_null()).collect();
             if items.is_empty() {
                 Ok(None)
-            } else if items.iter().all(serde_json::Value::is_string) {
+            } else if items.iter().all(|v| v.is_string()) {
                 Ok(Some(AttributeType::StringList))
+            } else if items.iter().all(|v| v.as_i64().is_some()) {
+                Ok(Some(AttributeType::Int64List))
+            } else if items.iter().all(|v| v.is_f64()) {
+                Ok(Some(AttributeType::Float64List))
             } else {
                 Err(HevSearchError::InvalidRequest(
-                    "list attributes must contain only strings".into(),
+                    "list attributes must contain one supported element type (strings, int64, or float64)".into(),
                 ))
             }
         }
@@ -403,6 +423,22 @@ async fn add_null_attribute_columns(
     Ok(())
 }
 
+/// Explicit storage schema, allowing metadata-first rows without fabricated vectors.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamespaceSchema {
+    /// Fixed vector dimension (1..=65536), even for metadata-only rows.
+    pub dim: usize,
+    /// Vector representation.
+    pub kind: VectorKind,
+    /// Typed row identity.
+    pub id_type: RowIdType,
+    /// Immutable vector metric.
+    pub distance_metric: DistanceMetric,
+    /// Additive typed attribute columns.
+    pub attributes: BTreeMap<String, AttributeType>,
+}
+
 /// Per-namespace schema facts cached after the first table open.
 /// The resolved vector dimension, the kind of vector representation
 /// (single vs multivector), and whether the table carries the
@@ -418,6 +454,7 @@ struct NamespaceSchemaInfo {
     id_type: RowIdType,
     distance_metric: DistanceMetric,
     has_ingested_at: bool,
+    vector_nullable: bool,
     /// Whether the table carries the reserved `text_tok` column (the
     /// alyze-analyzed FTS surface, RFC 0001). `false` for tables
     /// created before the column existed; those keep their legacy
@@ -711,7 +748,7 @@ impl NamespaceManager {
         };
         let mut fields = vec![
             Field::new("id", id_data_type, false),
-            Field::new("vector", vector_type, false),
+            Field::new("vector", vector_type, true),
             Field::new("text", DataType::Utf8, true),
         ];
         if with_text_tok {
@@ -961,7 +998,9 @@ impl NamespaceManager {
         let (mut info, is_fresh) = match self.resolve_schema_info(ns).await? {
             Some(info) => (info, false),
             None => {
-                let (kind, dim) = inspect_row_payload(&rows[0])?;
+                let payload = rows.iter().find(|r| !r.vector.is_empty() || r.vectors.as_ref().is_some_and(|v| !v.is_empty()))
+                    .ok_or_else(|| HevSearchError::InvalidRequest("metadata-only first writes require POST /ns/{namespace}/schema with the source vector profile".into()))?;
+                let (kind, dim) = inspect_row_payload(payload)?;
                 let id_type = rows[0].id.id_type();
                 let distance_metric =
                     requested_metric.unwrap_or_else(|| DistanceMetric::default_for_kind(kind));
@@ -973,6 +1012,7 @@ impl NamespaceManager {
                         id_type,
                         distance_metric,
                         has_ingested_at: true,
+                        vector_nullable: true,
                         has_text_tok: true,
                         attributes: request_attributes.clone(),
                     },
@@ -1004,7 +1044,13 @@ impl NamespaceManager {
                     row.id.id_type().as_label()
                 )));
             }
-            validate_row_against(row, info.kind, info.dim)?;
+            if row.vector.is_empty() && row.vectors.is_none() {
+                if !info.vector_nullable {
+                    return Err(HevSearchError::Unsupported("metadata-only rows require a nullable-vector namespace; legacy non-null vector schemas are not migrated automatically".into()));
+                }
+            } else {
+                validate_row_against(row, info.kind, info.dim)?;
+            }
         }
 
         // `get_or_open_table` creates an empty table for a fresh
@@ -1268,6 +1314,7 @@ impl NamespaceManager {
                         id_type,
                         distance_metric,
                         has_ingested_at: true,
+                        vector_nullable: true,
                         has_text_tok: true,
                         attributes: import_attributes,
                     },
@@ -2577,6 +2624,94 @@ impl NamespaceManager {
         Ok(ListPage { rows, next_cursor })
     }
 
+    /// Read the persisted typed profile without scanning rows.
+    pub async fn schema(
+        &self,
+        ns: &NamespaceId,
+    ) -> Result<Option<NamespaceSchema>, HevSearchError> {
+        Ok(self
+            .resolve_schema_info(ns)
+            .await?
+            .map(|i| NamespaceSchema {
+                dim: i.dim,
+                kind: i.kind,
+                id_type: i.id_type,
+                distance_metric: i.distance_metric,
+                attributes: i.attributes,
+            }))
+    }
+
+    /// Create an empty namespace or add typed columns. Never changes an existing type/profile.
+    pub async fn ensure_schema(
+        &self,
+        ns: &NamespaceId,
+        schema: &NamespaceSchema,
+    ) -> Result<(), HevSearchError> {
+        if schema.dim == 0 || schema.dim > 65536 {
+            return Err(HevSearchError::InvalidRequest(
+                "schema dim must be in 1..=65536".into(),
+            ));
+        }
+        schema.distance_metric.validate_for_kind(schema.kind)?;
+        for name in schema.attributes.keys() {
+            validate_attribute_name(name)?;
+        }
+        let existing = self.resolve_schema_info(ns).await?;
+        if let Some(ref info) = existing {
+            if info.dim != schema.dim
+                || info.kind != schema.kind
+                || info.id_type != schema.id_type
+                || info.distance_metric != schema.distance_metric
+            {
+                return Err(HevSearchError::InvalidRequest(
+                    "schema profile is immutable".into(),
+                ));
+            }
+            // Validate the entire addition before any schema effect.
+            for (name, ty) in &schema.attributes {
+                if info.attributes.get(name).is_some_and(|old| old != ty) {
+                    return Err(HevSearchError::InvalidRequest(format!(
+                        "incompatible attribute type for {name}"
+                    )));
+                }
+            }
+        }
+        let mut info = existing.unwrap_or_else(|| NamespaceSchemaInfo {
+            dim: schema.dim,
+            kind: schema.kind,
+            id_type: schema.id_type,
+            distance_metric: schema.distance_metric,
+            has_ingested_at: true,
+            has_text_tok: true,
+            vector_nullable: true,
+            attributes: BTreeMap::new(),
+        });
+        let additions = reconcile_attribute_schema(&mut info, &schema.attributes)?;
+        let table = self
+            .get_or_open_table(
+                ns,
+                info.kind,
+                info.dim,
+                info.id_type,
+                info.distance_metric,
+                &info.attributes,
+            )
+            .await?;
+        // New tables already carry all attributes. Existing tables may need additions.
+        let live = table
+            .schema()
+            .await
+            .map_err(|e| HevSearchError::Backend(e.to_string()))?;
+        let additions = additions
+            .into_iter()
+            .filter(|(name, _)| live.field_with_name(name).is_err())
+            .collect();
+        add_null_attribute_columns(&table, &additions).await?;
+        self.evict_handle(ns);
+        self.schema_info.remove(ns);
+        Ok(())
+    }
+
     /// Execute bounded read-only SQL against pinned native Lance snapshots.
     /// Cross-namespace snapshots are individually versioned, not transactionally atomic.
     pub async fn aggregate(
@@ -2590,30 +2725,48 @@ impl NamespaceManager {
         let work = async {
             let ctx = aggregate::context()?;
             let mut snapshots = BTreeMap::new();
+            let mut datasets: HashMap<String, Arc<lance::Dataset>> = HashMap::new();
             for (alias, namespace) in &request.tables {
                 let ns = NamespaceId::new(namespace.clone())?;
-                let info = self
-                    .resolve_schema_info(&ns)
-                    .await?
-                    .ok_or_else(|| aggregate::invalid(format!("namespace {ns} does not exist")))?;
-                let table = self
-                    .get_or_open_table(
-                        &ns,
-                        info.kind,
-                        info.dim,
-                        info.id_type,
-                        info.distance_metric,
-                        &info.attributes,
-                    )
-                    .await?;
-                let dataset = table
-                    .dataset()
-                    .ok_or_else(|| {
-                        HevSearchError::Unsupported("aggregate requires native Lance tables".into())
-                    })?
-                    .get()
-                    .await
-                    .map_err(|e| HevSearchError::Backend(e.to_string()))?;
+                let dataset = if let Some(dataset) = datasets.get(namespace) {
+                    Arc::clone(dataset)
+                } else {
+                    let info = self.resolve_schema_info(&ns).await?.ok_or_else(|| {
+                        aggregate::invalid(format!("namespace {ns} does not exist"))
+                    })?;
+                    let table = self
+                        .get_or_open_table(
+                            &ns,
+                            info.kind,
+                            info.dim,
+                            info.id_type,
+                            info.distance_metric,
+                            &info.attributes,
+                        )
+                        .await?;
+                    let dataset = table
+                        .dataset()
+                        .ok_or_else(|| {
+                            HevSearchError::Unsupported(
+                                "aggregate requires native Lance tables".into(),
+                            )
+                        })?
+                        .get()
+                        .await
+                        .map_err(|e| HevSearchError::Backend(e.to_string()))?;
+                    let dataset = if let Some(version) = request.versions.get(namespace) {
+                        Arc::new(
+                            dataset
+                                .checkout_version(*version)
+                                .await
+                                .map_err(aggregate::invalid)?,
+                        )
+                    } else {
+                        dataset
+                    };
+                    datasets.insert(namespace.clone(), Arc::clone(&dataset));
+                    dataset
+                };
                 snapshots.insert(
                     alias.clone(),
                     AggregateSnapshot {
@@ -2657,86 +2810,63 @@ impl NamespaceManager {
             validate_facet_field(field, &info)?;
         }
 
-        let tbl = self
-            .get_or_open_table(
-                ns,
-                info.kind,
-                info.dim,
-                info.id_type,
-                info.distance_metric,
-                &info.attributes,
-            )
-            .await?;
-        let dataset_wrapper = tbl
-            .dataset()
-            .ok_or_else(|| HevSearchError::Backend("facet requires a native lance table".into()))?;
-        let dataset = dataset_wrapper
-            .get()
-            .await
-            .map_err(|e| HevSearchError::Backend(format!("resolve dataset: {e}")))?;
-
-        let mut scan = dataset.scan();
-        scan.project(fields)
-            .map_err(|e| HevSearchError::Backend(format!("facet project: {e}")))?;
-        if let Some(ref predicate) = filter {
-            scan.filter(predicate)
-                .map_err(|e| HevSearchError::InvalidRequest(format!("facet filter: {e}")))?;
-        }
-        let stream = scan.try_into_stream().await.map_err(|e| {
-            if filter.is_some() {
-                HevSearchError::InvalidRequest(format!("facet filter: {e}"))
+        // Aggregate natively, serializing at most top+1 buckets per field.
+        let mut facets = Vec::with_capacity(fields.len());
+        for field in fields {
+            let quoted = format!("\"{}\"", field.replace('"', "\"\""));
+            let value = if field == INGESTED_AT_COLUMN {
+                format!("CAST({quoted} AS BIGINT)")
             } else {
-                HevSearchError::Backend(format!("facet scan: {e}"))
-            }
-        })?;
-        let batches: Vec<RecordBatch> = stream
-            .try_collect()
-            .await
-            .map_err(|e| HevSearchError::Backend(format!("facet collect: {e}")))?;
-
-        let mut counts: Vec<HashMap<String, (serde_json::Value, u64)>> =
-            fields.iter().map(|_| HashMap::new()).collect();
-        for batch in &batches {
-            for (field_idx, field) in fields.iter().enumerate() {
-                let col = batch.column_by_name(field).ok_or_else(|| {
-                    HevSearchError::Backend(format!("facet: missing projected column {field}"))
-                })?;
-                for row in 0..batch.num_rows() {
-                    // A list column contributes one count per element (a book
-                    // counts once per genre); a scalar contributes one value.
-                    for value in facet_values_at(col, row)? {
-                        let key = facet_value_sort_key(&value);
-                        let entry = counts[field_idx].entry(key).or_insert((value, 0));
-                        entry.1 += 1;
-                    }
-                }
-            }
-        }
-
-        let facets = fields
-            .iter()
-            .zip(counts)
-            .map(|(field, field_counts)| {
-                let mut buckets: Vec<FacetBucket> = field_counts
-                    .into_values()
-                    .map(|(value, count)| FacetBucket { value, count })
-                    .collect();
-                buckets.sort_by(|a, b| {
-                    b.count.cmp(&a.count).then_with(|| {
-                        facet_value_sort_key(&a.value).cmp(&facet_value_sort_key(&b.value))
+                quoted
+            };
+            let predicate = filter.as_deref().unwrap_or("true");
+            let list = matches!(
+                info.attributes.get(field),
+                Some(
+                    AttributeType::StringList
+                        | AttributeType::Int64List
+                        | AttributeType::Float64List
+                )
+            );
+            let source = if list {
+                format!("SELECT unnest({value}) AS value FROM data WHERE ({predicate})")
+            } else {
+                format!("SELECT {value} AS value FROM data WHERE ({predicate})")
+            };
+            let sql = format!(
+                "SELECT value, count(*) AS count FROM ({source}) AS buckets {} GROUP BY value ORDER BY count DESC, value ASC NULLS FIRST LIMIT {}",
+                if list { "WHERE value IS NOT NULL" } else { "" }, top + 1
+            );
+            let request = crate::aggregate::AggregateRequest {
+                tables: std::collections::BTreeMap::from([("data".into(), ns.to_string())]),
+                sql,
+                versions: BTreeMap::new(),
+                max_rows: top + 1,
+                max_bytes: crate::aggregate::MAX_BYTES,
+                timeout_ms: 60_000,
+                explain_only: false,
+            };
+            let result = self.aggregate(&request).await?;
+            let truncated = result.rows.len() > top;
+            let buckets = result
+                .rows
+                .into_iter()
+                .take(top)
+                .map(|row| {
+                    Ok(FacetBucket {
+                        value: row["value"].clone(),
+                        count: row["count"].as_u64().ok_or_else(|| {
+                            HevSearchError::Backend("invalid native facet count".into())
+                        })?,
                     })
-                });
-                let truncated = buckets.len() > top;
-                if truncated {
-                    buckets.truncate(top);
-                }
-                FacetField {
-                    field: field.clone(),
-                    buckets,
-                    truncated,
-                }
-            })
-            .collect();
+                })
+                .collect::<Result<Vec<_>, HevSearchError>>()?;
+            facets.push(FacetField {
+                field: field.clone(),
+                buckets,
+                truncated,
+            });
+        }
         Ok(FacetResultSet { facets })
     }
 
@@ -3154,6 +3284,9 @@ async fn read_schema_info_from_table(
     let mut dim_kind: Option<(usize, VectorKind)> = None;
     let mut id_type: Option<RowIdType> = None;
     let mut has_ingested_at = false;
+    let vector_nullable = schema
+        .field_with_name("vector")
+        .is_ok_and(|f| f.is_nullable());
     let mut has_text_tok = false;
     let mut attributes = BTreeMap::new();
     for field in schema.fields() {
@@ -3217,6 +3350,7 @@ async fn read_schema_info_from_table(
         id_type,
         distance_metric,
         has_ingested_at,
+        vector_nullable,
         has_text_tok,
         attributes,
     })
@@ -3723,6 +3857,13 @@ fn rows_to_batch(
             let values_builder = Float32Builder::with_capacity(n * dim);
             let mut list_builder = FixedSizeListBuilder::new(values_builder, dim as i32);
             for row in &rows {
+                if row.vector.is_empty() {
+                    for _ in 0..dim {
+                        list_builder.values().append_null();
+                    }
+                    list_builder.append(false);
+                    continue;
+                }
                 for &v in &row.vector {
                     list_builder.values().append_value(v);
                 }
@@ -3735,12 +3876,10 @@ fn rows_to_batch(
             let inner_builder = FixedSizeListBuilder::new(values_builder, dim as i32);
             let mut outer = ListBuilder::new(inner_builder);
             for row in &rows {
-                let multi = row.vectors.as_ref().ok_or_else(|| {
-                    HevSearchError::InvalidRequest(format!(
-                        "row id {}: multivector namespace requires `vectors` payload",
-                        row.id
-                    ))
-                })?;
+                let Some(multi) = row.vectors.as_ref() else {
+                    outer.append_null();
+                    continue;
+                };
                 for sub in multi {
                     for &v in sub {
                         outer.values().values().append_value(v);
@@ -3873,6 +4012,62 @@ fn build_attribute_array(
             }
             Ok(Arc::new(builder.finish()))
         }
+        AttributeType::Int64List => {
+            let mut builder = ListBuilder::new(Int64Builder::new());
+            for row in rows {
+                match row.attributes.get(name) {
+                    None | Some(serde_json::Value::Null) => builder.append_null(),
+                    Some(serde_json::Value::Array(items)) => {
+                        for item in items {
+                            if item.is_null() {
+                                builder.values().append_null();
+                            } else {
+                                builder.values().append_value(item.as_i64().ok_or_else(|| {
+                                    HevSearchError::InvalidRequest(format!(
+                                        "attribute {name:?} has incompatible list element"
+                                    ))
+                                })?);
+                            }
+                        }
+                        builder.append(true);
+                    }
+                    Some(_) => {
+                        return Err(HevSearchError::InvalidRequest(format!(
+                            "attribute {name:?} must be a numeric list or null"
+                        )))
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
+        AttributeType::Float64List => {
+            let mut builder = ListBuilder::new(Float64Builder::new());
+            for row in rows {
+                match row.attributes.get(name) {
+                    None | Some(serde_json::Value::Null) => builder.append_null(),
+                    Some(serde_json::Value::Array(items)) => {
+                        for item in items {
+                            if item.is_null() {
+                                builder.values().append_null();
+                            } else {
+                                builder.values().append_value(item.as_f64().ok_or_else(|| {
+                                    HevSearchError::InvalidRequest(format!(
+                                        "attribute {name:?} has incompatible list element"
+                                    ))
+                                })?);
+                            }
+                        }
+                        builder.append(true);
+                    }
+                    Some(_) => {
+                        return Err(HevSearchError::InvalidRequest(format!(
+                            "attribute {name:?} must be a numeric list or null"
+                        )))
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
         AttributeType::StringList => {
             // ListBuilder<StringBuilder> yields List(item: Utf8, nullable),
             // matching AttributeType::StringList::arrow(). A missing key or
@@ -3951,6 +4146,9 @@ fn extract_row_vector(
                 .ok_or_else(|| {
                     HevSearchError::Backend(format!("{context}: vector not FixedSizeList"))
                 })?;
+            if vectors.is_null(row) {
+                return Ok(Vec::new());
+            }
             let vector_arr = vectors.value(row);
             let vec_f32 = vector_arr
                 .as_any()
@@ -4157,31 +4355,46 @@ fn extract_scalar_attributes(
                         serde_json::Value::from(a.value(row))
                     }
                 }),
-            DataType::List(item) if *item.data_type() == DataType::Utf8 => batch
-                .column(idx)
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .map(|a| {
-                    if a.is_null(row) {
-                        serde_json::Value::Null
-                    } else {
-                        let elems = a.value(row);
-                        match elems.as_any().downcast_ref::<StringArray>() {
-                            Some(sa) => serde_json::Value::Array(
-                                (0..sa.len())
-                                    .map(|i| {
-                                        if sa.is_null(i) {
-                                            serde_json::Value::Null
-                                        } else {
-                                            serde_json::Value::from(sa.value(i))
-                                        }
-                                    })
-                                    .collect(),
-                            ),
-                            None => serde_json::Value::Null,
+            DataType::List(item)
+                if matches!(
+                    item.data_type(),
+                    DataType::Utf8 | DataType::Int64 | DataType::Float64
+                ) =>
+            {
+                batch
+                    .column(idx)
+                    .as_any()
+                    .downcast_ref::<ListArray>()
+                    .map(|a| {
+                        if a.is_null(row) {
+                            return serde_json::Value::Null;
                         }
-                    }
-                }),
+                        let elems = a.value(row);
+                        serde_json::Value::Array(
+                            (0..elems.len())
+                                .map(|i| {
+                                    if elems.is_null(i) {
+                                        serde_json::Value::Null
+                                    } else if let Some(v) =
+                                        elems.as_any().downcast_ref::<StringArray>()
+                                    {
+                                        serde_json::Value::from(v.value(i))
+                                    } else if let Some(v) =
+                                        elems.as_any().downcast_ref::<Int64Array>()
+                                    {
+                                        serde_json::Value::from(v.value(i))
+                                    } else if let Some(v) =
+                                        elems.as_any().downcast_ref::<Float64Array>()
+                                    {
+                                        serde_json::Value::from(v.value(i))
+                                    } else {
+                                        unreachable!("supported list element")
+                                    }
+                                })
+                                .collect(),
+                        )
+                    })
+            }
             _ => None,
         };
         if let Some(value) = value {
@@ -4202,79 +4415,6 @@ fn validate_facet_field(field: &str, info: &NamespaceSchemaInfo) -> Result<(), H
         _ => Err(HevSearchError::InvalidRequest(format!(
             "unknown facet field {field:?}"
         ))),
-    }
-}
-
-/// Facet contribution(s) for one row of a facet column. A `List<Utf8>`
-/// column yields one value per (non-null) element, so a multi-valued row
-/// (e.g. a book's genres) is counted in every bucket it belongs to; a
-/// null or empty list contributes nothing. A scalar column yields exactly
-/// one value (its scalar, or JSON null for a null cell).
-fn facet_values_at(array: &ArrayRef, row: usize) -> Result<Vec<serde_json::Value>, HevSearchError> {
-    if let Some(a) = array.as_any().downcast_ref::<ListArray>() {
-        if a.is_null(row) {
-            return Ok(Vec::new());
-        }
-        let elems = a.value(row);
-        let strs = elems
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| {
-                HevSearchError::InvalidRequest("facet list field must be a list of strings".into())
-            })?;
-        let mut out = Vec::with_capacity(strs.len());
-        for i in 0..strs.len() {
-            if !strs.is_null(i) {
-                out.push(serde_json::Value::from(strs.value(i)));
-            }
-        }
-        return Ok(out);
-    }
-    Ok(vec![scalar_value_at(array, row)?])
-}
-
-fn scalar_value_at(array: &ArrayRef, row: usize) -> Result<serde_json::Value, HevSearchError> {
-    if array.is_null(row) {
-        return Ok(serde_json::Value::Null);
-    }
-    if let Some(a) = array.as_any().downcast_ref::<UInt64Array>() {
-        return Ok(serde_json::Value::from(a.value(row)));
-    }
-    if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
-        return Ok(serde_json::Value::from(a.value(row)));
-    }
-    if let Some(a) = array.as_any().downcast_ref::<Float64Array>() {
-        return Ok(serde_json::Value::from(a.value(row)));
-    }
-    if let Some(a) = array.as_any().downcast_ref::<BooleanArray>() {
-        return Ok(serde_json::Value::from(a.value(row)));
-    }
-    if let Some(a) = array.as_any().downcast_ref::<StringArray>() {
-        return Ok(serde_json::Value::from(a.value(row)));
-    }
-    if let Some(a) = array.as_any().downcast_ref::<TimestampMicrosecondArray>() {
-        return Ok(serde_json::Value::from(a.value(row)));
-    }
-    Err(HevSearchError::InvalidRequest(
-        "facet fields must be scalar columns".into(),
-    ))
-}
-
-fn facet_value_sort_key(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Null => "0:".to_string(),
-        serde_json::Value::Bool(v) => format!("1:{v}"),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                format!("2:{i:020}")
-            } else if let Some(u) = n.as_u64() {
-                format!("2:{u:020}")
-            } else {
-                format!("2:{:020.12}", n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::String(s) => format!("3:{s}"),
-        _ => "4:".to_string(),
     }
 }
 

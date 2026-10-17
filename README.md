@@ -135,3 +135,6 @@ Containerized toolchain — no local Rust needed:
 # Cold-vs-warm latency benchmark
 ./scripts/cargo run --release -p hevsearch-bench
 ```
+
+Native bounded SQL/aggregate execution and metadata-first schemas are documented in
+[Native aggregates](docs/native-aggregates.md).

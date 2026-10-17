@@ -37,6 +37,7 @@ arrow-schema = "58"
 # pinned to the same arrow-rs minor as the rest of the stack.
 arrow-ipc = "58"
 arrow-json = "58"
+arrow-cast = "58"
 # Match Lance 6, rather than introducing another executor/Arrow version.
 datafusion = { version = "=53.1.0", default-features = false, features = ["sql", "nested_expressions", "datetime_expressions", "string_expressions", "regex_expressions"] }
 

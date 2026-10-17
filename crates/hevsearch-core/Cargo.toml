@@ -21,6 +21,7 @@ alyze.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
 arrow-json.workspace = true
+arrow-cast.workspace = true
 datafusion.workspace = true
 futures.workspace = true
 bincode.workspace = true
