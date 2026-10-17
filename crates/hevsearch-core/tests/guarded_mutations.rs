@@ -463,6 +463,47 @@ async fn metadata_only_guarded_postimage_remains_readable() {
     let patched = read(&m, &ns).await;
     assert!(patched[0]["vector"].is_null());
     assert_eq!(patched[0]["summary"], "metadata patched");
+    let hidden = m
+        .query(
+            &ns,
+            vec![1., 0., 0.],
+            None,
+            10,
+            None,
+            None,
+            Some("id = 'a'".into()),
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(
+        hidden.results.is_empty(),
+        "metadata postimage must exclude old vector from ANN"
+    );
+    let completion = patch(
+        "a",
+        json!({"vector":[0.25,0.5,0.75],"pending":false}),
+        Some("version=2 AND epoch='one'"),
+    );
+    assert_eq!(m.patch(&ns, &completion).await.unwrap().patched, 1);
+    let completed = read(&m, &ns).await;
+    assert_eq!(completed[0]["vector"], json!([0.25, 0.5, 0.75]));
+    assert_eq!(completed[0]["summary"], "metadata patched");
+    assert_eq!(
+        m.patch(
+            &ns,
+            &patch(
+                "a",
+                json!({"vector":[9.,9.,9.],"pending":false}),
+                Some("version=1")
+            )
+        )
+        .await
+        .unwrap()
+        .patched,
+        0
+    );
+    assert_eq!(read(&m, &ns).await, completed);
 }
 
 #[tokio::test]
