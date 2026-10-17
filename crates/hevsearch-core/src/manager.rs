@@ -2767,7 +2767,13 @@ impl NamespaceManager {
                                 .map_err(aggregate::invalid)?,
                         )
                     } else {
-                        dataset
+                        // Pooled handles may predate another process's commit.
+                        // Refresh a request-owned copy so unpinned reads observe
+                        // the latest committed manifest without mutating shared
+                        // handles or disturbing an explicit historical checkout.
+                        let mut latest = dataset.as_ref().clone();
+                        latest.checkout_latest().await.map_err(aggregate::invalid)?;
+                        Arc::new(latest)
                     };
                     datasets.insert(namespace.clone(), Arc::clone(&dataset));
                     dataset

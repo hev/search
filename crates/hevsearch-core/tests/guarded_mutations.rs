@@ -525,3 +525,49 @@ async fn unsigned_ids_keep_full_width_in_guards_and_effects() {
     assert_eq!(result.affected_ids, vec![id]);
     assert_eq!(read(&m, &ns).await[0]["summary"], "after");
 }
+
+#[tokio::test]
+async fn unpinned_aggregate_refreshes_external_commit_but_explicit_history_stays_pinned() {
+    let (dir, first, ns) = fixture().await;
+    let request = AggregateRequest {
+        tables: BTreeMap::from([
+            ("rows".into(), ns.to_string()),
+            ("again".into(), ns.to_string()),
+        ]),
+        versions: BTreeMap::new(),
+        sql: "SELECT rows.summary FROM rows JOIN again ON rows.id=again.id WHERE rows.id='a'"
+            .into(),
+        max_rows: 10,
+        max_bytes: 10000,
+        timeout_ms: 5000,
+        explain_only: false,
+    };
+    let before = first.aggregate(&request).await.unwrap();
+    let second = NamespaceManager::new(
+        StorageRoot::local(dir.path()).unwrap(),
+        HashMap::new(),
+        test_metrics(),
+    );
+    let mut image = row("a", 2, "external commit");
+    image.text = Some("fresh text".into());
+    let commit = second
+        .guarded_merge(
+            &ns,
+            &merge(vec![image], "target.version < source.version", false),
+        )
+        .await
+        .unwrap();
+    let current = first.aggregate(&request).await.unwrap();
+    assert_eq!(current.rows[0]["summary"], "external commit");
+    assert_eq!(current.snapshots["rows"].version, commit.version);
+    assert_eq!(current.snapshots["again"].version, commit.version);
+    let mut historical = request.clone();
+    historical
+        .versions
+        .insert(ns.to_string(), before.snapshots["rows"].version);
+    assert_eq!(
+        first.aggregate(&historical).await.unwrap().rows,
+        before.rows
+    );
+    assert_eq!(first.aggregate(&request).await.unwrap().rows, current.rows);
+}
