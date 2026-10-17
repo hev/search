@@ -124,12 +124,14 @@ fn context_with_budgets(memory: usize, spill: u64) -> Result<SessionContext, Hev
         .with_max_temp_directory_size(spill)
         .build()
         .map_err(|e| HevSearchError::Backend(e.to_string()))?;
-    Ok(SessionContext::new_with_config_rt(
+    let context = SessionContext::new_with_config_rt(
         SessionConfig::new()
             .with_target_partitions(4)
             .with_batch_size(1024),
         Arc::new(runtime),
-    ))
+    );
+    context.register_udf(crate::phrase::udf());
+    Ok(context)
 }
 
 pub(crate) async fn execute(
