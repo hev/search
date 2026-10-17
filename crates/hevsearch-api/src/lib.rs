@@ -28,8 +28,13 @@ pub fn router(state: AppState) -> Router {
     let body_limit = state.max_body_bytes;
 
     Router::new()
+        .route("/aggregate", post(handlers::aggregate))
         .route("/health", get(handlers::health))
         .route("/metrics", get(handlers::metrics))
+        .route(
+            "/ns/{namespace}/schema",
+            get(handlers::schema).post(handlers::ensure_schema),
+        )
         .route("/ns/{namespace}/upsert", post(handlers::upsert))
         .route("/ns/{namespace}/query", post(handlers::query))
         .route("/ns/{namespace}/facet", post(handlers::facet))

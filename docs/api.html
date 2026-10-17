@@ -93,6 +93,24 @@
       </div>
     </div>
 
+    <div class="endpoint">
+      <div class="endpoint-header"><span class="method post">POST</span><span class="endpoint-path">/aggregate</span></div>
+      <div class="endpoint-body">
+        <p>Bounded read-only SQL over native Lance/DataFusion providers. Bind 1–8 namespace aliases in <code>tables</code>; supply <code>sql</code>, <code>max_rows</code> (1–10000), <code>max_bytes</code> (1–8388608), and <code>timeout_ms</code> (1–60000). DDL, writes, external tables and multiple statements are refused. Exceeding a budget returns 400 without partial totals.</p>
+        <p>The response includes bounded <code>rows</code>, Lance <code>snapshots</code>, optimized <code>logical_plan</code>, actual <code>physical_plan</code> with execution metrics, elapsed time and result bytes. Set <code>explain_only:true</code> to plan without scanning. Optional <code>versions</code> pins physical namespace versions; unavailable versions fail. Cross-table snapshots are not atomic. Scalar decimal outputs are exact strings.</p>
+        <pre><code>{"tables":{"rows":"demo"},"sql":"SELECT count(*) AS n FROM rows","max_rows":1,"max_bytes":4096,"timeout_ms":10000}</code></pre>
+        <p>Latest-state selection must precede mutable filters. Separate financial reductions from prompt UNNEST. For IANA heatmaps, attach the IANA timezone to the integer epoch with arrow_cast, then use to_local_time. Applying AT TIME ZONE to a naive timestamp changes the instant.</p>
+      </div>
+    </div>
+    <div class="endpoint">
+      <div class="endpoint-header"><span class="method post">GET / POST</span><span class="endpoint-path">/ns/{namespace}/schema</span></div>
+      <div class="endpoint-body">
+        <p>GET returns the persisted dimension, kind, typed ID, metric and attributes (404 if missing). POST creates an empty namespace or adds compatible typed attributes (204). Existing types and the vector profile are immutable. Types include int64, float64, boolean, utf8 and string_list/int64_list/float64_list.</p>
+        <p>Declare the source vector profile before metadata-only first writes. New namespaces store omitted vectors as NULL. Upsert remains full replacement; callers must supply all retained attributes. Legacy non-nullable vector schemas refuse metadata-only writes. Vector storage does not establish source-version identity or CDC completion.</p>
+        <pre><code>{"dim":1536,"kind":"single","id_type":"string","distance_metric":"cosine","attributes":{"prompt_ts":"int64_list","cost":"float64"}}</code></pre>
+      </div>
+    </div>
+
     <!-- POST /ns/{ns}/upsert -->
     <div class="endpoint">
       <div class="endpoint-header" aria-expanded="true">
@@ -126,7 +144,7 @@
             <tr><td><code>rows[].vector</code></td><td>float32[]</td><td>One of</td><td>Single dense vector (single-vector namespaces). Length must match the namespace dimension.</td></tr>
             <tr><td><code>rows[].vectors</code></td><td>float32[][]</td><td>One of</td><td>Bag of equal-length sub-vectors (multivector namespaces). Each inner vector must match the namespace's inner sub-vector dimension; outer list length is the per-row sub-vector count.</td></tr>
             <tr><td><code>rows[].text</code></td><td>string</td><td>No</td><td>Text payload for full-text search</td></tr>
-            <tr><td><code>rows[].attributes</code></td><td>object</td><td>No</td><td>User scalar attributes for filters and facets. Values may be string, integer, float, boolean, or null. Names must be SQL-friendly identifiers and cannot use reserved/system column names.</td></tr>
+            <tr><td><code>rows[].attributes</code></td><td>object</td><td>No</td><td>User attributes for filters and native aggregates. Values may be string, integer, float, boolean, a homogeneous list of strings/integers/floats, or null. Names must be SQL-friendly identifiers and cannot use reserved/system column names.</td></tr>
           </tbody>
         </table>
 
