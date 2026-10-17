@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+pub mod aggregate;
 pub mod analyzer;
 pub mod cache;
 pub mod error;

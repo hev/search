@@ -2577,6 +2577,66 @@ impl NamespaceManager {
         Ok(ListPage { rows, next_cursor })
     }
 
+    /// Execute bounded read-only SQL against pinned native Lance snapshots.
+    /// Cross-namespace snapshots are individually versioned, not transactionally atomic.
+    pub async fn aggregate(
+        &self,
+        request: &crate::aggregate::AggregateRequest,
+    ) -> Result<crate::aggregate::AggregateResult, HevSearchError> {
+        use crate::aggregate::{self, AggregateSnapshot};
+        use std::collections::BTreeMap;
+        let started = std::time::Instant::now();
+        request.validate()?;
+        let work = async {
+            let ctx = aggregate::context()?;
+            let mut snapshots = BTreeMap::new();
+            for (alias, namespace) in &request.tables {
+                let ns = NamespaceId::new(namespace.clone())?;
+                let info = self
+                    .resolve_schema_info(&ns)
+                    .await?
+                    .ok_or_else(|| aggregate::invalid(format!("namespace {ns} does not exist")))?;
+                let table = self
+                    .get_or_open_table(
+                        &ns,
+                        info.kind,
+                        info.dim,
+                        info.id_type,
+                        info.distance_metric,
+                        &info.attributes,
+                    )
+                    .await?;
+                let dataset = table
+                    .dataset()
+                    .ok_or_else(|| {
+                        HevSearchError::Unsupported("aggregate requires native Lance tables".into())
+                    })?
+                    .get()
+                    .await
+                    .map_err(|e| HevSearchError::Backend(e.to_string()))?;
+                snapshots.insert(
+                    alias.clone(),
+                    AggregateSnapshot {
+                        namespace: namespace.clone(),
+                        version: dataset.version_id(),
+                    },
+                );
+                ctx.register_table(
+                    alias.as_str(),
+                    Arc::new(lance::datafusion::LanceTableProvider::new(
+                        dataset, false, false,
+                    )),
+                )
+                .map_err(aggregate::invalid)?;
+                self.metrics.record_s3_request(&ns, "aggregate");
+            }
+            aggregate::execute(ctx, request, snapshots, started).await
+        };
+        tokio::time::timeout(std::time::Duration::from_millis(request.timeout_ms), work)
+            .await
+            .map_err(|_| aggregate::invalid("aggregate deadline exceeded; no partial result"))?
+    }
+
     /// Compute value-count facets over the full filtered row set.
     ///
     /// This is independent of vector ranking and top-k: the scan

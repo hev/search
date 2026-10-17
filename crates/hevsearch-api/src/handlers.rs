@@ -960,3 +960,11 @@ mod tests {
         );
     }
 }
+
+/// Read-only native aggregate execution; Layer owns caller authorization.
+pub async fn aggregate(
+    State(state): State<AppState>,
+    Json(request): Json<hevsearch_core::aggregate::AggregateRequest>,
+) -> Result<Json<hevsearch_core::aggregate::AggregateResult>, ApiError> {
+    Ok(Json(state.manager.aggregate(&request).await?))
+}
