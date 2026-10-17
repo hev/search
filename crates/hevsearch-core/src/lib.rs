@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+pub mod aggregate;
 pub mod analyzer;
 pub mod cache;
 pub mod error;
@@ -14,6 +15,7 @@ pub mod manager;
 pub mod metrics;
 pub mod namespace;
 pub mod object_cache;
+pub mod phrase;
 pub mod query;
 pub mod result;
 pub mod service;

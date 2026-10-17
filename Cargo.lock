@@ -3231,6 +3231,8 @@ version = "0.1.0"
 dependencies = [
  "alyze",
  "arrow-array",
+ "arrow-cast",
+ "arrow-json",
  "arrow-schema",
  "async-trait",
  "aws-config",
@@ -3239,6 +3241,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "datafusion",
  "filetime",
  "foyer",
  "futures",

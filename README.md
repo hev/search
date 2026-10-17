@@ -135,3 +135,20 @@ Containerized toolchain — no local Rust needed:
 # Cold-vs-warm latency benchmark
 ./scripts/cargo run --release -p hevsearch-bench
 ```
+
+Native bounded SQL/aggregate execution and metadata-first schemas are documented in
+[Native aggregates](docs/native-aggregates.md).
+
+MinIO's public images are no longer available. The Compose fixture and Linux CI
+build the same test release from pinned official source commit
+`07c3a429bfed433e49018cb0f78a52145d4bedeb`; no third-party image mirror or `mc`
+is needed. Without Docker, Go 1.24.2+ can build the isolated fixture with
+`./scripts/build-test-minio /absolute/owned/path/minio`; start it on owned ports
+with public test credentials `minioadmin:minioadmin`, then run
+`./scripts/init-test-bucket http://127.0.0.1:9000 hevsearch-test`.
+This source-built fixture is for tests only; it is not a production storage
+rollout or an engine image publication.
+
+Phrase predicates and bounded conditional writes are documented in
+[guarded mutations](docs/guarded-mutations.md), including concurrency, legacy
+profile restrictions and unknown write outcomes.

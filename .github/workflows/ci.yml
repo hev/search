@@ -67,34 +67,30 @@ jobs:
           shared-key: ci
           cache-on-failure: true
 
-      # Pull the MinIO image once, start it in the background, then
-      # create the bucket the integration tests default to. Using a
-      # plain `docker run` (rather than GHA `services:`) keeps the
-      # CMD for `server /data` readable and lets us do bucket init
-      # inline in the same job.
+      # Public MinIO images were withdrawn. Build the same pinned fixture
+      # source, bind loopback only, and sign bucket creation with curl.
+      - name: Install Go for pinned MinIO fixture source
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.2"
+          cache: false
+
+      - name: Build pinned MinIO fixture
+        run: ./scripts/build-test-minio "$RUNNER_TEMP/minio"
+
       - name: Start MinIO and create test bucket
         run: |
-          docker run -d --name minio \
-            -p 9000:9000 -p 9001:9001 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:RELEASE.2025-09-07T16-13-09Z \
-            server /data --console-address ":9001"
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:9000/minio/health/live; then
-              echo "minio is up"
-              break
-            fi
+          MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+            "$RUNNER_TEMP/minio" server "$RUNNER_TEMP/minio-data" \
+            --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 \
+            > "$RUNNER_TEMP/minio.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/minio.pid"
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then break; fi
             sleep 1
           done
-          # The mc image's ENTRYPOINT is `mc`, so a literal `/bin/sh`
-          # gets passed as an mc subcommand and rejected. Override the
-          # entrypoint so we can chain `alias set` + `mb` in one run.
-          docker run --rm --network host --entrypoint /bin/sh \
-            minio/mc:latest -c "
-              mc alias set local http://127.0.0.1:9000 minioadmin minioadmin &&
-              mc mb --ignore-existing local/hevsearch-test
-            "
+          curl -fsS http://127.0.0.1:9000/minio/health/live
+          ./scripts/init-test-bucket
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -118,4 +114,4 @@ jobs:
 
       - name: Dump MinIO logs on failure
         if: failure()
-        run: docker logs minio --tail 200 || true
+        run: tail -200 "$RUNNER_TEMP/minio.log" || true
