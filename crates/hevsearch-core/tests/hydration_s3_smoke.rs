@@ -30,8 +30,20 @@ fn minio_options() -> HashMap<String, String> {
 }
 
 fn vector(seed: usize, dim: usize) -> Vec<f32> {
+    // The old sin(seed + column) fixture lay in a nearly rank-two space:
+    // distinct rows were closer than PQ error, making the self-ID assertion
+    // depend on random training. Use separated deterministic data instead;
+    // preserve the ANN query and all hydration/cache/version assertions.
+    let mut state = seed as u64;
     (0..dim)
-        .map(|column| (((seed * 7919 + column * 31) as f32) * 0.001).sin())
+        .map(|_| {
+            state = state.wrapping_add(0x9e3779b97f4a7c15);
+            let mut value = state;
+            value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+            value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
+            value ^= value >> 31;
+            (value >> 40) as f32 / (1_u32 << 24) as f32 * 2.0 - 1.0
+        })
         .collect()
 }
 
