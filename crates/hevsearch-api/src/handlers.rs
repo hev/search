@@ -927,6 +927,38 @@ fn operation_error_message(err: &HevSearchError) -> String {
     }
 }
 
+/// Read-only native aggregate execution; Layer owns caller authorization.
+pub async fn aggregate(
+    State(state): State<AppState>,
+    Json(request): Json<hevsearch_core::aggregate::AggregateRequest>,
+) -> Result<Json<hevsearch_core::aggregate::AggregateResult>, ApiError> {
+    Ok(Json(state.manager.aggregate(&request).await?))
+}
+
+/// Read the physical typed namespace schema.
+pub async fn schema(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+) -> Result<Json<hevsearch_core::manager::NamespaceSchema>, ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+    state
+        .manager
+        .schema(&ns)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(format!("namespace {ns} does not exist")))
+}
+/// Create an empty namespace or add compatible attribute columns.
+pub async fn ensure_schema(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+    Json(schema): Json<hevsearch_core::manager::NamespaceSchema>,
+) -> Result<StatusCode, ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+    state.manager.ensure_schema(&ns, &schema).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,36 +991,4 @@ mod tests {
             "backend internals must not leak into the operation record"
         );
     }
-}
-
-/// Read-only native aggregate execution; Layer owns caller authorization.
-pub async fn aggregate(
-    State(state): State<AppState>,
-    Json(request): Json<hevsearch_core::aggregate::AggregateRequest>,
-) -> Result<Json<hevsearch_core::aggregate::AggregateResult>, ApiError> {
-    Ok(Json(state.manager.aggregate(&request).await?))
-}
-
-/// Read the physical typed namespace schema.
-pub async fn schema(
-    State(state): State<AppState>,
-    Path(namespace): Path<String>,
-) -> Result<Json<hevsearch_core::manager::NamespaceSchema>, ApiError> {
-    let ns = NamespaceId::new(namespace)?;
-    state
-        .manager
-        .schema(&ns)
-        .await?
-        .map(Json)
-        .ok_or_else(|| ApiError::NotFound(format!("namespace {ns} does not exist")))
-}
-/// Create an empty namespace or add compatible attribute columns.
-pub async fn ensure_schema(
-    State(state): State<AppState>,
-    Path(namespace): Path<String>,
-    Json(schema): Json<hevsearch_core::manager::NamespaceSchema>,
-) -> Result<StatusCode, ApiError> {
-    let ns = NamespaceId::new(namespace)?;
-    state.manager.ensure_schema(&ns, &schema).await?;
-    Ok(StatusCode::NO_CONTENT)
 }

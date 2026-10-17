@@ -262,7 +262,7 @@ mod tests {
     async fn memory_and_spill_limits_reject_native_sort_without_partial_output() {
         // Same constructor as production, with small budgets to exercise actual
         // DataFusion reservations/spill failure without a large shared-host load.
-        for (memory, spill) in [(8192, 0), (1024 * 1024, 1)] {
+        for (memory, spill) in [(8192, 0), (8 * 1024 * 1024, 1)] {
             let request=AggregateRequest {
                 tables:BTreeMap::from([("unused".into(),"synthetic".into())]),
                 versions:BTreeMap::new(),
@@ -278,12 +278,20 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-            assert!(
-                error.to_lowercase().contains("resource")
-                    || error.to_lowercase().contains("memory")
-                    || error.to_lowercase().contains("spill"),
-                "{error}"
-            );
+            let lower = error.to_lowercase();
+            if spill == 0 {
+                assert!(
+                    lower.contains("resource") || lower.contains("memory"),
+                    "{error}"
+                );
+            } else {
+                assert!(
+                    lower.contains("spill")
+                        || lower.contains("disk")
+                        || lower.contains("temporary"),
+                    "{error}"
+                );
+            }
         }
     }
 }

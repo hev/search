@@ -2106,7 +2106,7 @@ impl NamespaceManager {
         let before = self.metrics.object_cache().snapshot();
         let started = std::time::Instant::now();
         let store = dataset.object_store().inner.clone();
-        let fetches = futures::stream::iter(manifest.ranges.iter().cloned().map(|range| {
+        let fetches = futures::stream::iter(manifest.ranges.iter().map(|range| {
             let store = store.clone();
             let path = ObjectStorePath::from(format!("{table_root}/{}", range.path));
             async move {
