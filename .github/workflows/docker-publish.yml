@@ -27,7 +27,7 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: [oven, linux-x64]
 
     permissions:
       actions: write  # dispatch bench-evidence with the pushed image digest
@@ -35,6 +35,10 @@ jobs:
       id-token: write   # AWS OIDC role assumption
 
     steps:
+      - name: Require self-hosted runner
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: test "$RUNNER_ENVIRONMENT" = self-hosted
       - uses: actions/checkout@v5
 
       - name: Configure AWS credentials
@@ -65,6 +69,7 @@ jobs:
           project: t4vlld595v
           token: ${{ secrets.DEPOT_TOKEN }}
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

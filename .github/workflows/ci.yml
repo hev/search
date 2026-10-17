@@ -33,29 +33,15 @@ env:
 jobs:
   test:
     name: fmt / clippy / test
-    runs-on: ubuntu-latest
+    runs-on: [oven, linux-x64]
     timeout-minutes: 60
 
     steps:
+      - name: Require self-hosted runner
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: test "$RUNNER_ENVIRONMENT" = self-hosted
       - uses: actions/checkout@v4
-
-      # ubuntu-latest ships with ~14 GB free. Lance + DataFusion in
-      # debug profile fit, but the margin is thin once test binaries
-      # land. This action reclaims ~25 GB without touching anything
-      # the build needs.
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          # The Rust toolchain is installed fresh below via dtolnay, so
-          # the preinstalled language tool-cache is dead weight here.
-          # Reclaiming it buys ~8 GB.
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: false
-          swap-storage: false
 
       - name: Install protobuf
         run: |
