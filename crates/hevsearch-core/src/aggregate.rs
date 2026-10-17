@@ -115,14 +115,17 @@ pub(crate) fn invalid(message: impl ToString) -> HevSearchError {
 
 /// A fresh executor has no external tables, URL readers, or mutable SQL state.
 pub(crate) fn context() -> Result<SessionContext, HevSearchError> {
+    context_with_budgets(256 * 1024 * 1024, 512 * 1024 * 1024)
+}
+
+fn context_with_budgets(memory: usize, spill: u64) -> Result<SessionContext, HevSearchError> {
     let runtime = RuntimeEnvBuilder::new()
-        .with_memory_limit(256 * 1024 * 1024, 1.0)
-        .with_max_temp_directory_size(512 * 1024 * 1024)
+        .with_memory_limit(memory, 1.0)
+        .with_max_temp_directory_size(spill)
         .build()
         .map_err(|e| HevSearchError::Backend(e.to_string()))?;
     Ok(SessionContext::new_with_config_rt(
         SessionConfig::new()
-            .set_str("datafusion.execution.time_zone", "UTC")
             .with_target_partitions(4)
             .with_batch_size(1024),
         Arc::new(runtime),
@@ -231,9 +234,15 @@ pub(crate) async fn execute(
             }
         }
     }
+    if result_bytes > request.max_bytes {
+        return Err(invalid("aggregate result exceeds max_bytes"));
+    }
     let physical_plan = DisplayableExecutionPlan::with_full_metrics(plan.as_ref())
         .indent(true)
         .to_string();
+    if logical_plan.len() + physical_plan.len() > 1024 * 1024 {
+        return Err(invalid("aggregate plan output exceeds 1 MiB"));
+    }
     Ok(AggregateResult {
         rows,
         snapshots,
@@ -243,4 +252,38 @@ pub(crate) async fn execute(
         result_bytes,
         executed: !request.explain_only,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn memory_and_spill_limits_reject_native_sort_without_partial_output() {
+        // Same constructor as production, with small budgets to exercise actual
+        // DataFusion reservations/spill failure without a large shared-host load.
+        for (memory, spill) in [(8192, 0), (1024 * 1024, 1)] {
+            let request=AggregateRequest {
+                tables:BTreeMap::from([("unused".into(),"synthetic".into())]),
+                versions:BTreeMap::new(),
+                sql:"SELECT row_number() OVER (ORDER BY concat(repeat('x',256), CAST(value AS VARCHAR))) AS n FROM generate_series(1,100000) AS x(value)".into(),
+                max_rows:1,max_bytes:4096,timeout_ms:5000,explain_only:false,
+            };
+            let error = execute(
+                context_with_budgets(memory, spill).unwrap(),
+                &request,
+                BTreeMap::new(),
+                Instant::now(),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.to_lowercase().contains("resource")
+                    || error.to_lowercase().contains("memory")
+                    || error.to_lowercase().contains("spill"),
+                "{error}"
+            );
+        }
+    }
 }

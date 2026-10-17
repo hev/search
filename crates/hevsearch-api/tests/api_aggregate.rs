@@ -101,6 +101,15 @@ async fn schema_metadata_first_aggregate_vector_completion_and_refusals() {
         body["rows"],
         json!([{"id":"a","vector":null,"prompt_ts":[1793511000000_i64,null,1793514600000_i64],"cost":0.2,"pending":true}])
     );
+    let (status, pending_query) = call(
+        &app,
+        "POST",
+        "/ns/api-native/query",
+        json!({"vector":[1.0,0.0],"k":10}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pending_query}");
+    assert_eq!(pending_query["results"], json!([]));
     let complete = json!({"rows":[{"id":"a","vector":[0.5,0.25],"attributes":{"session_id":"a","prompt_ts":[1793511000000_i64],"cost":0.2,"pending":false}}]});
     assert_eq!(
         call(&app, "POST", "/ns/api-native/upsert", complete)
@@ -118,6 +127,7 @@ async fn schema_metadata_first_aggregate_vector_completion_and_refusals() {
     );
     let mut bad_schema = schema.clone();
     bad_schema["attributes"]["cost"] = json!("utf8");
+    bad_schema["attributes"]["a_new_column"] = json!("utf8");
     assert_eq!(
         call(&app, "POST", "/ns/api-native/schema", bad_schema)
             .await

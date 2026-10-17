@@ -118,7 +118,7 @@ async fn financial_reduction_separate_from_unnest_and_dst_heatmap() {
     assert_eq!(result.rows[0]["tokens"], json!(110));
     assert!((result.rows[0]["hit"].as_f64().unwrap() - 1.0 / 3.0).abs() < 1e-10);
     assert!(result.physical_plan.contains("Aggregate"));
-    let q = format!("{LATEST}, expanded AS (SELECT unnest(prompts) AS ts FROM latest), localized AS (SELECT to_local_time(CAST(to_timestamp(ts) AS TIMESTAMP WITH TIME ZONE) AT TIME ZONE 'America/New_York') AS ts FROM expanded) SELECT date_part('dow',ts) AS dow, date_part('hour',ts) AS hour, count(*) AS n FROM localized GROUP BY dow,hour ORDER BY dow,hour");
+    let q = format!("{LATEST}, expanded AS (SELECT unnest(prompts) AS ts FROM latest), localized AS (SELECT to_local_time(arrow_cast(CAST(to_timestamp(ts) AS BIGINT), 'Timestamp(Nanosecond, Some(\"America/New_York\"))')) AS ts FROM expanded) SELECT date_part('dow',ts) AS dow, date_part('hour',ts) AS hour, count(*) AS n FROM localized GROUP BY dow,hour ORDER BY dow,hour");
     let result = m.aggregate(&request(&q)).await.unwrap();
     assert_eq!(
         result.rows,
@@ -216,4 +216,22 @@ async fn any_prompt_qualifies_session_then_all_prompts_are_aggregated() {
     );
     let invalid=request("SELECT to_local_time(to_timestamp('2026-11-01T05:30:00Z') AT TIME ZONE 'Invalid/Zone') AS x");
     assert!(m.aggregate(&invalid).await.is_err());
+}
+
+#[tokio::test]
+async fn deadline_cancels_native_work_and_next_query_succeeds() {
+    let (_dir, m) = fixture().await;
+    let mut q=request("SELECT sum(CAST(value AS DOUBLE)*value) AS n FROM generate_series(1,1000000000) AS x(value)");
+    q.timeout_ms = 20;
+    let start = std::time::Instant::now();
+    let error = m.aggregate(&q).await.unwrap_err().to_string();
+    assert!(error.contains("deadline"), "{error}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(
+        m.aggregate(&request("SELECT count(*) AS n FROM sessions"))
+            .await
+            .unwrap()
+            .rows,
+        vec![json!({"n":6})]
+    );
 }

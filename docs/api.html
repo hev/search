@@ -99,7 +99,7 @@
         <p>Bounded read-only SQL over native Lance/DataFusion providers. Bind 1–8 namespace aliases in <code>tables</code>; supply <code>sql</code>, <code>max_rows</code> (1–10000), <code>max_bytes</code> (1–8388608), and <code>timeout_ms</code> (1–60000). DDL, writes, external tables and multiple statements are refused. Exceeding a budget returns 400 without partial totals.</p>
         <p>The response includes bounded <code>rows</code>, Lance <code>snapshots</code>, optimized <code>logical_plan</code>, actual <code>physical_plan</code> with execution metrics, elapsed time and result bytes. Set <code>explain_only:true</code> to plan without scanning. Optional <code>versions</code> pins physical namespace versions; unavailable versions fail. Cross-table snapshots are not atomic. Scalar decimal outputs are exact strings.</p>
         <pre><code>{"tables":{"rows":"demo"},"sql":"SELECT count(*) AS n FROM rows","max_rows":1,"max_bytes":4096,"timeout_ms":10000}</code></pre>
-        <p>Latest-state selection must precede mutable filters. Separate financial reductions from prompt UNNEST. For IANA heatmaps the engine session is UTC; convert epoch milliseconds to an explicitly UTC-aware timestamp before AT TIME ZONE.</p>
+        <p>Latest-state selection must precede mutable filters. Separate financial reductions from prompt UNNEST. For IANA heatmaps, attach the IANA timezone to the integer epoch with arrow_cast, then use to_local_time. Applying AT TIME ZONE to a naive timestamp changes the instant.</p>
       </div>
     </div>
     <div class="endpoint">

@@ -350,7 +350,8 @@ fn infer_attribute_type(
             }
         }
         _ => Err(HevSearchError::InvalidRequest(
-            "attributes must be JSON scalars, a list of strings, or null".into(),
+            "attributes must be JSON scalars, homogeneous string/int64/float64 lists, or null"
+                .into(),
         )),
     }
 }
@@ -846,7 +847,7 @@ impl NamespaceManager {
         let conn = self.connect(ns).await?;
         let table = match conn.open_table(TABLE_NAME).execute().await {
             Ok(tbl) => tbl,
-            Err(_) => {
+            Err(lancedb::Error::TableNotFound { .. }) => {
                 // Fresh namespace: always create with the current
                 // schema, which includes `_ingested_at` and `text_tok`.
                 let schema = Self::schema_for_kind(
@@ -866,6 +867,7 @@ impl NamespaceManager {
                     .await
                     .map_err(|e| HevSearchError::Backend(format!("create_table: {e}")))?
             }
+            Err(e) => return Err(HevSearchError::Backend(format!("open table {ns}: {e}"))),
         };
 
         let cloned = table.clone();
@@ -2731,19 +2733,11 @@ impl NamespaceManager {
                 let dataset = if let Some(dataset) = datasets.get(namespace) {
                     Arc::clone(dataset)
                 } else {
-                    let info = self.resolve_schema_info(&ns).await?.ok_or_else(|| {
+                    // Reads never call the create-on-miss write helper. A stale
+                    // cached profile or storage failure must not create a table.
+                    let (table, _) = self.open_existing(&ns).await?.ok_or_else(|| {
                         aggregate::invalid(format!("namespace {ns} does not exist"))
                     })?;
-                    let table = self
-                        .get_or_open_table(
-                            &ns,
-                            info.kind,
-                            info.dim,
-                            info.id_type,
-                            info.distance_metric,
-                            &info.attributes,
-                        )
-                        .await?;
                     let dataset = table
                         .dataset()
                         .ok_or_else(|| {

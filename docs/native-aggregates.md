@@ -87,14 +87,22 @@ before expansion. Use an EXISTS/semi join for ANY matching prompt selection,
 then UNNEST **all** prompts for the selected sessions. Never keep only the
 prompts that qualified the session. Null/empty arrays contribute no prompt bins.
 
-Epoch milliseconds convert with `to_timestamp_millis`. DataFusion returns a
-timezone-naive timestamp: attach UTC before converting to a target zone.
-For example, `to_local_time(CAST(to_timestamp_millis(ts) AS TIMESTAMP WITH TIME ZONE) AT TIME ZONE 'America/New_York')`.
-Applying AT TIME ZONE directly to a naive timestamp treats it as wall time and
-produces the wrong instant. The session timezone is UTC. Daily series use UTC
-session start, with whole-session cost/usage attributed to the selected current
-model. IANA heatmaps convert timestamps with `AT TIME ZONE` and `to_local_time`
-before `date_part('dow', ...)` / `date_part('hour', ...)`. Sunday is zero.
+Epoch milliseconds are UTC instants. For IANA heatmaps, attach the timezone
+**to the integer epoch**, then convert to wall time:
+
+```sql
+to_local_time(arrow_cast(prompt_ms, 'Timestamp(Millisecond, Some("America/New_York"))'))
+```
+
+For ISO strings use `CAST(to_timestamp(ts) AS BIGINT)` with
+`Timestamp(Nanosecond, Some("America/New_York"))`. Applying AT TIME ZONE directly
+to a naive timestamp treats it as local wall time and changes the instant.
+The pinned DataFusion version also has a `to_timestamp` planned/runtime type
+mismatch when its session timezone is configured; this executor keeps the
+default timezone-naive session. Integer epoch conversion avoids both behaviors.
+Daily series use UTC session-start epochs, with whole-session cost/usage
+attributed to the selected current model. Apply `date_part('dow', ...)` /
+`date_part('hour', ...)` to the local result; Sunday is zero.
 A repeated DST hour counts both prompts. Invalid timezone names are errors.
 The engine does not supply application-specific project-basename rules,
 12-bin series recipes, or missing-day zero fill: Layer must express the accepted
