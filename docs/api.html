@@ -836,6 +836,25 @@ curl -X POST http://localhost:3000/ns/demo/scalar-index \
     </table>
     <p>On 500 errors, the full error details are logged server-side via <code>tracing::error!</code> but scrubbed from the client response to prevent leaking internal state.</p>
 
+    <h2 id="guarded-mutations">Phrase and guarded mutations</h2>
+    <p><code>phrase_matches(text, phrase)</code> in aggregate SQL performs a contiguous
+    substring match after simple Unicode lowercase and whitespace collapse. Punctuation
+    and accents are preserved; empty/null inputs do not match.</p>
+    <p><code>POST /ns/{namespace}/patch</code> accepts typed ID rows with a
+    <code>set</code> object and optional current-value SQL <code>condition</code>.
+    <code>POST /ns/{namespace}/merge</code> accepts complete postimages, a required
+    <code>target</code>/<code>source</code> condition and explicit
+    <code>insert_if_missing</code>. Both execute one native transaction, cap input at
+    100 rows/1 MiB, and return exact affected IDs/counts plus the table version.</p>
+    <p>Patch rows must share a nonempty assignment field set. Vector clearing is refused
+    before dispatch on pinned Lance. Guarded inserts require native primary-key conflict
+    metadata; legacy tables without it require an explicit migration. HTTP409 indicates
+    a rejected conflict; HTTP503 with <code>outcome: unknown</code> requires caller
+    reconciliation and must not trigger blind replay. No cross-namespace/schema
+    transaction or durable receipt is implied. See the
+    <a href="https://github.com/hev/search/blob/main/docs/guarded-mutations.md">complete
+    request contracts and storage limitations</a>.</p>
+
   </main>
 </div>
 

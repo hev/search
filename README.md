@@ -148,3 +148,7 @@ with public test credentials `minioadmin:minioadmin`, then run
 `./scripts/init-test-bucket http://127.0.0.1:9000 hevsearch-test`.
 This source-built fixture is for tests only; it is not a production storage
 rollout or an engine image publication.
+
+Phrase predicates and bounded conditional writes are documented in
+[guarded mutations](docs/guarded-mutations.md), including concurrency, legacy
+profile restrictions and unknown write outcomes.
