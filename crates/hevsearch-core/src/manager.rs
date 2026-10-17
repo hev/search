@@ -33,6 +33,9 @@
 //! through the cached handle and its result is visible to subsequent
 //! reads on that same handle.
 
+mod mutations;
+pub use mutations::{GuardedMergeRequest, GuardedMergeResult, PatchRequest, PatchResult, PatchRow};
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -477,22 +480,27 @@ struct NamespaceSchemaInfo {
 ///
 /// At most one of the two fields may be populated; setting both
 /// returns 400 at the API boundary.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpsertRow {
     /// Stable row identifier.
     pub id: RowId,
     /// The single-vector payload. Length must match the namespace's
     /// dimension. Empty means "no single vector" — used when this
     /// row carries a multivector payload instead.
+    #[serde(default)]
     pub vector: Vec<f32>,
     /// The multivector payload. Each inner vector must have the
     /// namespace's inner sub-vector dimension; the outer list length
     /// is the per-row sub-vector count and may vary between rows.
     /// `None` means "no multivector".
+    #[serde(default)]
     pub vectors: Option<Vec<Vec<f32>>>,
     /// Optional text payload for BM25 full-text search.
+    #[serde(default)]
     pub text: Option<String>,
     /// User-defined scalar attributes.
+    #[serde(default)]
     pub attributes: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -748,7 +756,10 @@ impl NamespaceManager {
             RowIdType::String => DataType::Utf8,
         };
         let mut fields = vec![
-            Field::new("id", id_data_type, false),
+            Field::new("id", id_data_type, false).with_metadata(HashMap::from([(
+                "lance-schema:unenforced-primary-key".into(),
+                "true".into(),
+            )])),
             Field::new("vector", vector_type, true),
             Field::new("text", DataType::Utf8, true),
         ];
@@ -2756,7 +2767,13 @@ impl NamespaceManager {
                                 .map_err(aggregate::invalid)?,
                         )
                     } else {
-                        dataset
+                        // Pooled handles may predate another process's commit.
+                        // Refresh a request-owned copy so unpinned reads observe
+                        // the latest committed manifest without mutating shared
+                        // handles or disturbing an explicit historical checkout.
+                        let mut latest = dataset.as_ref().clone();
+                        latest.checkout_latest().await.map_err(aggregate::invalid)?;
+                        Arc::new(latest)
                     };
                     datasets.insert(namespace.clone(), Arc::clone(&dataset));
                     dataset
@@ -3283,6 +3300,10 @@ async fn read_schema_info_from_table(
         .schema()
         .await
         .map_err(|e| HevSearchError::Backend(format!("read schema: {e}")))?;
+    read_schema_info_from_schema(schema.as_ref())
+}
+
+fn read_schema_info_from_schema(schema: &Schema) -> Result<NamespaceSchemaInfo, HevSearchError> {
     let mut dim_kind: Option<(usize, VectorKind)> = None;
     let mut id_type: Option<RowIdType> = None;
     let mut has_ingested_at = false;

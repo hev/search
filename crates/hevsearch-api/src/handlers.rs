@@ -923,7 +923,9 @@ fn operation_error_message(err: &HevSearchError) -> String {
         HevSearchError::Backend(_)
         | HevSearchError::Cache(_)
         | HevSearchError::Io(_)
-        | HevSearchError::Metrics(_) => "operation failed".to_string(),
+        | HevSearchError::Metrics(_)
+        | HevSearchError::MutationConflict(_)
+        | HevSearchError::MutationUnknown(_) => "operation failed".to_string(),
     }
 }
 
@@ -957,6 +959,26 @@ pub async fn ensure_schema(
     let ns = NamespaceId::new(namespace)?;
     state.manager.ensure_schema(&ns, &schema).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Atomic literal-field patch with a native current-value guard and affected IDs.
+pub async fn patch(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+    Json(request): Json<hevsearch_core::manager::PatchRequest>,
+) -> Result<Json<hevsearch_core::manager::PatchResult>, ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+    Ok(Json(state.manager.patch(&ns, &request).await?))
+}
+
+/// Guard complete postimage replacement against current and incoming values.
+pub async fn guarded_merge(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+    Json(request): Json<hevsearch_core::manager::GuardedMergeRequest>,
+) -> Result<Json<hevsearch_core::manager::GuardedMergeResult>, ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+    Ok(Json(state.manager.guarded_merge(&ns, &request).await?))
 }
 
 #[cfg(test)]

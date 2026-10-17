@@ -261,3 +261,32 @@ async fn missing_metrics_and_zero_denominators_keep_usage_and_zero_ratios() {
         assert_eq!(result.rows[0]["hit"].as_f64(), Some(0.0));
     }
 }
+
+#[tokio::test]
+async fn phrase_predicate_runs_natively_before_bounded_projection() {
+    let (_dir, m) = fixture().await;
+    m.upsert(
+        &NamespaceId::new("native-sessions").unwrap(),
+        vec![
+            UpsertRow {
+                text: Some("Café,\u{a0}finish NOW".into()),
+                ..row("phrase-yes", json!({"session_id":"phrase","end":2}))
+            },
+            UpsertRow {
+                text: Some("Café middle finish".into()),
+                ..row("phrase-no", json!({"session_id":"phrase","end":1}))
+            },
+            row("no-text", json!({"session_id":"phrase","end":0})),
+        ],
+    )
+    .await
+    .unwrap();
+    let result=m.aggregate(&request("SELECT id FROM sessions WHERE session_id='phrase' AND phrase_matches(text, 'CAFÉ, FINISH') ORDER BY id")).await.unwrap();
+    assert_eq!(result.rows, vec![json!({"id":"phrase-yes"})]);
+    assert!(result.physical_plan.contains("phrase_matches"));
+    let result=m.aggregate(&request("SELECT phrase_matches(NULL, 'anything') AS missing, phrase_matches('foo', '') AS empty, phrase_matches('foobar','foo') AS substring")).await.unwrap();
+    assert_eq!(
+        result.rows,
+        vec![json!({"missing":false,"empty":false,"substring":true})]
+    );
+}

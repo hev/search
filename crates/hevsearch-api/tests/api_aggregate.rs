@@ -85,6 +85,34 @@ async fn schema_metadata_first_aggregate_vector_completion_and_refusals() {
             .1,
         schema
     );
+    let merged=call(&app,"POST","/ns/api-native/merge",json!({"rows":[{"id":"guarded","vector":[1.0,0.0],"text":"New Phrase","attributes":{"session_id":"guarded","cost":0.5,"pending":true}}],"condition":"false","insert_if_missing":true})).await;
+    assert_eq!(merged.0, StatusCode::OK);
+    assert_eq!(merged.1["inserted"], 1);
+    let patched=call(&app,"POST","/ns/api-native/patch",json!({"rows":[{"id":"guarded","set":{"cost":0.75,"pending":false}}],"condition":"pending = true"})).await;
+    assert_eq!(patched.0, StatusCode::OK);
+    assert_eq!(patched.1["patched"], 1);
+    assert_eq!(patched.1["affected_ids"], json!(["guarded"]));
+    let skipped = call(
+        &app,
+        "POST",
+        "/ns/api-native/patch",
+        json!({"rows":[{"id":"guarded","set":{"cost":99.0}}],"condition":"pending = true"}),
+    )
+    .await;
+    assert_eq!(skipped.1["patched"], 0);
+    // Remove the fixture through the existing supported delete route so the
+    // remaining metadata-first assertions still address an empty namespace.
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/ns/api-native/delete",
+            json!({"ids":["guarded"]})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
     let r = json!({"tables":{"s":"api-native"},"sql":"SELECT count(*) AS n FROM s","max_rows":10,"max_bytes":10000,"timeout_ms":60000});
     assert_eq!(
         call(&app, "POST", "/aggregate", r.clone()).await.1["rows"],

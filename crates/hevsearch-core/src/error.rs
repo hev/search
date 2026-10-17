@@ -35,6 +35,14 @@ pub enum HevSearchError {
     #[error("unsupported: {0}")]
     Unsupported(String),
 
+    /// A native storage transaction was rejected due to a known commit conflict.
+    #[error("mutation conflict: {0}")]
+    MutationConflict(String),
+
+    /// A write was dispatched but complete acceptance/noncommit is uncertain.
+    #[error("mutation outcome unknown: {0}")]
+    MutationUnknown(String),
+
     /// A metrics registry or encoding operation failed.
     #[error("metrics error: {0}")]
     Metrics(String),

@@ -48,6 +48,24 @@ fn core_response(err: HevSearchError) -> Response {
         HevSearchError::Unsupported(msg) => {
             (StatusCode::NOT_IMPLEMENTED, format!("not supported: {msg}"))
         }
+        HevSearchError::MutationConflict(message) => {
+            tracing::warn!(error = %message, "native mutation conflict");
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "mutation_conflict", "outcome": "rejected"})),
+            )
+                .into_response();
+        }
+        HevSearchError::MutationUnknown(message) => {
+            tracing::warn!(error = %message, "native mutation acceptance unknown");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(
+                    serde_json::json!({"error": "mutation_outcome_unknown", "outcome": "unknown"}),
+                ),
+            )
+                .into_response();
+        }
         err @ (HevSearchError::Backend(_)
         | HevSearchError::Cache(_)
         | HevSearchError::Io(_)
@@ -60,4 +78,35 @@ fn core_response(err: HevSearchError) -> Response {
         }
     };
     (status, Json(ErrorBody { error: msg })).into_response()
+}
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+    #[tokio::test]
+    async fn conflict_and_unknown_responses_do_not_leak_storage_details() {
+        for (error, status, outcome) in [
+            (
+                HevSearchError::MutationConflict("private storage path".into()),
+                StatusCode::CONFLICT,
+                "rejected",
+            ),
+            (
+                HevSearchError::MutationUnknown("private storage path".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unknown",
+            ),
+        ] {
+            let response = core_response(error);
+            assert_eq!(response.status(), status);
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["outcome"], outcome);
+            assert!(!String::from_utf8(bytes.to_vec())
+                .unwrap()
+                .contains("private"));
+        }
+    }
 }

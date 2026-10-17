@@ -165,3 +165,8 @@ CDC durable completion, archive reconciliation, or permission to change routing.
 Search fusion/relevance, public SDK mirrors, live archive backfill and source
 cleanup are unchanged by this API. Unsupported application contracts must remain
 explicit in Layer's capabilities until its exact candidate passes acceptance.
+
+Unpinned reads refresh a request-owned latest manifest, including commits made by
+other API processes. Explicit version pins remain historical; aliases for one
+namespace share one checkout. A later concurrent commit is outside that request
+snapshot, and namespace snapshots are still not a cross-namespace transaction.
