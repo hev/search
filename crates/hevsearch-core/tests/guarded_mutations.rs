@@ -450,6 +450,19 @@ async fn metadata_only_guarded_postimage_remains_readable() {
     let rows = read(&m, &ns).await;
     assert!(rows[0]["vector"].is_null());
     assert_eq!(rows[0]["version"], 2);
+    m.patch(
+        &ns,
+        &patch(
+            "a",
+            json!({"summary":"metadata patched"}),
+            Some("version=2"),
+        ),
+    )
+    .await
+    .unwrap();
+    let patched = read(&m, &ns).await;
+    assert!(patched[0]["vector"].is_null());
+    assert_eq!(patched[0]["summary"], "metadata patched");
 }
 
 #[tokio::test]
