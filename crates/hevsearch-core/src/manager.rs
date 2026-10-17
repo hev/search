@@ -2840,7 +2840,15 @@ impl NamespaceManager {
                 timeout_ms: 60_000,
                 explain_only: false,
             };
-            let result = self.aggregate(&request).await?;
+            let result = self
+                .aggregate(&request)
+                .await
+                .map_err(|error| match error {
+                    HevSearchError::InvalidRequest(message) if filter.is_some() => {
+                        HevSearchError::InvalidRequest(format!("facet filter: {message}"))
+                    }
+                    other => other,
+                })?;
             let truncated = result.rows.len() > top;
             let buckets = result
                 .rows
