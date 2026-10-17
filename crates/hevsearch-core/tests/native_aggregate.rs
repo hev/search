@@ -235,3 +235,29 @@ async fn deadline_cancels_native_work_and_next_query_succeeds() {
         vec![json!({"n":6})]
     );
 }
+
+#[tokio::test]
+async fn missing_metrics_and_zero_denominators_keep_usage_and_zero_ratios() {
+    let (_dir, m) = fixture().await;
+    // Source-style omitted metrics must not null out other fields in the row.
+    m.upsert(
+        &NamespaceId::new("native-sessions").unwrap(),
+        vec![row(
+            "a",
+            json!({"session_id":"a","end":100,"input":5,"cost":0.1}),
+        )],
+    )
+    .await
+    .unwrap();
+    let sql=format!("{LATEST} SELECT sum(coalesce(input,0)+coalesce(output,0)+coalesce(cache_read,0)+coalesce(cache_creation,0)) AS tokens FROM latest WHERE session_id='a'");
+    assert_eq!(
+        m.aggregate(&request(&sql)).await.unwrap().rows,
+        vec![json!({"tokens":5})]
+    );
+    for predicate in ["session_id='c'", "session_id='missing'"] {
+        let sql=format!("{LATEST} SELECT coalesce(sum(CAST(cost AS DECIMAL(24,6))), CAST(0 AS DECIMAL(24,6))) AS spend, coalesce(CAST(sum(coalesce(cache_read,0)) AS DOUBLE)/nullif(sum(coalesce(input,0)+coalesce(cache_read,0)+coalesce(cache_creation,0)),0),0.0) AS hit FROM latest WHERE {predicate}");
+        let result = m.aggregate(&request(&sql)).await.unwrap();
+        assert_eq!(result.rows[0]["spend"], json!("0.000000"));
+        assert_eq!(result.rows[0]["hit"].as_f64(), Some(0.0));
+    }
+}

@@ -77,8 +77,11 @@ Resolve evals by timestamp then ID **before** grade filtering. Join the latest
 eval set to latest sessions. A left anti join against latest poor evals includes
 ungraded sessions; `grade != 'poor'` on an inner join would lose them.
 
-Reduce spend/tokens/prompts on selected sessions before any UNNEST. Tokens sum
-input, output, cache read and cache creation. Cache hit is
+Reduce spend/tokens/prompts on selected sessions before any UNNEST. Coalesce
+each missing/null usage or cost field to zero
+before arithmetic when matching an application that decodes missing metrics as
+zero; SQL otherwise propagates NULL through addition and can omit a whole row.
+Tokens sum input, output, cache read and cache creation. Cache hit is
 `sum(cache_read)/NULLIF(sum(input+cache_read+cache_creation),0)` and
 cost per prompt is `sum(cost)/NULLIF(sum(prompt_count),0)`; COALESCE these ratios
 to zero for empty denominators when the API contract requires it. Coverage is
