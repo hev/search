@@ -122,6 +122,7 @@ pub(crate) fn context() -> Result<SessionContext, HevSearchError> {
         .map_err(|e| HevSearchError::Backend(e.to_string()))?;
     Ok(SessionContext::new_with_config_rt(
         SessionConfig::new()
+            .set_str("datafusion.execution.time_zone", "UTC")
             .with_target_partitions(4)
             .with_batch_size(1024),
         Arc::new(runtime),

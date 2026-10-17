@@ -118,13 +118,13 @@ async fn financial_reduction_separate_from_unnest_and_dst_heatmap() {
     assert_eq!(result.rows[0]["tokens"], json!(110));
     assert!((result.rows[0]["hit"].as_f64().unwrap() - 1.0 / 3.0).abs() < 1e-10);
     assert!(result.physical_plan.contains("Aggregate"));
-    let q = format!("{LATEST}, expanded AS (SELECT unnest(prompts) AS ts FROM latest), localized AS (SELECT to_local_time(to_timestamp(ts) AT TIME ZONE 'America/New_York') AS ts FROM expanded) SELECT date_part('dow',ts) AS dow, date_part('hour',ts) AS hour, count(*) AS n FROM localized GROUP BY dow,hour ORDER BY dow,hour");
+    let q = format!("{LATEST}, expanded AS (SELECT unnest(prompts) AS ts FROM latest), localized AS (SELECT to_local_time(CAST(to_timestamp(ts) AS TIMESTAMP WITH TIME ZONE) AT TIME ZONE 'America/New_York') AS ts FROM expanded) SELECT date_part('dow',ts) AS dow, date_part('hour',ts) AS hour, count(*) AS n FROM localized GROUP BY dow,hour ORDER BY dow,hour");
     let result = m.aggregate(&request(&q)).await.unwrap();
     assert_eq!(
         result.rows,
         vec![
-            json!({"dow":0.0,"hour":1.0,"n":2}),
-            json!({"dow":0.0,"hour":19.0,"n":1})
+            json!({"dow":0,"hour":1,"n":2}),
+            json!({"dow":0,"hour":19,"n":1})
         ]
     );
     assert!(result.physical_plan.contains("Unnest"));
@@ -171,4 +171,49 @@ async fn budgets_explain_and_mutations_refuse_without_effects() {
         .await
         .unwrap();
     assert_eq!(result.rows, vec![json!({"n":6})]);
+}
+
+#[tokio::test]
+async fn explicit_versions_repeat_after_write_and_shared_aliases() {
+    let (_dir, m) = fixture().await;
+    let r = request("SELECT count(*) AS n FROM sessions");
+    let initial = m.aggregate(&r).await.unwrap();
+    m.upsert(
+        &NamespaceId::new("native-sessions").unwrap(),
+        vec![row("new", json!({"session_id":"new","end":99}))],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        m.aggregate(&r).await.unwrap().rows,
+        json!([{"n":7}]).as_array().unwrap().clone()
+    );
+    let mut pinned = r.clone();
+    pinned.versions.insert(
+        "native-sessions".into(),
+        initial.snapshots["sessions"].version,
+    );
+    pinned
+        .tables
+        .insert("duplicate".into(), "native-sessions".into());
+    let result = m.aggregate(&pinned).await.unwrap();
+    assert_eq!(result.rows, initial.rows);
+    assert_eq!(
+        result.snapshots["sessions"].version,
+        result.snapshots["duplicate"].version
+    );
+    pinned.versions.insert("native-sessions".into(), u64::MAX);
+    assert!(m.aggregate(&pinned).await.is_err());
+}
+
+#[tokio::test]
+async fn any_prompt_qualifies_session_then_all_prompts_are_aggregated() {
+    let (_dir, m) = fixture().await;
+    let sql=format!("{LATEST}, expanded AS (SELECT session_id, unnest(prompts) AS ts FROM latest), selected AS (SELECT DISTINCT session_id FROM expanded WHERE to_timestamp(ts) < to_timestamp('2026-11-01T06:00:00Z')) SELECT count(*) AS n FROM expanded e LEFT SEMI JOIN selected s ON e.session_id=s.session_id");
+    assert_eq!(
+        m.aggregate(&request(&sql)).await.unwrap().rows,
+        vec![json!({"n":2})]
+    );
+    let invalid=request("SELECT to_local_time(to_timestamp('2026-11-01T05:30:00Z') AT TIME ZONE 'Invalid/Zone') AS x");
+    assert!(m.aggregate(&invalid).await.is_err());
 }

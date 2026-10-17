@@ -30,6 +30,11 @@ The actual physical plan after execution includes operator metrics (ANALYZE).
 what the pinned operators expose: unavailable physical I/O/CPU/spill counters
 are unknown, never invented zeros. Cross-table versions are individually
 captured and are not a common transaction or a CDC convergence boundary.
+Optional `versions:{"example-sessions":123}` pins physical namespaces for
+repeatable chart/page requests; every alias of that namespace shares its
+snapshot. An unavailable version fails rather than falling back. Retention
+remains the caller’s responsibility; this endpoint does not pin snapshots across
+requests or prevent compaction.
 
 Source batches stream into DataFusion operators. Rust only encodes bounded
 result batches; it does not collect source rows to fold aggregates. The final
@@ -82,7 +87,11 @@ before expansion. Use an EXISTS/semi join for ANY matching prompt selection,
 then UNNEST **all** prompts for the selected sessions. Never keep only the
 prompts that qualified the session. Null/empty arrays contribute no prompt bins.
 
-Epoch milliseconds convert with `to_timestamp_millis`. Daily series use UTC
+Epoch milliseconds convert with `to_timestamp_millis`. DataFusion returns a
+timezone-naive timestamp: attach UTC before converting to a target zone.
+For example, `to_local_time(CAST(to_timestamp_millis(ts) AS TIMESTAMP WITH TIME ZONE) AT TIME ZONE 'America/New_York')`.
+Applying AT TIME ZONE directly to a naive timestamp treats it as wall time and
+produces the wrong instant. The session timezone is UTC. Daily series use UTC
 session start, with whole-session cost/usage attributed to the selected current
 model. IANA heatmaps convert timestamps with `AT TIME ZONE` and `to_local_time`
 before `date_part('dow', ...)` / `date_part('hour', ...)`. Sunday is zero.
