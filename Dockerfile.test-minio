@@ -1,0 +1,12 @@
+# Local test fixture only. Build the original pinned MinIO source after its
+# public images were withdrawn. No engine image is published by this file.
+FROM golang:1.24.2-bookworm AS build
+COPY scripts/build-test-minio /build-test-minio
+RUN /build-test-minio /out/minio
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/minio /usr/local/bin/minio
+COPY scripts/init-test-bucket /usr/local/bin/init-test-bucket
+ENTRYPOINT ["minio"]

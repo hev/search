@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Only for isolated fixtures; defaults are deliberately public test credentials.
+set -Eeuo pipefail
+endpoint="${1:-http://127.0.0.1:9000}"
+bucket="${2:-hevsearch-test}"
+response="$(mktemp)"
+trap 'rm -f "$response"' EXIT
+status="$(curl --silent --show-error --max-time 10 --output "$response" --write-out '%{http_code}' \
+    --aws-sigv4 'aws:amz:us-east-1:s3' --user 'minioadmin:minioadmin' \
+    --request PUT --data-binary '' "${endpoint}/${bucket}")"
+if [[ "$status" == 200 ]] || { [[ "$status" == 409 ]] && grep -q '<Code>BucketAlreadyOwnedByYou</Code>' "$response"; }; then
+    exit 0
+fi
+cat "$response" >&2
+exit 1
